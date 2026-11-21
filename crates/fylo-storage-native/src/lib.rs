@@ -315,7 +315,7 @@ impl NativeRoot {
         let path = options.root.as_path();
         let repository_root = options.repository.as_deref().unwrap_or(path);
         let canonical = ReadScope::canonicalize(path).map_err(NativeStorageError::io)?;
-        RootFilesystem::admit(&canonical, options.profile)?;
+        Self::admit_root(&canonical, options.repository.as_deref(), options.profile)?;
         let metadata = fs::metadata(&canonical).map_err(NativeStorageError::io)?;
         if metadata.is_file() {
             return Self::open_database(canonical, options);
@@ -385,6 +385,22 @@ impl NativeRoot {
             reuses_checks: true,
             tier,
         })
+    }
+
+    /// A root opened inside another repository root is a branch worktree:
+    /// its repository root carries the mount-point test (ADR 0033 section
+    /// 5.1). A repository root that cannot be resolved here leaves the root
+    /// judged in full.
+    fn admit_root(
+        canonical: &Path,
+        repository: Option<&Path>,
+        profile: FilesystemProfile,
+    ) -> Result<(), NativeStorageError> {
+        let repository = repository.and_then(|root| ReadScope::canonicalize(root).ok());
+        if repository.is_some_and(|root| root != canonical) {
+            return RootFilesystem::admit_worktree(canonical, profile).map(drop);
+        }
+        RootFilesystem::admit(canonical, profile).map(drop)
     }
 
     /// A worktree's separate repository root may sit on another filesystem,

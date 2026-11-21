@@ -28,6 +28,7 @@ mod placement_kind;
 mod placement_report;
 mod placement_settings;
 mod root_placement;
+mod root_role;
 #[cfg(all(test, unix))]
 mod scratch;
 #[cfg(not(target_family = "wasm"))]
@@ -47,6 +48,7 @@ pub use placement_kind::PlacementKind;
 pub use placement_report::PlacementReport;
 pub use placement_settings::PlacementSettings;
 pub use root_placement::RootPlacement;
+pub(crate) use root_role::RootRole;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) use system_disk_rule::SystemDiskRule;
 #[cfg(not(target_family = "wasm"))]

@@ -12,6 +12,7 @@ use super::opt_out_source::OptOutSource;
 use super::placement_kind::PlacementKind;
 use super::placement_report::PlacementReport;
 use super::root_placement::RootPlacement;
+use super::root_role::RootRole;
 use super::system_disk_refusal::SystemDiskRefusal;
 use super::volume_root::VolumeRoot;
 
@@ -36,13 +37,15 @@ impl SystemDiskRule {
     pub(crate) fn admit(
         path: &Path,
         placement: &RootPlacement,
+        role: RootRole,
     ) -> Result<PlacementReport, NativeStorageError> {
-        Self::verdict(path, placement).map_err(|refusal| refusal.error(path))
+        Self::verdict(path, placement, role).map_err(|refusal| refusal.error(path))
     }
 
-    /// What the handshake reports for `path`; it never refuses.
+    /// What the handshake reports for the primary root at `path`; it never
+    /// refuses.
     pub(crate) fn report(path: &Path, placement: &RootPlacement) -> PlacementReport {
-        Self::verdict(path, placement)
+        Self::verdict(path, placement, RootRole::Primary)
             .unwrap_or_else(|refusal| PlacementReport::refused(refusal.system_disk()))
     }
 
@@ -54,13 +57,14 @@ impl SystemDiskRule {
     fn verdict(
         path: &Path,
         placement: &RootPlacement,
+        role: RootRole,
     ) -> Result<PlacementReport, SystemDiskRefusal> {
         match placement {
             RootPlacement::AllowSystemDisk(source) => Ok(Self::allowed(*source)),
             RootPlacement::AppOwned(app) if DiskReader::MOBILE => Self::mobile(path, Some(app)),
             _ if DiskReader::MOBILE => Self::mobile(path, None),
-            RootPlacement::AppOwned(app) => Self::app_owned(path, app),
-            RootPlacement::DataDisk => Self::data_disk(&DiskReader, path),
+            RootPlacement::AppOwned(app) => Self::app_owned(path, app, role),
+            RootPlacement::DataDisk => Self::data_disk(&DiskReader, path, role),
         }
     }
 
@@ -97,7 +101,11 @@ impl SystemDiskRule {
     }
 
     /// App mode: the app's own folder, or a data disk like any server.
-    fn app_owned(path: &Path, app: &AppId) -> Result<PlacementReport, SystemDiskRefusal> {
+    fn app_owned(
+        path: &Path,
+        app: &AppId,
+        role: RootRole,
+    ) -> Result<PlacementReport, SystemDiskRefusal> {
         let folders = AppFolders::of(
             DiskReader::platform(),
             Some(app),
@@ -106,7 +114,7 @@ impl SystemDiskRule {
         if folders.contains(path, DiskReader::owned_by_process) {
             return Ok(PlacementReport::admitted(None, PlacementKind::AppOwned));
         }
-        Self::data_disk(&DiskReader, path).map_err(|inner| SystemDiskRefusal::OutsideApp {
+        Self::data_disk(&DiskReader, path, role).map_err(|inner| SystemDiskRefusal::OutsideApp {
             app: app.as_str().to_owned(),
             folders: folders.describe(),
             inner: Box::new(inner),
@@ -118,9 +126,22 @@ impl SystemDiskRule {
     fn data_disk(
         disks: &dyn DiskSource,
         path: &Path,
+        role: RootRole,
     ) -> Result<PlacementReport, SystemDiskRefusal> {
-        VolumeRoot::check(disks, path)?;
+        Self::volume(disks, path, role)?;
         Self::drive(disks, path)
+    }
+
+    /// A worktree's repository root carries the mount-point test.
+    fn volume(
+        disks: &dyn DiskSource,
+        path: &Path,
+        role: RootRole,
+    ) -> Result<(), SystemDiskRefusal> {
+        match role {
+            RootRole::Primary => VolumeRoot::check(disks, path).map(drop),
+            RootRole::Worktree => Ok(()),
+        }
     }
 
     /// A network share has no disk, so it is never the system disk.
@@ -236,7 +257,7 @@ impl SystemDiskRule {
 
 #[cfg(test)]
 mod tests {
-    use super::{DiskDescription, DiskSource, SystemDiskRefusal, SystemDiskRule};
+    use super::{DiskDescription, DiskSource, RootRole, SystemDiskRefusal, SystemDiskRule};
     use crate::system_disk::placement_kind::PlacementKind;
     use std::path::{Path, PathBuf};
 
@@ -325,7 +346,8 @@ mod tests {
     ];
 
     fn verdict(disks: &FakeDisks, path: &str) -> Result<PlacementKind, SystemDiskRefusal> {
-        SystemDiskRule::data_disk(disks, Path::new(path)).map(|report| report.placement.unwrap())
+        SystemDiskRule::data_disk(disks, Path::new(path), RootRole::Primary)
+            .map(|report| report.placement.unwrap())
     }
 
     #[test]
@@ -352,6 +374,19 @@ mod tests {
     }
 
     #[test]
+    fn a_worktree_inside_its_repository_is_judged_by_its_disk_only() {
+        let disks = FakeDisks::new(IMAGES);
+        let worktree = Path::new("/data/root/.fylo-vcs/worktrees/topic");
+        let report = SystemDiskRule::data_disk(&disks, worktree, RootRole::Worktree).unwrap();
+        assert_eq!(report.placement, Some(PlacementKind::DataDisk));
+        let system = Path::new("/system/root/.fylo-vcs/worktrees/topic");
+        assert!(matches!(
+            SystemDiskRule::data_disk(&disks, system, RootRole::Worktree),
+            Err(SystemDiskRefusal::SystemDisk { .. })
+        ));
+    }
+
+    #[test]
     fn a_home_folder_root_is_refused_for_its_folder_first() {
         let disks = FakeDisks::new(IMAGES);
         assert!(matches!(
@@ -363,7 +398,8 @@ mod tests {
     #[test]
     fn a_root_directly_below_a_network_share_is_admitted_without_a_disk() {
         let disks = FakeDisks::new(IMAGES);
-        let report = SystemDiskRule::data_disk(&disks, Path::new("/share/root")).unwrap();
+        let report =
+            SystemDiskRule::data_disk(&disks, Path::new("/share/root"), RootRole::Primary).unwrap();
         assert_eq!(report.placement, Some(PlacementKind::DataDisk));
         assert_eq!(report.system_disk, None);
     }

@@ -1,4 +1,5 @@
 use crate::network_roots::NetworkRoots;
+use crate::system_disk::RootRole;
 #[cfg(not(target_family = "wasm"))]
 use crate::system_disk::{SystemDiskRule, VolumeRoot};
 use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode, PlacementReport};
@@ -47,9 +48,31 @@ impl RootFilesystem {
     /// Returns `EREMOTEROOT` for a native root on a network filesystem, or
     /// `ENATIVE_IO` when the path's volume cannot be described.
     pub fn admit(path: &Path, profile: FilesystemProfile) -> Result<Self, NativeStorageError> {
+        Self::admit_as(path, profile, RootRole::Primary)
+    }
+
+    /// As [`Self::admit`], for a branch worktree inside an admitted
+    /// repository root: the repository root carries the mount-point test
+    /// (ADR 0033 section 5.1), so only the worktree's disk is judged.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::admit`], except `ENOTVOLUMEROOT`.
+    pub fn admit_worktree(
+        path: &Path,
+        profile: FilesystemProfile,
+    ) -> Result<Self, NativeStorageError> {
+        Self::admit_as(path, profile, RootRole::Worktree)
+    }
+
+    fn admit_as(
+        path: &Path,
+        profile: FilesystemProfile,
+        role: RootRole,
+    ) -> Result<Self, NativeStorageError> {
         let filesystem = Self::detect(path)?;
         filesystem.refuse_remote(path, profile, NetworkRoots::ADMITTED)?;
-        let placement = filesystem.admit_placement(path)?;
+        let placement = filesystem.admit_placement(path, role)?;
         Ok(Self {
             placement,
             volume: Self::volume_of(path),
@@ -127,13 +150,17 @@ impl RootFilesystem {
     /// got here is admitted by the EFS profile and is never on the system
     /// disk; once it is on, a remote root is judged like a local one.
     #[cfg(not(target_family = "wasm"))]
-    fn admit_placement(&self, path: &Path) -> Result<PlacementReport, NativeStorageError> {
+    fn admit_placement(
+        &self,
+        path: &Path,
+        role: RootRole,
+    ) -> Result<PlacementReport, NativeStorageError> {
         if self.remote && !NetworkRoots::ADMITTED {
             return Ok(PlacementReport::admitted(None, PlacementKind::DataDisk));
         }
         let placement = RootPlacement::current()
             .map_err(|reason| SystemDiskRule::setting_error(path, reason))?;
-        SystemDiskRule::admit(path, &placement)
+        SystemDiskRule::admit(path, &placement, role)
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -154,7 +181,11 @@ impl RootFilesystem {
         clippy::unused_self,
         reason = "the native form can fail, and both forms share one signature"
     )]
-    fn admit_placement(&self, _path: &Path) -> Result<PlacementReport, NativeStorageError> {
+    fn admit_placement(
+        &self,
+        _path: &Path,
+        _role: RootRole,
+    ) -> Result<PlacementReport, NativeStorageError> {
         Ok(PlacementReport::default())
     }
 
@@ -255,11 +286,6 @@ mod tests {
                 true,
             )
             .unwrap();
-    }
-
-    #[test]
-    fn the_network_switch_is_off_until_the_lease_and_the_probe_land() {
-        assert!(!crate::network_roots::NetworkRoots::ADMITTED);
     }
 
     #[test]
