@@ -31,7 +31,8 @@ Facts that decide the design:
 
 - **Extents** are fixed-size per file, 1 MiB to 64 MiB, 2 MiB by default.
   Each begins with a 64-byte header (magic, kind, owning collection id,
-  sequence number). Free extents are reused lowest number first, only after
+  sequence number); the rest of its first 4 KiB page is zero, so the
+  extent's payload starts at byte 4,096. Free extents are reused lowest number first, only after
   a checkpoint has written a map that shows them free (ADR 0016 section 6).
 - **A video can be hundreds of MiB.** It must never sit whole in memory: not
   in the native engine, and not in the WebAssembly engine, whose memory is
@@ -70,10 +71,12 @@ Facts that decide the design:
   and the payload (ciphertext and a 16-byte tag when the file is
   encrypted).
 - **Chunk size is fixed per object**, chosen so that a whole number of
-  frames fill an extent after its 64-byte header: with an extent size `E`,
-  `k = E / 1 MiB` frames per extent (at least 1), and a payload of
-  `floor((E - 64) / k)` minus the frame overhead. So a chunk holds just under
-  1 MiB (two chunks per default 2 MiB extent). The last chunk is shorter.
+  frames fill an extent's payload, which starts at byte 4,096: with an
+  extent size `E`, `k = E / 1 MiB` frames per extent (at least 1), each in a
+  slot of `floor((E - 4096) / k)` bytes, and a chunk payload of that slot
+  minus the 32-byte frame header (and the 16-byte tag when encrypted). So a
+  chunk holds just under 1 MiB (two chunks per default 2 MiB extent). The
+  last chunk is shorter.
 - So **chunk `i` is found by arithmetic**: run position `floor(i / k)`, slot
   `i mod k`. No chunk table is stored, and a range read needs no extra read.
 - A frame never crosses an extent boundary. Object chunks are **not
@@ -203,6 +206,28 @@ its own decision.
 - The storage contract `v2` (ADR 0033 section 13) describes the object
   record fields. This ADR adds no machine operation; `getFileData` gains the
   optional range (additive, machine protocol stays `v1`).
+
+### 11. Decisions made while building (L1-9a)
+
+Accepted by the FYLO Build Coordinator on 2026-11-21.
+
+- **A `stamp` in the record.** The object record also carries `stamp`: the
+  sequence number of the first extent the write took. Sequence numbers are
+  never reused, so the stamp names this one write. The frame header's object
+  hash is SHA-256 over a label, the collection id, the stamp and the TTID.
+  A reader that still holds the runs of an older write of the same TTID
+  gets "not found" when a later write reuses those extents, never the
+  later write's bytes. Relocation keeps the stamp, so moved frames stay
+  valid.
+- **The payload starts at byte 4,096.** Section 2's arithmetic uses the
+  real payload offset of ADR 0016's extents (the header takes 64 bytes, the
+  rest of the first page is zero). With 2 MiB extents a slot is
+  1 MiB - 2 KiB.
+- **One run for a new object.** A writer takes the lowest run of free
+  extents that holds the whole object, or new extents at the end of the
+  file. So a new object has exactly one run; more runs come only from
+  `fylo compact --shrink`, which moves an object one extent at a time. The
+  4,096-run cap still guards every record.
 
 ## Consequences
 
