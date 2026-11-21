@@ -11,7 +11,8 @@
 # formats it NTFS and gives it drive letter -Letter. Laptops and GitHub runners.
 #
 # Online: windows-vm's test disk, attached by Platform's testvm as a second
-# disk. Finds the disk by its serial number (or, for a USB test disk, the only
+# disk. Finds the disk whose serial number starts with -Serial (QEMU reports
+# TEST-DISK as "TEST-DISK _00000001.") (or, for a USB test disk, the only
 # USB disk), brings it online and writable, and on first use only (a disk with
 # no partitions) formats it NTFS. It never touches the boot or system disk, and
 # never formats a disk that already has partitions.
@@ -139,7 +140,7 @@ class FyloTestDisk {
   }
 
   static [object] FindBySerial([string]$serial) {
-    return @(Get-Disk | Where-Object { $_.SerialNumber -and $_.SerialNumber.Trim() -eq $serial })
+    return @(Get-Disk | Where-Object { $_.SerialNumber -and $_.SerialNumber.Trim().StartsWith($serial) })
   }
 
   static [object] FindUsb() {
