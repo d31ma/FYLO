@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 ///
 /// Every part is a hash, so no caller's id or collection name becomes a
 /// path. The root key is a hash of the root's canonical path and its
-/// device, the collection key a hash of the collection's namespace and
+/// device, the collection key a hash of the collection's kind folder and
 /// name.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EntryKey {

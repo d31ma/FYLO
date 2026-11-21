@@ -1356,8 +1356,8 @@ impl NativeWriteRoot {
         let mut moved = 0;
         let mut transaction = Transaction::begin(self, &collection, "reshard")?;
         let outcome = (|| {
-            for namespace in ["docs", ".deleted"] {
-                let root = collection.path.join(namespace);
+            for state_folder in ["docs", ".deleted"] {
+                let root = collection.path.join(state_folder);
                 for (source, target) in reshard_moves(&root, width, &leaving)? {
                     self.require_pair_destination_absent(&target)?;
                     transaction.capture(&source)?;
@@ -1479,7 +1479,7 @@ impl NativeWriteRoot {
         }
         let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
-        let namespaces = [
+        let states = [
             (
                 "active",
                 collection.path.join("docs"),
@@ -1495,7 +1495,7 @@ impl NativeWriteRoot {
         let mut verified = 0_usize;
         let mut stamped = 0_usize;
         let mut corrupt = Vec::new();
-        for (namespace, root, identifiers) in namespaces {
+        for (state, root, identifiers) in states {
             for identifier in identifiers {
                 let check = match verify_raw_file_checksum(&collection, &root, &identifier) {
                     Ok(check) => check,
@@ -1506,7 +1506,7 @@ impl NativeWriteRoot {
                 match check.expected {
                     Some(expected) if expected != check.actual => corrupt.push(serde_json::json!({
                         "id": identifier,
-                        "namespace": namespace,
+                        "namespace": state,
                         "expected": expected,
                         "actual": check.actual,
                     })),
@@ -1549,10 +1549,10 @@ impl NativeWriteRoot {
         }
         let present = [".collections", ".buckets"].into_iter().try_fold(
             false,
-            |found, namespace| -> Result<bool, NativeStorageError> {
+            |found, kind_folder| -> Result<bool, NativeStorageError> {
                 Ok(found
                     || path_exists_no_follow(
-                        &self.root.path().join(namespace).join(collection_name),
+                        &self.root.path().join(kind_folder).join(collection_name),
                     )?)
             },
         )?;
@@ -1567,7 +1567,7 @@ impl NativeWriteRoot {
     /// The descriptor is written before the directories it describes. A
     /// collection exists when its directory does, so an interrupted create
     /// leaves a descriptor naming nothing — which reads as "no such
-    /// collection" — rather than a directory whose namespace and shard width
+    /// collection" — rather than a directory whose kind folder and shard width
     /// nobody recorded. Re-running finishes it.
     ///
     /// Returns `true` when the collection did not exist beforehand.
@@ -1697,11 +1697,8 @@ impl NativeWriteRoot {
             durable_replace(&descriptor_path, &encoded)?;
         }
 
-        let namespace = match kind {
-            CollectionKind::Document => ".collections",
-            CollectionKind::File => ".buckets",
-        };
-        let collection_root = self.root.path().join(namespace).join(collection_name);
+        let kind_folder = kind.folder_name();
+        let collection_root = self.root.path().join(kind_folder).join(collection_name);
         let layout = match &existing {
             Some(collection) => collection.layout,
             None if self.creates_segments(kind)? => CollectionLayout::Segments,
@@ -2397,10 +2394,10 @@ struct RawChecksumCheck {
 
 fn verify_raw_file_checksum(
     collection: &super::NativeCollection,
-    namespace: &Path,
+    state_folder: &Path,
     identifier: &str,
 ) -> Result<RawChecksumCheck, NativeStorageError> {
-    let path = collection.find_raw_file_path(namespace, identifier)?;
+    let path = collection.find_raw_file_path(state_folder, identifier)?;
     let (mut file, _) = collection
         .root
         .open_file(&path, super::MAX_RAW_FILE_BYTES)?;
@@ -3894,7 +3891,7 @@ fn transaction_root(
         .root
         .path()
         .join(".fylo-transactions")
-        .join(&collection.namespace)
+        .join(&collection.kind_folder)
         .join(collection.name())
         .join(identifier)
 }

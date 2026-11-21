@@ -121,7 +121,7 @@ impl SidecarAttributes {
     }
 
     /// Whether `attributes` bind `bytes` as the document `record` names
-    /// (namespace, collection, id), with no file call: the check a temp
+    /// (kind folder, collection, id), with no file call: the check a temp
     /// tier hit repeats from what its entry holds (ADR 0030 section 4.4).
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn binds(
@@ -129,11 +129,11 @@ impl SidecarAttributes {
         record: [&str; 3],
         bytes: &[u8],
     ) -> bool {
-        let [namespace, collection, identifier] = record;
+        let [kind_folder, collection, identifier] = record;
         let checksum = crate::sha256_hex(bytes);
         let expected = [
             IDENTITY_FORMAT,
-            namespace,
+            kind_folder,
             collection,
             identifier,
             checksum.as_str(),
@@ -208,10 +208,10 @@ impl SidecarAttributes {
         path: &Path,
         checksum: &str,
     ) -> Result<Vec<u8>, NativeStorageError> {
-        let [namespace, collection, identifier] = Self::record_identity(root, path)?;
+        let [kind_folder, collection, identifier] = Self::record_identity(root, path)?;
         serde_json::to_vec(&[
             IDENTITY_FORMAT,
-            namespace.as_str(),
+            kind_folder.as_str(),
             collection.as_str(),
             identifier.as_str(),
             checksum,
@@ -231,27 +231,31 @@ impl SidecarAttributes {
                 _ => Err(corrupt()),
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let [namespace, collection, location, shard, filename] = parts.as_slice() else {
+        let [kind_folder, collection, location, shard, filename] = parts.as_slice() else {
             return Err(corrupt());
         };
-        Self::require_record_location(namespace, location, shard)?;
+        Self::require_record_location(kind_folder, location, shard)?;
         crate::validate_collection_name(collection).map_err(|_| corrupt())?;
         let identifier = crate::raw_file_identifier(filename).ok_or_else(corrupt)?;
         crate::validate_ttid_shape(identifier).map_err(|_| corrupt())?;
-        Self::require_record_filename(namespace, filename, identifier)?;
+        Self::require_record_filename(kind_folder, filename, identifier)?;
         root.verify_path(
-            &root.path().join(namespace).join(collection),
+            &root.path().join(kind_folder).join(collection),
             ExpectedType::Directory,
         )?;
-        Ok([(*namespace).into(), (*collection).into(), identifier.into()])
+        Ok([
+            (*kind_folder).into(),
+            (*collection).into(),
+            identifier.into(),
+        ])
     }
 
     fn require_record_location(
-        namespace: &str,
+        kind_folder: &str,
         location: &str,
         shard: &str,
     ) -> Result<(), NativeStorageError> {
-        if !matches!(namespace, ".collections" | ".buckets")
+        if !matches!(kind_folder, ".collections" | ".buckets")
             || !matches!(location, "docs" | ".deleted")
             || shard.is_empty()
             || shard.len() > crate::MAX_SHARD_WIDTH as usize
@@ -263,11 +267,11 @@ impl SidecarAttributes {
     }
 
     fn require_record_filename(
-        namespace: &str,
+        kind_folder: &str,
         filename: &str,
         identifier: &str,
     ) -> Result<(), NativeStorageError> {
-        if namespace == ".collections" {
+        if kind_folder == ".collections" {
             if filename != format!("{identifier}.json") {
                 return Err(corrupt());
             }
@@ -461,10 +465,10 @@ mod tests {
 
     fn bound(payload: &[u8]) -> BTreeMap<String, Vec<u8>> {
         let checksum = crate::sha256_hex(payload);
-        let [namespace, collection, identifier] = RECORD;
+        let [kind_folder, collection, identifier] = RECORD;
         let value = [
             IDENTITY_FORMAT,
-            namespace,
+            kind_folder,
             collection,
             identifier,
             checksum.as_str(),

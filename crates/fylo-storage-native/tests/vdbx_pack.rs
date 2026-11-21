@@ -121,8 +121,8 @@ type FileImage = (Vec<u8>, u128, Vec<(String, Vec<u8>)>, u32);
 /// path relative to it, with the prefix index's keys.
 fn collection_tree(directory: &Path) -> BTreeMap<String, FileImage> {
     let mut tree = BTreeMap::new();
-    for namespace in ["docs", ".deleted"] {
-        let base = directory.join(namespace);
+    for state_folder in ["docs", ".deleted"] {
+        let base = directory.join(state_folder);
         for shard in fs::read_dir(&base).unwrap() {
             for entry in fs::read_dir(shard.unwrap().path()).unwrap() {
                 let path = entry.unwrap().path();

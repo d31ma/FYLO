@@ -1748,7 +1748,7 @@ impl ReadOnlyEngine {
     /// Execute a structured query across retained tombstones.
     ///
     /// Ordering and predicate semantics match the live cursor; only the source
-    /// namespace differs.
+    /// folder differs.
     ///
     /// # Errors
     ///

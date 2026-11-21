@@ -266,8 +266,8 @@ fn a_file_layout_root_works_among_companions() {
     let report = segments.export_collection(ITEMS, &out).unwrap();
     assert_eq!((report.documents, report.deleted), (6, 2));
     let mut exported = Vec::new();
-    for namespace in ["docs", ".deleted"] {
-        for shard in fs::read_dir(out.join(namespace)).unwrap() {
+    for state_folder in ["docs", ".deleted"] {
+        for shard in fs::read_dir(out.join(state_folder)).unwrap() {
             exported.extend(names(&shard.unwrap().path()));
         }
     }

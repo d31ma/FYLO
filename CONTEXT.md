@@ -13,6 +13,14 @@ truth.
 - **Root**: the canonical filesystem boundary owned by one FYLO writer.
 - **Collection**: a named set of JSON documents.
 - **Bucket**: a named set of raw files.
+- **Kind folder**: in a root of the current layout, `.collections` (document
+  collections) or `.buckets` (buckets). Code called this the "namespace"
+  until ADR 0033 gave that word its new meaning.
+- **App** (ADR 0033): the root folder `<drive>/<app>`; its folder name is the
+  app name.
+- **Namespace** (ADR 0033): a named group of collections inside an app, like
+  a Postgres schema; the default is `public`. App, namespace and collection
+  names follow one name rule (`EAPPNAME`, `ENAMESPACE`).
 - **Document ID**: a TTID whose lifecycle segments encode creation, update, and
   deletion time.
 - **Document body**: one JSON object stored in a sharded `.json` file.

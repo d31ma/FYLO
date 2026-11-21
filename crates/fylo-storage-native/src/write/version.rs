@@ -127,7 +127,7 @@ pub struct RepositoryStatus {
 struct SnapshotEntry {
     shard_width: u32,
     collection: String,
-    namespace: &'static str,
+    state: &'static str,
     identifier: String,
     filename: String,
     hash: String,
@@ -957,14 +957,14 @@ impl NativeWriteRoot {
             let entries = self.snapshot_working_tree(repository, false)?;
             let mut tree = BTreeMap::new();
             for entry in entries {
-                let kind = entry.namespace;
-                let namespace = namespace_directory(kind);
+                let kind = entry.state;
+                let state_folder = state_directory(kind);
                 tree.insert(
                     format!("{}/{kind}/{}", entry.collection, entry.filename),
                     TreeDocument {
                         path: Path::new(self.collection_data_directory(&entry.collection))
                             .join(&entry.collection)
-                            .join(namespace)
+                            .join(state_folder)
                             .join(crate::shard_of(&entry.identifier, entry.shard_width))
                             .join(&entry.filename)
                             .to_string_lossy()
@@ -1009,19 +1009,19 @@ impl NativeWriteRoot {
             }
             let collection = collection_node.name;
             crate::validate_collection_name(&collection)?;
-            // The committed tree does not record the namespace directory; the
+            // The committed tree does not record the kind folder; the
             // current descriptor is the authority for where it restores to.
             let data_directory = Path::new(self.collection_data_directory(&collection));
-            for namespace_node in read_tree_node(repository, &collection_node.hash)? {
-                if namespace_node.kind != "tree" {
-                    return Err(corrupt_tree("namespace entry is not a tree"));
+            for state_node in read_tree_node(repository, &collection_node.hash)? {
+                if state_node.kind != "tree" {
+                    return Err(corrupt_tree("state folder entry is not a tree"));
                 }
-                let namespace = namespace_node.name;
-                if !matches!(namespace.as_str(), "docs" | ".deleted" | ".metadata") {
-                    return Err(corrupt_tree("tree contains an unknown record namespace"));
+                let state_folder = state_node.name;
+                if !matches!(state_folder.as_str(), "docs" | ".deleted" | ".metadata") {
+                    return Err(corrupt_tree("tree contains an unknown record state folder"));
                 }
-                let kind = versioned_kind_for_directory(&namespace);
-                for shard_node in read_tree_node(repository, &namespace_node.hash)? {
+                let kind = versioned_kind_for_directory(&state_folder);
+                for shard_node in read_tree_node(repository, &state_node.hash)? {
                     if shard_node.kind != "tree" {
                         return Err(corrupt_tree("shard entry is not a tree"));
                     }
@@ -1054,7 +1054,7 @@ impl NativeWriteRoot {
                             TreeDocument {
                                 path: data_directory
                                     .join(&collection)
-                                    .join(&namespace)
+                                    .join(&state_folder)
                                     .join(&shard_node.name)
                                     .join(&blob.name)
                                     .to_string_lossy()
@@ -1118,12 +1118,12 @@ impl NativeWriteRoot {
                     } else {
                         None
                     };
-                for (namespace, kind) in [("docs", "active"), (".deleted", "deleted")] {
-                    self.snapshot_namespace(
+                for (state_folder, kind) in [("docs", "active"), (".deleted", "deleted")] {
+                    self.snapshot_state(
                         (repository, persist),
                         (
                             shard_width,
-                            &collection_root.join(namespace),
+                            &collection_root.join(state_folder),
                             &collection,
                             kind,
                         ),
@@ -1149,13 +1149,13 @@ impl NativeWriteRoot {
         Ok(entries)
     }
 
-    fn snapshot_namespace(
+    fn snapshot_state(
         &self,
         (repository, persist): (&Path, bool),
-        (shard_width, namespace_root, collection, kind): (u32, &Path, &str, &'static str),
+        (shard_width, state_root, collection, kind): (u32, &Path, &str, &'static str),
         entries: &mut Vec<SnapshotEntry>,
     ) -> Result<(), NativeStorageError> {
-        let Ok(shards) = read_dir_without_companions(namespace_root) else {
+        let Ok(shards) = read_dir_without_companions(state_root) else {
             return Ok(());
         };
         for shard in shards {
@@ -1215,7 +1215,7 @@ impl NativeWriteRoot {
                 entries.push(SnapshotEntry {
                     shard_width,
                     collection: collection.to_owned(),
-                    namespace: kind,
+                    state: kind,
                     identifier: identifier.clone(),
                     filename,
                     hash,
@@ -1228,7 +1228,7 @@ impl NativeWriteRoot {
                     entries.push(SnapshotEntry {
                         shard_width,
                         collection: collection.to_owned(),
-                        namespace: "metadata",
+                        state: "metadata",
                         identifier: identifier.clone(),
                         filename: format!("{identifier}.json"),
                         hash,
@@ -1265,7 +1265,7 @@ impl NativeWriteRoot {
         Ok((bytes, encode_profiled_metadata_blob(&attributes)?))
     }
 
-    /// Namespace directory a collection's records live in.
+    /// Kind folder (`.collections` or `.buckets`) a collection's records live in.
     ///
     /// A committed tree does not record it, so the current descriptor is the
     /// authority for where a commit's documents would restore to.
@@ -1424,17 +1424,17 @@ fn write_tree(
         grouped
             .entry(entry.collection.clone())
             .or_default()
-            .entry(namespace_directory(entry.namespace))
+            .entry(state_directory(entry.state))
             .or_default()
             .entry(crate::shard_of(&entry.identifier, entry.shard_width))
             .or_default()
             .insert(entry.filename.clone(), entry.hash.clone());
     }
     let mut root_entries = Vec::new();
-    for (collection, namespaces) in grouped {
+    for (collection, states) in grouped {
         let mut collection_entries = Vec::new();
-        for (namespace, shards) in namespaces {
-            let mut namespace_entries = Vec::new();
+        for (state_folder, shards) in states {
+            let mut state_entries = Vec::new();
             for (shard, records) in shards {
                 let blobs = records
                     .into_iter()
@@ -1444,16 +1444,16 @@ fn write_tree(
                         hash,
                     })
                     .collect();
-                namespace_entries.push(TreeEntry {
+                state_entries.push(TreeEntry {
                     name: shard,
                     kind: "tree",
                     hash: write_tree_node(repository, blobs, persist)?,
                 });
             }
             collection_entries.push(TreeEntry {
-                name: namespace.to_owned(),
+                name: state_folder.to_owned(),
                 kind: "tree",
-                hash: write_tree_node(repository, namespace_entries, persist)?,
+                hash: write_tree_node(repository, state_entries, persist)?,
             });
         }
         root_entries.push(TreeEntry {
@@ -1465,9 +1465,9 @@ fn write_tree(
     write_tree_node(repository, root_entries, persist).map(Some)
 }
 
-/// Inverse of [`namespace_directory`]: the kind a committed directory holds.
-fn versioned_kind_for_directory(namespace: &str) -> &'static str {
-    match namespace {
+/// Inverse of [`state_directory`]: the kind a committed directory holds.
+fn versioned_kind_for_directory(state_folder: &str) -> &'static str {
+    match state_folder {
         ".deleted" => "deleted",
         ".metadata" => "metadata",
         _ => "active",
@@ -1882,8 +1882,8 @@ fn verify_profiled_worktree(
         return Ok(());
     }
     let root = crate::NativeRoot::open_profiled(context.options_for(path))?;
-    for namespace in DATA_DIRECTORIES {
-        let data = path.join(namespace);
+    for kind_folder in DATA_DIRECTORIES {
+        let data = path.join(kind_folder);
         if path_exists(&data)? {
             verify_profiled_directory(&root, &data)?;
         }
@@ -2125,8 +2125,11 @@ fn find_staged_record(
     collection: &str,
     identifier: &str,
 ) -> Result<Option<PathBuf>, NativeStorageError> {
-    for namespace in ["docs", ".deleted"] {
-        let root = stage.join(data_directory).join(collection).join(namespace);
+    for state_folder in ["docs", ".deleted"] {
+        let root = stage
+            .join(data_directory)
+            .join(collection)
+            .join(state_folder);
         let Ok(shards) = read_dir_without_companions(root) else {
             continue;
         };
@@ -2442,10 +2445,10 @@ fn write_tree_from_documents(
         return Ok(None);
     }
     let mut root = Vec::new();
-    for (collection, namespaces) in grouped {
+    for (collection, states) in grouped {
         let mut collection_entries = Vec::new();
-        for (namespace, shards) in namespaces {
-            let mut namespace_entries = Vec::new();
+        for (state_folder, shards) in states {
+            let mut state_entries = Vec::new();
             for (shard, records) in shards {
                 let blobs = records
                     .into_iter()
@@ -2455,16 +2458,16 @@ fn write_tree_from_documents(
                         hash,
                     })
                     .collect();
-                namespace_entries.push(TreeEntry {
+                state_entries.push(TreeEntry {
                     name: shard,
                     kind: "tree",
                     hash: write_tree_node(repository, blobs, true)?,
                 });
             }
             collection_entries.push(TreeEntry {
-                name: namespace,
+                name: state_folder,
                 kind: "tree",
-                hash: write_tree_node(repository, namespace_entries, true)?,
+                hash: write_tree_node(repository, state_entries, true)?,
             });
         }
         root.push(TreeEntry {
@@ -2489,7 +2492,7 @@ fn read_branch_reference(
     )
 }
 
-fn namespace_directory(kind: &str) -> &'static str {
+fn state_directory(kind: &str) -> &'static str {
     match kind {
         "active" => "docs",
         "deleted" => ".deleted",

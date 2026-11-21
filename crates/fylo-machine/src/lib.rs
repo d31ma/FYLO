@@ -673,9 +673,9 @@ impl Session {
         budget: Option<(std::time::Instant, std::time::Duration)>,
     ) -> std::io::Result<std::collections::BTreeMap<String, bool>> {
         let mut names = std::collections::BTreeMap::new();
-        for namespace in [".collections", ".buckets"] {
+        for kind_folder in [".collections", ".buckets"] {
             Self::collect_invocation_names(
-                &root.path().join(namespace),
+                &root.path().join(kind_folder),
                 false,
                 &mut names,
                 budget,

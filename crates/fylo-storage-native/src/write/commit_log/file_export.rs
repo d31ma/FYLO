@@ -27,8 +27,8 @@ impl FileExport {
     ) -> Result<(), NativeStorageError> {
         let shard_width = source.shard_width();
         ensure_directory(root, directory)?;
-        for namespace in ["docs", ".deleted", "index"] {
-            ensure_directory(root, &directory.join(namespace))?;
+        for folder in ["docs", ".deleted", "index"] {
+            ensure_directory(root, &directory.join(folder))?;
         }
         let applier = StepApplier::live(root, directory);
         let mut written = Vec::with_capacity(images.len());
@@ -54,12 +54,12 @@ impl FileExport {
 
     /// Where the file layout keeps `image`, relative to its collection.
     pub(crate) fn relative_path(image: &DocumentImage, shard_width: u32) -> String {
-        let namespace = match image.state {
+        let state_folder = match image.state {
             LocationState::Deleted => ".deleted",
             LocationState::Live | LocationState::Absent => "docs",
         };
         format!(
-            "{namespace}/{}/{}.json",
+            "{state_folder}/{}/{}.json",
             crate::shard_of(&image.id, shard_width),
             image.id
         )
@@ -117,8 +117,8 @@ impl FileExport {
                 directories.insert(parent.to_owned());
             }
         }
-        for namespace in ["docs", ".deleted", "index"] {
-            directories.insert(directory.join(namespace));
+        for folder in ["docs", ".deleted", "index"] {
+            directories.insert(directory.join(folder));
         }
         directories.insert(directory.to_owned());
         for path in directories {

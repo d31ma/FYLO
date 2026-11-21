@@ -754,11 +754,8 @@ impl NativeRoot {
                 words: None,
                 change_lineage: None,
             });
-        let namespace = match descriptor.kind {
-            CollectionKind::Document => ".collections",
-            CollectionKind::File => ".buckets",
-        };
-        let path = self.canonical.join(namespace).join(name);
+        let kind_folder = descriptor.kind.folder_name();
+        let path = self.canonical.join(kind_folder).join(name);
         self.verify_path(&path, ExpectedType::Directory)
             .map_err(|error| Self::named_missing_collection(error, name))?;
         if !NativeCollection::SEGMENTS_SUPPORTED && descriptor.layout == CollectionLayout::Segments
@@ -775,7 +772,7 @@ impl NativeRoot {
             path,
             kind: descriptor.kind,
             layout: descriptor.layout,
-            namespace: namespace.to_owned(),
+            kind_folder: kind_folder.to_owned(),
             shard_width: validate_shard_width(descriptor.shard_width)?,
             previous_shard_widths: descriptor
                 .previous_shard_widths
@@ -831,7 +828,7 @@ impl NativeRoot {
             path: self.canonical.join(".collections").join(name),
             kind: CollectionKind::Document,
             layout: CollectionLayout::Segments,
-            namespace: ".collections".to_owned(),
+            kind_folder: ".collections".to_owned(),
             shard_width: validate_shard_width(descriptor.shard_width)?,
             previous_shard_widths: Vec::new(),
             validation: descriptor.validation,
@@ -1513,14 +1510,14 @@ impl NativeRoot {
         let Some(data_directory) = normal(0) else {
             return false;
         };
-        let Some(namespace) = normal(2) else {
+        let Some(state_folder) = normal(2) else {
             return false;
         };
         let Some(shard) = normal(3) else {
             return false;
         };
         matches!(data_directory, ".collections" | ".buckets")
-            && matches!(namespace, "docs" | ".deleted" | ".metadata")
+            && matches!(state_folder, "docs" | ".deleted" | ".metadata")
             && (1..=MAX_SHARD_WIDTH as usize).contains(&shard.len())
             && shard.bytes().all(|byte| byte.is_ascii_alphanumeric())
     }
@@ -1770,6 +1767,18 @@ pub enum CollectionKind {
     File,
 }
 
+impl CollectionKind {
+    /// The kind folder under a root of the current layout that holds this
+    /// kind of collection: `.collections` or `.buckets`.
+    #[must_use]
+    pub const fn folder_name(self) -> &'static str {
+        match self {
+            Self::Document => ".collections",
+            Self::File => ".buckets",
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CollectionDescriptor {
@@ -1875,7 +1884,7 @@ impl VersionTreeEntry {
         };
         let valid_level = match level {
             VersionTreeLevel::Collection => validate_collection_name(&self.name).is_ok(),
-            VersionTreeLevel::Namespace => {
+            VersionTreeLevel::State => {
                 matches!(self.name.as_str(), "docs" | ".deleted" | ".metadata")
             }
             VersionTreeLevel::Shard => {
@@ -1912,7 +1921,7 @@ enum VersionTreeEntryKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 enum VersionTreeLevel {
     Collection,
-    Namespace,
+    State,
     Shard,
     Blob,
 }
@@ -1920,8 +1929,8 @@ enum VersionTreeLevel {
 impl VersionTreeLevel {
     const fn next(self) -> Self {
         match self {
-            Self::Collection => Self::Namespace,
-            Self::Namespace => Self::Shard,
+            Self::Collection => Self::State,
+            Self::State => Self::Shard,
             Self::Shard | Self::Blob => Self::Blob,
         }
     }
@@ -1996,7 +2005,7 @@ pub struct NativeCollection {
     path: PathBuf,
     kind: CollectionKind,
     layout: CollectionLayout,
-    namespace: String,
+    kind_folder: String,
     shard_width: u32,
     previous_shard_widths: Vec<u32>,
     validation: Option<ValidationMode>,
@@ -2283,7 +2292,7 @@ impl NativeCollection {
         self.root
             .canonical
             .join(".fylo-transactions")
-            .join(&self.namespace)
+            .join(&self.kind_folder)
             .join(&self.name)
             .join("state.json")
     }
@@ -2367,7 +2376,7 @@ impl NativeCollection {
         self.root
             .canonical
             .join(".fylo-transactions")
-            .join(&self.namespace)
+            .join(&self.kind_folder)
             .join(&self.name)
             .join("log")
     }
@@ -2441,10 +2450,11 @@ impl NativeCollection {
         self.document_ids_at(&self.path.join(".deleted"))
     }
 
-    fn document_ids_at(&self, namespace: &Path) -> Result<Vec<String>, NativeStorageError> {
-        self.root.verify_path(namespace, ExpectedType::Directory)?;
+    fn document_ids_at(&self, state_folder: &Path) -> Result<Vec<String>, NativeStorageError> {
+        self.root
+            .verify_path(state_folder, ExpectedType::Directory)?;
         let mut ids = Vec::new();
-        let mut shards = read_dir_sorted(namespace)?;
+        let mut shards = read_dir_sorted(state_folder)?;
         for shard in &mut shards {
             let shard_path = shard.path();
             let file_type = shard.file_type().map_err(NativeStorageError::io)?;
@@ -2539,10 +2549,11 @@ impl NativeCollection {
         self.raw_file_ids_at(&self.path.join(".deleted"))
     }
 
-    fn raw_file_ids_at(&self, namespace: &Path) -> Result<Vec<String>, NativeStorageError> {
-        self.root.verify_path(namespace, ExpectedType::Directory)?;
+    fn raw_file_ids_at(&self, state_folder: &Path) -> Result<Vec<String>, NativeStorageError> {
+        self.root
+            .verify_path(state_folder, ExpectedType::Directory)?;
         let mut ids = BTreeSet::new();
-        for shard in read_dir_sorted(namespace)? {
+        for shard in read_dir_sorted(state_folder)? {
             let shard_path = shard.path();
             let file_type = shard.file_type().map_err(NativeStorageError::io)?;
             if file_type.is_symlink() || !file_type.is_dir() {
@@ -2719,10 +2730,10 @@ impl NativeCollection {
 
     fn read_document_at(
         &self,
-        namespace: &Path,
+        state_folder: &Path,
         identifier: &str,
     ) -> Result<StoredBytes, NativeStorageError> {
-        self.read_document_file(namespace, identifier, |_| (), |_, _| ())
+        self.read_document_file(state_folder, identifier, |_| (), |_, _| ())
             .map(|(stored, (), ())| stored)
     }
 
@@ -2732,12 +2743,12 @@ impl NativeCollection {
     /// attributes once the read passed every check.
     fn read_document_file<T, U>(
         &self,
-        namespace: &Path,
+        state_folder: &Path,
         identifier: &str,
         before: impl FnOnce(&File) -> T,
         after: impl FnOnce(&File, &record_attributes::RecordAttributes) -> U,
     ) -> Result<(StoredBytes, T, U), NativeStorageError> {
-        let (path, (mut file, metadata)) = self.open_document(namespace, identifier)?;
+        let (path, (mut file, metadata)) = self.open_document(state_folder, identifier)?;
         let seen = before(&file);
         let attributes = record_attributes::RecordAttributes::read(&self.root, &file, &path)?;
         let bytes = read_sized(&mut file, metadata.len(), MAX_DOCUMENT_BYTES)?;
@@ -2758,12 +2769,12 @@ impl NativeCollection {
     /// candidate at all, takes the checked lookup that reports it exactly.
     fn open_document(
         &self,
-        namespace: &Path,
+        state_folder: &Path,
         identifier: &str,
     ) -> Result<(PathBuf, (File, Metadata)), NativeStorageError> {
         let filename = format!("{identifier}.json");
         for shard in shard_candidates(identifier, self.shard_width, &self.previous_shard_widths) {
-            let path = namespace.join(shard).join(&filename);
+            let path = state_folder.join(shard).join(&filename);
             match self.root.open_beneath_for_read(&path) {
                 BeneathOpen::Opened(file, metadata) => {
                     let opened =
@@ -2774,17 +2785,17 @@ impl NativeCollection {
                 BeneathOpen::Unavailable => break,
             }
         }
-        self.open_document_by_walk(namespace, identifier, &filename)
+        self.open_document_by_walk(state_folder, identifier, &filename)
     }
 
     fn open_document_by_walk(
         &self,
-        namespace: &Path,
+        state_folder: &Path,
         identifier: &str,
         filename: &str,
     ) -> Result<(PathBuf, (File, Metadata)), NativeStorageError> {
         let path = existing_shard_path(
-            namespace,
+            state_folder,
             identifier,
             filename,
             self.shard_width,
@@ -2849,10 +2860,10 @@ impl NativeCollection {
 
     fn read_raw_file_at(
         &self,
-        namespace: &Path,
+        state_folder: &Path,
         identifier: &str,
     ) -> Result<StoredRawFile, NativeStorageError> {
-        let path = self.find_raw_file_path(namespace, identifier)?;
+        let path = self.find_raw_file_path(state_folder, identifier)?;
         let filename = path_utf8_name(&path, "raw-file")?;
         let extension = validate_raw_extension(filename, identifier)?.to_owned();
         let (mut file, metadata) = self.root.open_file(&path, MAX_RAW_FILE_BYTES)?;
@@ -2903,13 +2914,13 @@ impl NativeCollection {
 
     fn find_raw_file_path(
         &self,
-        namespace: &Path,
+        state_folder: &Path,
         identifier: &str,
     ) -> Result<PathBuf, NativeStorageError> {
-        let mut shard = namespace.join(shard_of(identifier, self.shard_width));
+        let mut shard = state_folder.join(shard_of(identifier, self.shard_width));
         for candidate in shard_candidates(identifier, self.shard_width, &self.previous_shard_widths)
         {
-            let path = namespace.join(candidate);
+            let path = state_folder.join(candidate);
             if path_exists_no_follow(&path)? {
                 shard = path;
                 break;
@@ -4412,21 +4423,21 @@ pub fn shard_candidates(identifier: &str, width: u32, previous: &[u32]) -> Vec<S
 }
 
 fn existing_shard_path(
-    namespace: &Path,
+    state_folder: &Path,
     identifier: &str,
     filename: &str,
     width: u32,
     previous: &[u32],
 ) -> Result<PathBuf, NativeStorageError> {
     let mut candidates = shard_candidates(identifier, width, previous).into_iter();
-    let canonical = namespace
+    let canonical = state_folder
         .join(candidates.next().unwrap_or_default())
         .join(filename);
     if path_exists_no_follow(&canonical)? {
         return Ok(canonical);
     }
     for shard in candidates {
-        let candidate = namespace.join(shard).join(filename);
+        let candidate = state_folder.join(shard).join(filename);
         if path_exists_no_follow(&candidate)? {
             return Ok(candidate);
         }
@@ -4871,12 +4882,12 @@ mod tests {
             format!(r#"{{"entries":[{{"name":"{commit}.json","type":"blob","hash":"{blob}"}}]}}"#)
                 .as_bytes(),
         );
-        let namespace = fixture.write_version_object(
+        let state_tree = fixture.write_version_object(
             format!(r#"{{"entries":[{{"name":"4V","type":"tree","hash":"{bucket}"}}]}}"#)
                 .as_bytes(),
         );
         let collection = fixture.write_version_object(
-            format!(r#"{{"entries":[{{"name":"docs","type":"tree","hash":"{namespace}"}}]}}"#)
+            format!(r#"{{"entries":[{{"name":"docs","type":"tree","hash":"{state_tree}"}}]}}"#)
                 .as_bytes(),
         );
         let root = fixture.write_version_object(

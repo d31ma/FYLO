@@ -70,8 +70,8 @@ readers do not initialize. Worktrees use the repository descriptor and lease.
 Every payload requires a regular private `<payload>.fylo-attrs` manifest using
 the existing sorted attribute-name/base64 map. The reserved
 `user.fylo.record-identity` value is compact UTF-8 JSON
-`["fylo.record-identity.v1",namespace,collection,ttid,sha256]`, encoded as the
-map's canonical base64. Namespace is `.collections` or `.buckets`; SHA-256 binds
+`["fylo.record-identity.v1",kindFolder,collection,ttid,sha256]`, encoded as the
+map's canonical base64. The kind folder is `.collections` or `.buckets`; SHA-256 binds
 persisted payload bytes, including ciphertext. Identity excludes the root,
 shard, deletion placement and worktree path. Attribute removal retains this
 binding; a mandatory manifest never becomes literal `{}`. The binding is

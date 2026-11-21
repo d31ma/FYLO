@@ -49,9 +49,9 @@ impl NativeCollection {
         &self,
         identifier: &str,
     ) -> Result<StoredBytes, NativeStorageError> {
-        let namespace = self.path.join(Self::LIVE_FOLDER);
+        let live_folder = self.path.join(Self::LIVE_FOLDER);
         let Some(reading) = self.tier_reading(identifier) else {
-            return self.read_document_at(&namespace, identifier);
+            return self.read_document_at(&live_folder, identifier);
         };
         let cached = self.cached_document(&reading, identifier);
         cached.map_or_else(|| self.read_and_keep(&reading, identifier), Ok)
@@ -97,7 +97,7 @@ impl NativeCollection {
     /// later change to what names a collection (ADR 0030, layout work)
     /// touches only this helper.
     pub(crate) fn cache_name(&self) -> String {
-        format!("{}/{}", self.namespace, self.name)
+        format!("{}/{}", self.kind_folder, self.name)
     }
 
     fn tier_reading(&self, identifier: &str) -> Option<TierReading<'_>> {
@@ -146,7 +146,7 @@ impl NativeCollection {
         if self.root.profile == FilesystemProfile::Native {
             return entry.manifest.is_empty();
         }
-        let record = [self.namespace.as_str(), self.name.as_str(), identifier];
+        let record = [self.kind_folder.as_str(), self.name.as_str(), identifier];
         SidecarAttributes::decode(&entry.manifest)
             .is_ok_and(|values| SidecarAttributes::binds(&values, record, &entry.payload))
     }
@@ -196,8 +196,8 @@ impl NativeCollection {
     /// The digest of the document's file stamps on the root now: its
     /// payload and, in the EFS profile, its manifest.
     fn document_stamp(&self, identifier: &str, path: &Path) -> Option<[u8; 32]> {
-        let namespace = self.path.join(Self::LIVE_FOLDER);
-        let (opened, (file, _)) = self.open_document(&namespace, identifier).ok()?;
+        let live_folder = self.path.join(Self::LIVE_FOLDER);
+        let (opened, (file, _)) = self.open_document(&live_folder, identifier).ok()?;
         let payload = FileStamp::of_file(&file).ok()?;
         (opened == path).then_some(())?;
         self.record_digest(payload, &opened)
@@ -228,10 +228,10 @@ impl NativeCollection {
         reading: &TierReading<'_>,
         identifier: &str,
     ) -> Result<StoredBytes, NativeStorageError> {
-        let namespace = self.path.join(Self::LIVE_FOLDER);
+        let live_folder = self.path.join(Self::LIVE_FOLDER);
         let opened = |file: &fylo_vfs::File| FileStamp::of_file(file).ok();
         let (stored, opened, check) =
-            self.read_document_file(&namespace, identifier, opened, RecordCheck::of)?;
+            self.read_document_file(&live_folder, identifier, opened, RecordCheck::of)?;
         let entry = self.entry_for(reading, &stored, (opened, check), identifier);
         if let Some(entry) = entry {
             self.keep(reading, &entry);

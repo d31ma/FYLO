@@ -571,8 +571,8 @@ type FileTree = BTreeMap<String, (Vec<u8>, u128, Vec<(String, Vec<u8>)>)>;
 
 fn file_tree(root: &std::path::Path) -> FileTree {
     let mut tree = BTreeMap::new();
-    for namespace in ["docs", ".deleted"] {
-        let base = root.join(".collections/items").join(namespace);
+    for state_folder in ["docs", ".deleted"] {
+        let base = root.join(".collections/items").join(state_folder);
         for shard in fs::read_dir(&base).unwrap() {
             for entry in fs::read_dir(shard.unwrap().path()).unwrap() {
                 let path = entry.unwrap().path();
@@ -820,8 +820,8 @@ fn export_writes_one_file_per_document(medium: Medium) {
     let report = writer.export_collection("items", &out).unwrap();
     assert_eq!((report.documents, report.deleted), (11, 1));
     let mut files = 0;
-    for namespace in ["docs", ".deleted"] {
-        for shard in fs::read_dir(out.join(namespace)).unwrap() {
+    for state_folder in ["docs", ".deleted"] {
+        for shard in fs::read_dir(out.join(state_folder)).unwrap() {
             files += fs::read_dir(shard.unwrap().path()).unwrap().count();
         }
     }
