@@ -700,3 +700,53 @@ and the second answers all 700 reads from the tier but each hit still costs
 about 0.25 ms more than reading the local disk. This is why `auto` keeps
 local roots off; on NFS a hit saves about 18 ms (section "Slice R"), which
 S4 measures.
+
+## Slice S4: EFS-profile roots and `auto` (built 2026-11-21)
+
+A root opened with the EFS profile now reads through the temp tier, and
+`auto` turns the tier on for it when rules 2 to 5 of 4.1 hold. The reason
+`read path not built` is gone.
+
+**Entries (format v2).** An entry also keeps the record's verified manifest
+(the `.fylo-attrs` file as the root read decoded it), after the payload and
+under the same body checksum; it is empty in the native profile. Version 1
+entries (slice S3) are refused and replaced.
+
+**Hit.** As 3.2, and in the EFS profile the hit also checks, from the entry
+alone, that the manifest binds the payload to this record (the
+record-identity value: format, namespace, collection, id and the payload's
+SHA-256), as a root read does (ADR 0010). It makes no file call on the
+root.
+
+**Document stamp.** In the EFS profile it is the digest of the payload's
+and the manifest's file stamps. Both are taken right after each file is
+opened, before it is read, and must be the same once the read passed its
+checks, or no entry is kept. Revalidation opens both files on the root and
+compares the digest.
+
+**One place for names.** The tier keys a collection's entries by
+`NativeCollection::cache_name` (namespace and name) and its stamp reads
+`generation_state_path` and `incarnation_path`, so a later change to what
+names a collection touches only those helpers.
+
+**The 30% go rule** (measured 2026-11-21, release build, EFS-profile root,
+1,000 documents of about 1 KB, two shared `exec --loop` processes one after
+the other, each reading 200 random documents and 10 queries of 50 matches;
+p50 in ms, two rounds; Mac load 18 to 22; the `auto` rows are the second
+process, all reads answered from the tier):
+
+| Root | `getDoc` off | `getDoc` auto | `findDocs` off | `findDocs` auto |
+| --- | --- | --- | --- | --- |
+| ANVIL, NFSv3 over Thunderbolt | 18.6 / 14.8 | 9.9 / 10.2 (35 to 45% less) | 416 / 357 | 111 / 66 (70 to 80% less) |
+| CITADEL, NFSv4 over Ethernet | 27.4 / 17.5 | 13.8 / 9.0 (about 50% less) | 1,093 / 801 | 185 / 163 (about 80% less) |
+
+Both pass the 30% rule. A hit still costs about 9 to 14 ms on NFS: the
+per-request work (the lease, `state.json`, the collection open) remains.
+A real Lambda + EFS run is still needed before this ADR is Accepted.
+
+**Tests.** The machine tests of S3 now also run on an EFS-profile root (16
+more); the CLI tests add an EFS process test, an `exec --invocation` test,
+and an opt-in test on real network mounts
+(`FYLO_TEST_NETWORK_ROOTS`, `--run-ignored only`) where the default `auto`
+turns the tier on; it passed on both mounts above. Unit tests cover the
+binding check and entry format v2.
