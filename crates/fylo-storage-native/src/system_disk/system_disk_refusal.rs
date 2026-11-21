@@ -61,10 +61,9 @@ impl SystemDiskRefusal {
     /// when FYLO did not look or could not tell.
     pub(crate) fn system_disk(&self) -> Option<bool> {
         match self {
-            Self::NotVolumeRoot { .. } => None,
             Self::SystemDisk { .. } => Some(true),
             Self::Memory { .. } | Self::ImageOnSystemDisk { .. } => Some(false),
-            Self::CouldNotTell { .. } | Self::Setting { .. } => None,
+            Self::NotVolumeRoot { .. } | Self::CouldNotTell { .. } | Self::Setting { .. } => None,
             Self::OutsideApp { inner, .. } => inner.system_disk(),
         }
     }
