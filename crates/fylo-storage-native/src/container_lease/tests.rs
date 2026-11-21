@@ -238,26 +238,17 @@ fn a_held_lease_keeps_a_locked_marker_until_it_is_released() {
     let (_guard, path) = database("vdbx-lease-marker");
     let first = ContainerLease::acquire(&path, FAST, Duration::ZERO).expect("acquire");
     let owner = owner_of(&path, 1);
-    assert!(markers_named(
-        &owner,
-        &fylo_test_support::TestFolder::path()
-    ));
+    assert!(markers_named(&owner, &std::env::temp_dir()));
     // This process's own live owner is not taken for a stopped one.
     assert!(!super::owner_stopped(
         &std::fs::read(path.with_file_name("app.vdbx.lease.1")).expect("read")
     ));
     first.release().expect("release");
-    assert!(!markers_named(
-        &owner,
-        &fylo_test_support::TestFolder::path()
-    ));
+    assert!(!markers_named(&owner, &std::env::temp_dir()));
     let second = ContainerLease::acquire(&path, FAST, Duration::ZERO).expect("acquire");
     let owner = owner_of(&path, 2);
     drop(second);
-    assert!(!markers_named(
-        &owner,
-        &fylo_test_support::TestFolder::path()
-    ));
+    assert!(!markers_named(&owner, &std::env::temp_dir()));
 }
 
 #[test]
@@ -266,10 +257,7 @@ fn a_killed_owner_on_this_host_is_taken_over_at_once_and_a_live_one_is_not() {
     let (_guard, path) = database("vdbx-lease-killed");
     let child = holder(&path, None);
     let owner = owner_of(&path, 1);
-    assert!(markers_named(
-        &owner,
-        &fylo_test_support::TestFolder::path()
-    ));
+    assert!(markers_named(&owner, &std::env::temp_dir()));
     // Alive, it keeps the lease for the whole takeover time.
     assert_eq!(
         busy(ContainerLease::acquire(
@@ -290,10 +278,7 @@ fn a_killed_owner_on_this_host_is_taken_over_at_once_and_a_live_one_is_not() {
     assert!(started.elapsed() < Duration::from_secs(1));
     assert_eq!(lease.generation(), 2);
     assert_eq!(lease_files(&path), vec!["app.vdbx.lease.2"]);
-    assert!(!markers_named(
-        &owner,
-        &fylo_test_support::TestFolder::path()
-    ));
+    assert!(!markers_named(&owner, &std::env::temp_dir()));
 }
 
 #[test]
@@ -322,8 +307,8 @@ fn a_killed_owner_whose_marker_this_host_cannot_see_is_waited_out() {
 }
 
 fn require_byte_range_locks() {
-    let filesystem = crate::FilesystemInfo::of_directory(&fylo_test_support::TestFolder::path())
-        .expect("probe TMPDIR");
+    let filesystem =
+        crate::FilesystemInfo::of_directory(&std::env::temp_dir()).expect("probe TMPDIR");
     assert!(
         filesystem.byte_range_locks_qualified(),
         "this test needs byte-range locks, which FYLO does not trust on TMPDIR's {} filesystem; \
