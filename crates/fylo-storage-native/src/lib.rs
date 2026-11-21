@@ -107,6 +107,7 @@ mod tier_reads;
 mod tier_reads_wasm;
 mod validation_mode;
 mod verified_manifest;
+mod volume_root_rule;
 mod word_witness;
 mod write;
 mod writer_session;

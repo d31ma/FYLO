@@ -69,7 +69,8 @@
   opt-out waives it, and app mode admits the app's own folder. The
   handshake gains `storage.volume`, the mount point. Network roots stay
   refused with `EREMOTEROOT` until the lease and the probe of ADR 0033
-  land.
+  land. The mount-point rule ships switched off and slice L1-5 turns it on
+  with the namespaces; until then only `ESYSTEMDISK` applies.
 
 ### Changed
 

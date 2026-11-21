@@ -15,6 +15,7 @@ use super::root_placement::RootPlacement;
 use super::root_role::RootRole;
 use super::system_disk_refusal::SystemDiskRefusal;
 use super::volume_root::VolumeRoot;
+use crate::volume_root_rule::VolumeRootRule;
 
 /// The rule that a server root lives directly below the mount point of a
 /// drive that is not the system disk (ADR 0032, ADR 0033 section 5). It
@@ -64,7 +65,9 @@ impl SystemDiskRule {
             RootPlacement::AppOwned(app) if DiskReader::MOBILE => Self::mobile(path, Some(app)),
             _ if DiskReader::MOBILE => Self::mobile(path, None),
             RootPlacement::AppOwned(app) => Self::app_owned(path, app, role),
-            RootPlacement::DataDisk => Self::data_disk(&DiskReader, path, role),
+            RootPlacement::DataDisk => {
+                Self::data_disk(&DiskReader, path, role, VolumeRootRule::ENFORCED)
+            }
         }
     }
 
@@ -114,33 +117,40 @@ impl SystemDiskRule {
         if folders.contains(path, DiskReader::owned_by_process) {
             return Ok(PlacementReport::admitted(None, PlacementKind::AppOwned));
         }
-        Self::data_disk(&DiskReader, path, role).map_err(|inner| SystemDiskRefusal::OutsideApp {
-            app: app.as_str().to_owned(),
-            folders: folders.describe(),
-            inner: Box::new(inner),
+        Self::data_disk(&DiskReader, path, role, VolumeRootRule::ENFORCED).map_err(|inner| {
+            SystemDiskRefusal::OutsideApp {
+                app: app.as_str().to_owned(),
+                folders: folders.describe(),
+                inner: Box::new(inner),
+            }
         })
     }
 
     /// The drive rule, in the order of ADR 0033 section 5.2: the mount
-    /// point first, then the disk.
+    /// point first, then the disk. `volume_rule` is
+    /// [`VolumeRootRule::ENFORCED`]; tests pass `true` to check the
+    /// mount-point rule before it is switched on.
     fn data_disk(
         disks: &dyn DiskSource,
         path: &Path,
         role: RootRole,
+        volume_rule: bool,
     ) -> Result<PlacementReport, SystemDiskRefusal> {
-        Self::volume(disks, path, role)?;
+        Self::volume(disks, path, role, volume_rule)?;
         Self::drive(disks, path)
     }
 
-    /// A worktree's repository root carries the mount-point test.
+    /// A worktree's repository root carries the mount-point test, and the
+    /// test runs only while the rule is switched on.
     fn volume(
         disks: &dyn DiskSource,
         path: &Path,
         role: RootRole,
+        volume_rule: bool,
     ) -> Result<(), SystemDiskRefusal> {
-        match role {
-            RootRole::Primary => VolumeRoot::check(disks, path).map(drop),
-            RootRole::Worktree => Ok(()),
+        match (role, volume_rule) {
+            (RootRole::Primary, true) => VolumeRoot::check(disks, path).map(drop),
+            _ => Ok(()),
         }
     }
 
@@ -346,7 +356,7 @@ mod tests {
     ];
 
     fn verdict(disks: &FakeDisks, path: &str) -> Result<PlacementKind, SystemDiskRefusal> {
-        SystemDiskRule::data_disk(disks, Path::new(path), RootRole::Primary)
+        SystemDiskRule::data_disk(disks, Path::new(path), RootRole::Primary, true)
             .map(|report| report.placement.unwrap())
     }
 
@@ -377,11 +387,28 @@ mod tests {
     fn a_worktree_inside_its_repository_is_judged_by_its_disk_only() {
         let disks = FakeDisks::new(IMAGES);
         let worktree = Path::new("/data/root/.fylo-vcs/worktrees/topic");
-        let report = SystemDiskRule::data_disk(&disks, worktree, RootRole::Worktree).unwrap();
+        let report = SystemDiskRule::data_disk(&disks, worktree, RootRole::Worktree, true).unwrap();
         assert_eq!(report.placement, Some(PlacementKind::DataDisk));
         let system = Path::new("/system/root/.fylo-vcs/worktrees/topic");
         assert!(matches!(
-            SystemDiskRule::data_disk(&disks, system, RootRole::Worktree),
+            SystemDiskRule::data_disk(&disks, system, RootRole::Worktree, true),
+            Err(SystemDiskRefusal::SystemDisk { .. })
+        ));
+    }
+
+    #[test]
+    fn while_the_rule_is_off_a_nested_root_is_judged_by_its_disk_only() {
+        let disks = FakeDisks::new(IMAGES);
+        let nested = Path::new("/data/roots/job/root");
+        let report = SystemDiskRule::data_disk(&disks, nested, RootRole::Primary, false).unwrap();
+        assert_eq!(report.placement, Some(PlacementKind::DataDisk));
+        assert!(matches!(
+            SystemDiskRule::data_disk(
+                &disks,
+                Path::new("/system/Users/me/root"),
+                RootRole::Primary,
+                false
+            ),
             Err(SystemDiskRefusal::SystemDisk { .. })
         ));
     }
@@ -399,7 +426,8 @@ mod tests {
     fn a_root_directly_below_a_network_share_is_admitted_without_a_disk() {
         let disks = FakeDisks::new(IMAGES);
         let report =
-            SystemDiskRule::data_disk(&disks, Path::new("/share/root"), RootRole::Primary).unwrap();
+            SystemDiskRule::data_disk(&disks, Path::new("/share/root"), RootRole::Primary, true)
+                .unwrap();
         assert_eq!(report.placement, Some(PlacementKind::DataDisk));
         assert_eq!(report.system_disk, None);
     }

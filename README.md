@@ -1709,7 +1709,9 @@ mount point above it. FYLO checks the mount point first, then the disk. The
 handshake reports the mount point of the default root in `storage.volume`
 (`null` without a default root, or when FYLO cannot tell). Inside a virtual
 machine or a container FYLO sees only that machine's own disks and mounts:
-the operator of the host decides where a virtual disk's file lives.
+the operator of the host decides where a virtual disk's file lives. On
+`develop` this mount-point rule is still switched off; it turns on with
+namespaces (ADR 0033 slice L1-5).
 
 Two settings allow more:
 
