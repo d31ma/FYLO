@@ -297,15 +297,15 @@ fn a_taken_over_owner_stops_with_lease_lost_even_if_the_record_comes_back() {
     successor["generation"] = serde_json::json!(2);
     fixture.write_record(&successor);
     std::thread::sleep(TakeoverFixture::HEARTBEAT * 5);
-    std::fs::write(fixture.record_path(), original).unwrap();
-    assert_eq!(
-        lease.assert_owned().unwrap_err().code(),
-        NativeStorageErrorCode::RootLeaseLost
-    );
     assert_eq!(
         fixture.record()["ownerId"],
         TakeoverFixture::OTHER_OWNER,
         "the lost owner wrote again"
+    );
+    std::fs::write(fixture.record_path(), original).unwrap();
+    assert_eq!(
+        lease.assert_owned().unwrap_err().code(),
+        NativeStorageErrorCode::RootLeaseLost
     );
 }
 

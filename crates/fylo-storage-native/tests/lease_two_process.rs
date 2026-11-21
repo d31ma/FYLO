@@ -27,7 +27,7 @@ const HEARTBEAT_SECONDS: &str = "0.05";
 const TAKEOVER_SECONDS: &str = "1";
 const HEARTBEAT: Duration = Duration::from_millis(50);
 const TAKEOVER: Duration = Duration::from_secs(1);
-const READY_WAIT: Duration = Duration::from_secs(60);
+const READY_WAIT: Duration = Duration::from_mins(1);
 
 struct Scratch {
     folder: PathBuf,
@@ -260,7 +260,9 @@ fn a_live_owner_on_another_machine_whose_kernel_lock_was_lost_keeps_the_root() {
 fn a_paused_owner_is_taken_over_and_stops_with_lease_lost_before_it_writes() {
     let scratch = Scratch::new("paused");
     create_items(&scratch.root);
-    let mut child = start_child(&scratch, "hold", Some("machine-b"), &[]);
+    // On one machine a paused process still holds its kernel lock; on
+    // another machine that lock is not seen, so the child gives it up.
+    let mut child = start_child(&scratch, "lose-kernel-lock", Some("machine-b"), &[]);
     wait_for(&scratch.marker("ready"));
     let generation = scratch.generation();
     signal(&child, "STOP");
@@ -441,10 +443,11 @@ fn a_root_shared_with_another_machine_has_one_owner_at_a_time() {
     );
     drop(successor);
     RemoteMachine::clear_markers(&scratch);
-    let _second = remote.start_child(&scratch);
+    let mut second = remote.start_child(&scratch);
     wait_for(&scratch.marker("ready"));
     let pid = fs::read_to_string(scratch.marker("ready")).unwrap();
     remote.signal(&pid, "KILL");
+    second.wait().unwrap();
     let (taken, waited) = timed(|| RemoteMachine::acquire(&scratch.root).unwrap());
     println!("killed remote owner: taken over after {waited:?}");
     assert!(waited >= RemoteMachine::TAKEOVER, "waited only {waited:?}");

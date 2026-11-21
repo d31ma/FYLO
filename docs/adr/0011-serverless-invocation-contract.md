@@ -78,6 +78,11 @@ count alone does not establish uniqueness. Remove only the currently verified
 owner metadata while holding the advisory lock, sync through the existing
 filesystem primitive, and check unlock. Preserve the kernel lock inode.
 Legacy `Drop` retains its existing diagnostic metadata and unlock behavior.
+(Amended by ADR 0033 section 4, slice L1-3: `release_checked` and `Drop`
+now mark the verified lease record `released` instead of removing it or
+leaving it held, so the generation keeps growing and the next owner claims at
+once. The heartbeat and fencing of ADR 0033 replace "no lease TTL, fencing
+token" below.)
 
 Return response bytes only after checked finalization. A domain failure may
 return a bounded machine failure frame after successful teardown. Ownership,

@@ -65,10 +65,17 @@ impl Fixture {
             .join(".root.fylo-root-owner.lock.json")
     }
 
+    fn record_state(&self) -> Value {
+        let record: Value =
+            serde_json::from_slice(&fs::read(self.metadata_path()).unwrap()).unwrap();
+        record["state"].clone()
+    }
+
     fn assert_released(&self, profile: FilesystemProfile) {
-        assert!(
-            !self.metadata_path().exists(),
-            "checked completion left owner metadata"
+        assert_eq!(
+            self.record_state(),
+            json!("released"),
+            "checked completion left the lease record held"
         );
         let contender = RootLease::acquire_with_profile(&self.root, profile).unwrap();
         assert!(contender.kernel_enforced());
@@ -888,7 +895,7 @@ fn existing_native_streaming_accepts_multiple_frames_and_preserves_legacy_defaul
 }
 
 #[test]
-fn unique_checked_release_removes_its_owner_metadata_and_admits_an_alias_contender() {
+fn unique_checked_release_marks_its_lease_record_released_and_admits_an_alias_contender() {
     let fixture = Fixture::new();
     let alias = fixture.parent.join("alias");
     symlink(&fixture.root, &alias).unwrap();
@@ -896,7 +903,7 @@ fn unique_checked_release_removes_its_owner_metadata_and_admits_an_alias_contend
     assert!(lease.kernel_enforced());
     let lock_path = fixture.metadata_path().with_extension("");
     lease.release_checked().unwrap();
-    assert!(!fixture.metadata_path().exists());
+    assert_eq!(fixture.record_state(), json!("released"));
     assert!(
         lock_path.is_file(),
         "checked release removed the shared lock inode"
@@ -935,7 +942,7 @@ fn checked_release_preserves_foreign_owner_metadata_on_ownership_loss() {
     let lease = RootLease::acquire(&fixture.root).unwrap();
     let mut owner: Value =
         serde_json::from_slice(&fs::read(fixture.metadata_path()).unwrap()).unwrap();
-    owner["owner"] = json!("foreign-generation-must-remain");
+    owner["ownerId"] = json!("0123456789abcdef0123456789abcdef");
     let foreign = serde_json::to_vec(&owner).unwrap();
     fs::write(fixture.metadata_path(), &foreign).unwrap();
     assert_eq!(
@@ -985,12 +992,11 @@ fn checked_release_fails_closed_on_missing_corrupt_or_symlinked_owner_metadata()
 }
 
 #[test]
-fn legacy_drop_still_leaves_diagnostic_metadata_and_allows_the_next_owner() {
+fn drop_marks_the_lease_record_released_and_allows_the_next_owner() {
     let fixture = Fixture::new();
     let lease = RootLease::acquire(&fixture.root).unwrap();
-    let before = fs::read(fixture.metadata_path()).unwrap();
     drop(lease);
-    assert_eq!(fs::read(fixture.metadata_path()).unwrap(), before);
+    assert_eq!(fixture.record_state(), json!("released"));
     RootLease::acquire(&fixture.root)
         .unwrap()
         .release_checked()

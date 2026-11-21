@@ -79,7 +79,7 @@ fn seeded(root: &Path) -> NativeWriteRoot {
         put(&writer, number);
     }
     let options = PutRawFileOptions {
-        key: "photos/one.bin".into(),
+        key: "/photos/one.bin".into(),
         extension: ".bin".into(),
         ..PutRawFileOptions::default()
     };
@@ -238,7 +238,7 @@ mod snapshots {
     const CHILD: &str = "FYLO_CRASH_RECOVERY_CHILD";
     const LOG: &str = "FYLO_CRASH_RECOVERY_LOG";
     const SNAPSHOTS: usize = 6;
-    const LOAD_WAIT: Duration = Duration::from_secs(60);
+    const LOAD_WAIT: Duration = Duration::from_mins(1);
 
     /// The writer of the snapshot test: puts documents one after another and
     /// appends each id to the log once its put returned. Does nothing in an
