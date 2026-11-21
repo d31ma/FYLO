@@ -1,5 +1,4 @@
 mod store_batch_write;
-mod store_change;
 mod store_entity;
 mod store_failure;
 mod store_operations;

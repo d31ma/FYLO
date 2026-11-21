@@ -1,4 +1,6 @@
-use fylo_engine::{ReadDocument, ReadOnlyEngine, StoreOverlay, StoreScroll};
+use fylo_engine::{
+    EngineError, ReadDocument, ReadOnlyEngine, StoreChange, StoreOverlay, StoreScroll,
+};
 use fylo_query::{StorePage, StoreQuery, StoreScrollPage};
 use serde_json::{Map, Value};
 
@@ -6,7 +8,8 @@ use super::store_failure::StoreFailure;
 use crate::MachineError;
 
 /// The documents a Store operation sees: the committed documents, with the
-/// writes of its transaction laid over them when it runs inside one.
+/// writes of its transaction laid over them when it runs inside one. Every
+/// read and plan goes through the engine's Store plan.
 pub(crate) struct StoreView<'a> {
     engine: ReadOnlyEngine,
     overlay: &'a StoreOverlay,
@@ -17,17 +20,12 @@ impl<'a> StoreView<'a> {
         Self { engine, overlay }
     }
 
-    /// The fields of the document `id`, or `None` when it does not exist. A
-    /// missing collection stays `ENATIVE_NOT_FOUND`.
     pub(crate) fn record(
         &self,
         collection: &str,
         id: &str,
     ) -> Result<Option<Map<String, Value>>, MachineError> {
-        match self.overlay.state(id) {
-            Some(fields) => Ok(fields.cloned()),
-            None => self.committed_record(collection, id),
-        }
+        Self::checked(self.engine.store_record(collection, id, self.overlay))
     }
 
     pub(crate) fn find(
@@ -36,9 +34,10 @@ impl<'a> StoreView<'a> {
         query: &StoreQuery,
         page: StorePage,
     ) -> Result<Vec<ReadDocument>, MachineError> {
-        self.engine
-            .store_find(collection, query, page, self.overlay)
-            .map_err(|error| StoreFailure::engine(&error))
+        Self::checked(
+            self.engine
+                .store_find(collection, query, page, self.overlay),
+        )
     }
 
     pub(crate) fn scroll(
@@ -47,15 +46,14 @@ impl<'a> StoreView<'a> {
         query: &StoreQuery,
         page: &StoreScrollPage,
     ) -> Result<StoreScroll, MachineError> {
-        self.engine
-            .store_scroll(collection, query, page, self.overlay)
-            .map_err(|error| StoreFailure::engine(&error))
+        Self::checked(
+            self.engine
+                .store_scroll(collection, query, page, self.overlay),
+        )
     }
 
     pub(crate) fn count(&self, collection: &str, query: &StoreQuery) -> Result<u64, MachineError> {
-        self.engine
-            .store_count(collection, query, self.overlay)
-            .map_err(|error| StoreFailure::engine(&error))
+        Self::checked(self.engine.store_count(collection, query, self.overlay))
     }
 
     pub(crate) fn exists(
@@ -63,35 +61,54 @@ impl<'a> StoreView<'a> {
         collection: &str,
         query: &StoreQuery,
     ) -> Result<bool, MachineError> {
-        self.engine
-            .store_exists(collection, query, self.overlay)
-            .map_err(|error| StoreFailure::engine(&error))
+        Self::checked(self.engine.store_exists(collection, query, self.overlay))
     }
 
-    pub(crate) fn matching_ids(
+    pub(crate) fn plan_save(
         &self,
         collection: &str,
-        query: &StoreQuery,
-    ) -> Result<Vec<String>, MachineError> {
-        self.engine
-            .store_matching_ids(collection, query, self.overlay)
-            .map_err(|error| StoreFailure::engine(&error))
+        entity: (&str, Map<String, Value>),
+    ) -> Result<StoreChange, MachineError> {
+        Self::checked(
+            self.engine
+                .store_plan_save(collection, entity, self.overlay),
+        )
     }
 
-    fn committed_record(
+    pub(crate) fn plan_patch(
+        &self,
+        collection: &str,
+        changes: (&str, &Map<String, Value>),
+    ) -> Result<Option<StoreChange>, MachineError> {
+        Self::checked(
+            self.engine
+                .store_plan_patch(collection, changes, self.overlay),
+        )
+    }
+
+    pub(crate) fn plan_delete_by_id(
         &self,
         collection: &str,
         id: &str,
-    ) -> Result<Option<Map<String, Value>>, MachineError> {
-        match self.engine.get(collection, id) {
-            Ok(record) => Ok(Some(record.document.fields().clone())),
-            Err(error) if self.is_missing_document(&error, collection) => Ok(None),
-            Err(error) => Err(StoreFailure::engine(&error)),
-        }
+    ) -> Result<Option<StoreChange>, MachineError> {
+        Self::checked(
+            self.engine
+                .store_plan_delete_by_id(collection, id, self.overlay),
+        )
     }
 
-    fn is_missing_document(&self, error: &fylo_engine::EngineError, collection: &str) -> bool {
-        let collection_present = self.engine.collection_kind(collection).is_ok();
-        StoreFailure::is_missing(error) && collection_present
+    pub(crate) fn plan_delete(
+        &self,
+        collection: &str,
+        query: &StoreQuery,
+    ) -> Result<StoreChange, MachineError> {
+        Self::checked(
+            self.engine
+                .store_plan_delete(collection, query, self.overlay),
+        )
+    }
+
+    fn checked<T>(outcome: Result<T, EngineError>) -> Result<T, MachineError> {
+        outcome.map_err(|error| StoreFailure::engine(&error))
     }
 }

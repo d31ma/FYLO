@@ -1,8 +1,7 @@
-use fylo_engine::{EngineError, StoreOverlay, WriteEngine};
+use fylo_engine::{StoreChange, StoreOverlay};
 use fylo_query::StoreQuery;
 use serde_json::{Value, json};
 
-use super::store_change::StoreChange;
 use super::store_entity::StoreEntity;
 use super::store_failure::StoreFailure;
 use super::store_outcome::StoreOutcome;
@@ -223,12 +222,9 @@ impl Session {
             Some(id) => id,
             None => self.store_new_id(store, require_existing)?,
         };
-        let existed = view.record(store.collection(), &id)?.is_some();
-        StoreFailure::require_existing(store.collection(), &id, existed, require_existing)?;
-        Ok(StoreOutcome::written(
-            &id,
-            StoreChange::put(&id, fields, existed),
-        ))
+        let change = view.plan_save(store.collection(), (&id, fields))?;
+        StoreFailure::require_existing(store.collection(), &id, &change, require_existing)?;
+        Ok(StoreOutcome::written(&id, change))
     }
 
     fn store_new_id(
@@ -251,14 +247,10 @@ impl Session {
         view: &StoreView<'_>,
     ) -> Result<StoreOutcome, MachineError> {
         let id = store.id()?;
-        let changes = store.object("fields")?;
-        let Some(mut fields) = view.record(store.collection(), id)? else {
-            return Ok(StoreOutcome::value(Value::Null));
-        };
-        fields.extend(changes.clone());
-        Ok(StoreOutcome::written(
-            id,
-            StoreChange::put(id, fields, true),
+        let planned = view.plan_patch(store.collection(), (id, store.object("fields")?))?;
+        Ok(planned.map_or_else(
+            || StoreOutcome::value(Value::Null),
+            |change| StoreOutcome::written(id, change),
         ))
     }
 
@@ -266,21 +258,19 @@ impl Session {
         store: &StoreRequest<'_>,
         view: &StoreView<'_>,
     ) -> Result<StoreOutcome, MachineError> {
-        let id = store.id()?;
-        if view.record(store.collection(), id)?.is_none() {
-            return Ok(StoreOutcome::value(Value::from(0)));
-        }
-        let change = StoreChange::delete(vec![id.to_owned()]);
-        Ok(StoreOutcome::counted(Value::from(1), change))
+        let planned = view.plan_delete_by_id(store.collection(), store.id()?)?;
+        Ok(planned.map_or_else(
+            || StoreOutcome::value(Value::from(0)),
+            |change| StoreOutcome::counted(Value::from(1), change),
+        ))
     }
 
     fn store_delete(
         store: &StoreRequest<'_>,
         view: &StoreView<'_>,
     ) -> Result<StoreOutcome, MachineError> {
-        let ids = view.matching_ids(store.collection(), &store.query()?)?;
-        let deleted = Value::from(ids.len());
-        Ok(StoreOutcome::counted(deleted, StoreChange::delete(ids)))
+        let change = view.plan_delete(store.collection(), &store.query()?)?;
+        Ok(StoreOutcome::counted(Value::from(change.deleted()), change))
     }
 
     fn store_write(
@@ -291,45 +281,15 @@ impl Session {
         let Some(change) = change else {
             return Ok(());
         };
-        let writer = self.write_engine(store.frame())?;
-        Self::store_apply(&writer, store.collection(), change)
+        self.write_engine(store.frame())?
+            .store_apply(store.collection(), change)
             .map_err(|error| StoreFailure::engine(&error))
-    }
-
-    fn store_apply(
-        writer: &WriteEngine,
-        collection: &str,
-        change: &StoreChange,
-    ) -> Result<(), EngineError> {
-        match change {
-            StoreChange::Put {
-                id,
-                fields,
-                existed: true,
-            } => writer.patch_document(collection, id, fields.clone()),
-            StoreChange::Put {
-                id,
-                fields,
-                existed: false,
-            } => writer.put_document(collection, id, fields.clone()),
-            StoreChange::Delete { ids } => writer.store_delete_documents(collection, ids).map(drop),
-        }
     }
 
     fn store_hold(
         transaction: &mut StoreTransaction,
         change: Option<&StoreChange>,
     ) -> Result<(), MachineError> {
-        match change {
-            None => Ok(()),
-            Some(StoreChange::Put {
-                id,
-                fields,
-                existed,
-            }) => transaction.record_put(id, fields.clone(), *existed),
-            Some(StoreChange::Delete { ids }) => ids
-                .iter()
-                .try_for_each(|id| transaction.record_delete(id, true)),
-        }
+        change.map_or(Ok(()), |change| transaction.hold(change))
     }
 }

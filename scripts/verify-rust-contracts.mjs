@@ -1,8 +1,8 @@
-import { access, readFile } from 'node:fs/promises'
+import { access, readdir, readFile } from 'node:fs/promises'
 
-const MACHINE_PROTOCOL_VERSION = 1
-const operations = JSON.parse(await readFile('api/machine/v1/operations.json', 'utf8'))
-const schema = JSON.parse(await readFile('api/machine/v1/schema.json', 'utf8'))
+const MACHINE_PROTOCOL_VERSION = 2
+const operations = JSON.parse(await readFile('api/machine/v2/operations.json', 'utf8'))
+const schema = JSON.parse(await readFile('api/machine/v2/schema.json', 'utf8'))
 const errors = JSON.parse(await readFile('api/errors/v1.json', 'utf8'))
 const queueSchema = JSON.parse(await readFile('api/queue/v1/schema.json', 'utf8'))
 const oracleReleases = JSON.parse(await readFile('api/oracle/v1/releases.json', 'utf8'))
@@ -21,7 +21,15 @@ const nativeClients = await Promise.all(
         'clients/dart/fylo.dart'
     ].map(async (path) => [path, await readFile(path, 'utf8')])
 )
-const machineSource = await readFile('crates/fylo-machine/src/lib.rs', 'utf8')
+const machineStoreFolder = 'crates/fylo-machine/src/store'
+const machineSource = (
+    await Promise.all(
+        [
+            'crates/fylo-machine/src/lib.rs',
+            ...(await readdir(machineStoreFolder)).map((name) => `${machineStoreFolder}/${name}`)
+        ].map((path) => readFile(path, 'utf8'))
+    )
+).join('\n')
 const querySource = await readFile('crates/fylo-query/src/lib.rs', 'utf8')
 const formatErrorSource = await readFile('crates/fylo-format/src/format_error_code.rs', 'utf8')
 const storageSource = await readFile('crates/fylo-storage-native/src/lib.rs', 'utf8')
@@ -57,9 +65,13 @@ assert(
     'response schema protocol version drift'
 )
 assert(
-    schema.$defs.request.properties.op.enum.length === 62,
-    'filesystem-only machine registry must have 62 operations'
+    schema.$defs.request.properties.op.enum.length === 63,
+    'machine protocol v2 registry must have 63 operations'
 )
+// The v1 document operations still answer until slice SDK-10 removes them
+// (ADR 0035), so they must stay implemented and are listed apart.
+const keptOperations = operations.keptUntilSdk10.map(({ name }) => name).sort()
+assert(keptOperations.length === 9, 'nine v1 document operations are kept until SDK-10')
 
 const registeredOperations = operations.operations.map(({ name }) => name).sort()
 assertEqual(
@@ -78,6 +90,10 @@ for (const { name, class: operationClass, retry } of operations.operations) {
     assert(typeof operationClass === 'string', `${name} must declare a class`)
     assert(typeof retry === 'string', `${name} must declare retry behavior`)
     assert(machineSource.includes(`"${name}"`), `Rust machine does not implement ${name}`)
+}
+for (const name of keptOperations) {
+    assert(!registeredOperations.includes(name), `${name} is a v1 operation, not a v2 one`)
+    assert(machineSource.includes(`"${name}"`), `Rust machine no longer answers ${name}`)
 }
 
 assert(
@@ -109,7 +125,10 @@ for (const line of (await readFile('api/machine/v1/fixtures.ndjson', 'utf8'))
     .filter(Boolean)) {
     const parsed = JSON.parse(line)
     assert(parsed && typeof parsed === 'object' && !Array.isArray(parsed), 'invalid NDJSON fixture')
-    assert(registeredOperations.includes(parsed.op), `unknown fixture operation: ${parsed.op}`)
+    assert(
+        registeredOperations.includes(parsed.op) || keptOperations.includes(parsed.op),
+        `unknown fixture operation: ${parsed.op}`
+    )
 }
 
 assert(

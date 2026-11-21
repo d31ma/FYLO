@@ -316,5 +316,52 @@
             "class": "read",
             "retry": "safe"
         }
+    ],
+    "keptUntilSdk10": [
+        {
+            "name": "getDoc",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "getLatest",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "findDocs",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "putData",
+            "class": "write",
+            "retry": "conditional"
+        },
+        {
+            "name": "batchPutData",
+            "class": "write",
+            "retry": "unsafe"
+        },
+        {
+            "name": "patchDoc",
+            "class": "write",
+            "retry": "conditional"
+        },
+        {
+            "name": "patchDocs",
+            "class": "write",
+            "retry": "unsafe"
+        },
+        {
+            "name": "delDoc",
+            "class": "write",
+            "retry": "conditional"
+        },
+        {
+            "name": "delDocs",
+            "class": "write",
+            "retry": "unsafe"
+        }
     ]
 }
