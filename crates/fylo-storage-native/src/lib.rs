@@ -75,6 +75,7 @@ mod file_stamp;
 mod filesystem_profile;
 mod index_cache;
 mod index_limit;
+pub mod layout;
 mod lease;
 mod legacy_access_warning;
 mod log_position;
@@ -3495,6 +3496,14 @@ pub enum NativeStorageErrorCode {
     /// signed by the pinned trust anchor, or no anchor was pinned
     /// (ADR 0021).
     Policy,
+    /// The root's folder name is not a valid app name (ADR 0033 section 2).
+    AppName,
+    /// A namespace name is not valid, or a namespace exists both as a folder
+    /// and as a `.vdbx` (ADR 0033 sections 2 and 10).
+    Namespace,
+    /// A folder that is not empty and has no `.fylo/format.json` would be
+    /// used as an app folder (ADR 0033 section 5.4).
+    NotFyloRoot,
 }
 
 impl NativeStorageErrorCode {
@@ -3532,6 +3541,9 @@ impl NativeStorageErrorCode {
             Self::NoIdentity => "ENOIDENTITY",
             Self::Policy => "EPOLICY",
             Self::Signature => "ESIGNATURE",
+            Self::AppName => "EAPPNAME",
+            Self::Namespace => "ENAMESPACE",
+            Self::NotFyloRoot => "ENOTFYLOROOT",
         }
     }
 }

@@ -74,6 +74,18 @@
             "retryable": false
         },
         {
+            "code": "EAPPNAME",
+            "retryable": false
+        },
+        {
+            "code": "ENAMESPACE",
+            "retryable": false
+        },
+        {
+            "code": "ENOTFYLOROOT",
+            "retryable": false
+        },
+        {
             "code": "EINVALIDDOCID",
             "retryable": false
         },
