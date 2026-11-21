@@ -1,5 +1,8 @@
 use fylo_storage_native::{DocumentWrite, NativeStorageErrorCode};
 
+use super::store_change::StoreChange;
+use super::store_pending::StorePending;
+
 use crate::{EngineError, WriteEngine};
 
 /// The write half of a Store delete: the documents a Store query selected
@@ -51,5 +54,40 @@ impl WriteEngine {
                 .map_err(EngineError::storage)?;
         }
         Ok(())
+    }
+
+    /// Write one planned change to storage at once: a put creates or
+    /// replaces the document, a deletion goes in one log record.
+    ///
+    /// # Errors
+    ///
+    /// As the put, replace and delete it runs.
+    pub fn store_apply(&self, collection: &str, change: &StoreChange) -> Result<(), EngineError> {
+        match change {
+            StoreChange::Put {
+                id,
+                fields,
+                existed: true,
+            } => self.patch_document(collection, id, fields.clone()),
+            StoreChange::Put {
+                id,
+                fields,
+                existed: false,
+            } => self.put_document(collection, id, fields.clone()),
+            StoreChange::Delete { ids } => self.store_delete_documents(collection, ids).map(drop),
+        }
+    }
+
+    /// Commit a transaction's held writes as one log record.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::commit_document_writes`].
+    pub fn store_commit(
+        &self,
+        collection: &str,
+        pending: &StorePending,
+    ) -> Result<(), EngineError> {
+        self.commit_document_writes(collection, &pending.document_writes())
     }
 }

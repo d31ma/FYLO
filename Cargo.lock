@@ -408,6 +408,7 @@ dependencies = [
  "fylo-storage-native",
  "fylo-test-support",
  "fylo-vfs",
+ "serde",
  "serde_json",
 ]
 

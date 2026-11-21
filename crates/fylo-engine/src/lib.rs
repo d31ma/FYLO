@@ -46,7 +46,7 @@ use schema::{SchemaRegistry, SchemaTools, VersionChain};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 pub use sorted_page::SortedPage;
-pub use store::{StoreOverlay, StoreScroll};
+pub use store::{StoreChange, StoreOverlay, StorePending, StoreScroll};
 
 const MAX_STABLE_READ_ATTEMPTS: usize = 3;
 /// Drifted index keys reported by one verification.
@@ -2315,6 +2315,9 @@ pub enum EngineErrorCode {
     /// it refuses the write rather than store an unvalidated document
     /// (ADR 0017 section 4, "Fail closed").
     SchemaUnavailable,
+    /// A one-collection transaction would pass its limit of writes or
+    /// bytes (`api/store/v1`, "Transactions").
+    TransactionLimit,
 }
 
 impl EngineErrorCode {
@@ -2334,6 +2337,7 @@ impl EngineErrorCode {
             Self::SchemaConflict => "ESCHEMACONFLICT",
             Self::ArrayOfObjects => "EARRAYOFOBJECTS",
             Self::SchemaUnavailable => "ESCHEMAUNAVAILABLE",
+            Self::TransactionLimit => "ETXNLIMIT",
         }
     }
 }

@@ -15,6 +15,7 @@ fylo-identity = { version = "0.1.0", path = "../fylo-identity" }
 fylo-query = { version = "0.1.0", path = "../fylo-query" }
 fylo-storage-native = { version = "0.1.0", path = "../fylo-storage-native" }
 fylo-vfs = { version = "0.1.0", path = "../fylo-vfs" }
+serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

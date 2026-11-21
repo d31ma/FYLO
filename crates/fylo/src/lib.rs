@@ -34,6 +34,7 @@ mod database_creation;
 mod error;
 mod page;
 mod queue;
+pub mod store;
 
 use std::path::{Path, PathBuf};
 
@@ -55,6 +56,13 @@ pub use fylo_storage_native::{AccessTrust, DatabaseKey, Durability};
 pub use fylo_storage_native::{QueueAckResult, QueueDelivery, QueueNackResult, QueuePublishResult};
 pub use page::Page;
 pub use queue::{ClaimOptions, PublishOptions, Queue};
+pub use store::Store;
+
+/// An open database: the Store-shaped name of [`Root`] (ADR 0035).
+pub type Database = Root;
+
+/// A failed call: the Store-shaped name of [`Error`] (ADR 0035).
+pub type FyloError = Error;
 
 /// How [`Root::open`] opens a root.
 #[derive(Clone, Debug, Default)]
@@ -186,6 +194,21 @@ impl Root {
     #[must_use]
     pub fn queue<'root>(&'root self, topic: &'root str) -> Queue<'root> {
         Queue::new(self, topic)
+    }
+
+    /// The collection `name` as a Store of entities `T` (`api/store/v1`).
+    #[must_use]
+    pub fn store<T: serde::Serialize + serde::de::DeserializeOwned>(
+        &self,
+        name: &str,
+    ) -> Store<'_, T> {
+        Store::new(self, name)
+    }
+
+    /// The root's collections: exists, create, drop and inspect.
+    #[must_use]
+    pub const fn collections(&self) -> store::Collections<'_> {
+        store::Collections::new(self)
     }
 
     /// Create a document collection, or finish one whose creation was

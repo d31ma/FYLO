@@ -1,6 +1,5 @@
-use fylo_engine::EngineError;
+use fylo_engine::{EngineError, StoreChange};
 use fylo_query::{QueryError, QueryErrorCode};
-use fylo_storage_native::NativeStorageErrorCode;
 
 use crate::{MachineError, engine_error};
 
@@ -13,6 +12,7 @@ impl StoreFailure {
     pub(crate) const BAD_REQUEST: &'static str = "EBADREQUEST";
     pub(crate) const SCOPE: &'static str = "ETXNSCOPE";
     pub(crate) const LAYOUT: &'static str = "ETXNLAYOUT";
+    pub(crate) const LIMIT: &'static str = "ETXNLIMIT";
 
     pub(crate) fn query(error: &QueryError) -> MachineError {
         MachineError::new(error.code().as_str(), error.message())
@@ -29,10 +29,6 @@ impl StoreFailure {
         engine_error(error)
     }
 
-    pub(crate) fn is_missing(error: &EngineError) -> bool {
-        error.storage_code() == Some(NativeStorageErrorCode::NotFound)
-    }
-
     pub(crate) fn bad_request(message: impl Into<String>) -> MachineError {
         MachineError::new(Self::BAD_REQUEST, message)
     }
@@ -45,13 +41,16 @@ impl StoreFailure {
         )
     }
 
+    /// With `requireExisting`, a save that would create a document is
+    /// refused and writes nothing.
     pub(crate) fn require_existing(
         collection: &str,
         id: &str,
-        existed: bool,
+        change: &StoreChange,
         require_existing: bool,
     ) -> Result<(), MachineError> {
-        if require_existing && !existed {
+        let creates = matches!(change, StoreChange::Put { existed: false, .. });
+        if require_existing && creates {
             return Err(Self::missing_document(collection, Some(id)));
         }
         Ok(())
@@ -80,6 +79,6 @@ impl StoreFailure {
 
     /// Whether a failure inside a transaction rolls it back.
     pub(crate) fn ends_transaction(error: &MachineError) -> bool {
-        error.code == Self::SCOPE || error.code == super::store_transaction::StoreTransaction::LIMIT
+        error.code == Self::SCOPE || error.code == Self::LIMIT
     }
 }

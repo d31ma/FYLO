@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use fylo_engine::StorePending;
 use fylo_storage_native::FilesystemProfile;
 use serde_json::{Value, json};
 
@@ -120,12 +121,12 @@ impl Session {
                     "machine request field \"writes\" must be a non-empty list",
                 )
             })?;
-        if writes.len() > StoreTransaction::MAX_WRITES {
+        if writes.len() > StorePending::MAX_WRITES {
             return Err(MachineError::new(
-                StoreTransaction::LIMIT,
+                StoreFailure::LIMIT,
                 format!(
                     "a transaction holds at most {} writes",
-                    StoreTransaction::MAX_WRITES
+                    StorePending::MAX_WRITES
                 ),
             ));
         }
@@ -134,7 +135,7 @@ impl Session {
 
     fn store_commit(&self, transaction: &StoreTransaction) -> Result<(), MachineError> {
         self.write_engine(transaction.target())?
-            .commit_document_writes(transaction.collection(), &transaction.document_writes())
+            .store_commit(transaction.collection(), transaction.pending())
             .map_err(|error| StoreFailure::engine(&error))
     }
 

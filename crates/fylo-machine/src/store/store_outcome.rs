@@ -1,6 +1,6 @@
+use fylo_engine::StoreChange;
 use serde_json::Value;
 
-use super::store_change::StoreChange;
 use super::store_entity::StoreEntity;
 use super::store_request::StoreRequest;
 use super::store_view::StoreView;
