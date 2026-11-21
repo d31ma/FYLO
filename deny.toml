@@ -1,15 +1,6 @@
 [graph]
 all-features = true
 
-[advisories]
-# Owner: FYLO maintainers. Review date: 2027-02-21.
-# RUSTSEC-2026-0543 says the chrono crate is unmaintained. It is not a
-# vulnerability, and no safe upgrade exists. chrono is a required dependency of
-# turso_core 0.8.3 (and turso_ext 0.8.3); FYLO does not use it directly and
-# cannot turn it off. Remove this exception when turso moves off chrono, and
-# review it again by the review date.
-ignore = ["RUSTSEC-2026-0543"]
-
 [licenses]
 confidence-threshold = 0.8
 allow = [

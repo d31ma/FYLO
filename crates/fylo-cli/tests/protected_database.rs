@@ -11,8 +11,8 @@ struct Fixture(PathBuf);
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        let path =
-            std::env::temp_dir().join(format!("fylo-cli-protected-{name}-{}", std::process::id()));
+        let path = fylo_test_support::TestFolder::path()
+            .join(format!("fylo-cli-protected-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         Self(path)
@@ -914,8 +914,9 @@ fn a_rotation_a_torn_slot_write_left_pending_reads_reports_and_settles() {
 }
 
 fn require_byte_range_locks() {
-    let filesystem = fylo_storage_native::FilesystemInfo::of_directory(&std::env::temp_dir())
-        .expect("probe TMPDIR");
+    let filesystem =
+        fylo_storage_native::FilesystemInfo::of_directory(&fylo_test_support::TestFolder::path())
+            .expect("probe TMPDIR");
     assert!(
         filesystem.byte_range_locks_qualified(),
         "this test needs byte-range locks, which FYLO does not trust on TMPDIR's {} filesystem; \

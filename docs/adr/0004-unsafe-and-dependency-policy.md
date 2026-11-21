@@ -3,6 +3,7 @@
 - Status: **Accepted**
 - Date: **2026-07-26**
 - Owners: **FYLO maintainers**
+- To be amended by [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md) (accepted, not yet built): `turso_core`, `turso_ext` and the Turso binding workspace leave the dependency list when it ships.
 
 ## Context
 

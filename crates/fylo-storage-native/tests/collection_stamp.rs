@@ -35,11 +35,14 @@ impl Fixture {
     }
 
     fn new(efs: bool) -> Self {
-        let parent = std::env::temp_dir().canonicalize().unwrap().join(format!(
-            "fylo-collection-stamp-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let parent = fylo_test_support::TestFolder::path()
+            .canonicalize()
+            .unwrap()
+            .join(format!(
+                "fylo-collection-stamp-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
         let _ = fs::remove_dir_all(&parent);
         let root = parent.join("root");
         fs::create_dir_all(&root).unwrap();

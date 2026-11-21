@@ -29,7 +29,7 @@ impl Fixture {
 
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
+        let path = fylo_test_support::TestFolder::path().join(format!(
             "fylo-config-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

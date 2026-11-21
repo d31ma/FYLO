@@ -30,7 +30,8 @@ struct Protected {
 
 impl Protected {
     fn create(label: &str) -> Self {
-        let directory = std::env::temp_dir().join(crate::write::unique_name(label));
+        let directory =
+            fylo_test_support::TestFolder::path().join(crate::write::unique_name(label));
         std::fs::create_dir(&directory).unwrap();
         let directory = std::fs::canonicalize(directory).unwrap();
         let admin = identity_in(&directory, "admin");

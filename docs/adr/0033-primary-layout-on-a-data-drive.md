@@ -5,6 +5,7 @@
   (quoted in "Context"). Slices L1-1 to L1-13 build it. It ships in **its own
   release, after the next FYLO release** (the S5 release of ADR 0030). Until
   that release, ADRs 0010, 0029 and 0032 stay in force as written.
+- Release changed (2026-11-21): the user decided "there should be no later FYLO release"; this ADR now ships in **the next FYLO release**, together with ADR 0034 and [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md). Where this ADR says "its own release, after the next FYLO release", read "the next FYLO release".
 - Date: **2026-11-21**
 - Owners: **FYLO maintainers**
 - Replaces: **ADR 0029** (no root on a network filesystem), when this ADR
@@ -598,6 +599,37 @@ relied on. The nightly run uses the same images.
 The ADR 0032 opt-out stays available for tests of other projects (TACHYON's
 temporary folders) and for tests of the drive rule itself. Tests of the rule
 clear it, as ADR 0032 section 7 does.
+
+**The macOS image before L1 ships** (FYLO-T1, 2026-11-21). The Mac lane's
+image exists before this ADR is built, so tests stop using the system disk
+now:
+
+- `scripts/ci/test-image.sh` makes and attaches
+  `/Volumes/HANGAR/fylo-test/fylo-macos-test.sparsebundle` (8 GiB maximum)
+  at `~/Developer/FyloTestImage`, under the lock named in rule 2.
+  `run -- <command>` gives each job the folder
+  `<mount>/roots/<owner>-<pid>` as `FYLO_TEST_ROOT` and removes it at the
+  end. Rust tests read it through `fylo_test_support::TestFolder::path()`,
+  bun tests through `testFolder()` in `tests/helpers/root.js`; both use the
+  OS temp folder when it is unset (GitHub CI, the VMs).
+- These roots are not directly below the mount point. That is enough under
+  ADR 0032, which checks only the disk. When the drive rule ships, the L1
+  slice for tests replaces this shape: each job gets one app folder
+  `<mount>/<app>` and each test its own namespace in it (Q2b: "for testing
+  we can use namespaces feature for the slices").
+- Measured on 2026-11-21 (develop 1ce4115 plus this change, 1,682 Rust
+  tests): at most 291 MiB was in use inside the image during a full
+  `cargo nextest` run, so 8 GiB is ample. The image file grew from 15 MB to
+  585 MB over three full runs, because freed blocks stay in the file until
+  `compact`; one compact took it back to 292 MB. The full Rust suite took
+  420 s and 559 s on the image against 318 s and 329 s in TMPDIR (two
+  samples, 2 and 3 test threads); the bun interop suite 57 s against 47 s.
+- The opt-out is no longer needed to open test roots on the image: with
+  `FYLO_ALLOW_SYSTEM_DISK=0`, all 287 interop and 202 browser tests and 1,673
+  of 1,682 Rust tests pass. The other 9 Rust tests check the opt-out itself
+  (7 expect `placement: "systemDiskAllowed"` in the handshake, 2 expect the
+  test process to have it on), so the repository keeps it on until those
+  tests change.
 
 ### 13. Versioning: how the break is marked
 

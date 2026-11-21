@@ -8,6 +8,11 @@
 > that day: `/Volumes/HAVEN/Developer` is now `/Volumes/HAVEN/Repositories`,
 > worktrees moved from `~/Developer/Worktrees` to `/Volumes/ANVIL/Worktrees`,
 > WIN11-VM is now HANGAR and UBUNTU-VM is now ANVIL.
+>
+> **Superseded (2026-11-21).** [ADR 0035](adr/0035-fylos-own-sdk-in-the-store-shape.md)
+> replaced this design: Turso's engine, the `fylo` crate's `sql` feature,
+> `fylo link` and the Turso SDK builds (`bindings/turso`) are removed
+> (FYLO-SDK1). Nothing in this note describes current FYLO.
 
 - Status: **design note**, not a decision.
 - Written 2026-11-01 against FYLO `origin/develop` `24f43a6` and TACHYON

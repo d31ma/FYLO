@@ -24,7 +24,7 @@ impl IndexCacheFixture {
 
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
+        let path = fylo_test_support::TestFolder::path().join(format!(
             "fylo-index-cache-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

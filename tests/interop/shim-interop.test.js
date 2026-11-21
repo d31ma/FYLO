@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { testFolder } from '../helpers/root.js'
 
 const roots = []
 const repoRoot = process.cwd()
@@ -48,7 +49,7 @@ function expectSuccess(label, result) {
  * @param {string} prefix
  */
 async function tempRoot(prefix) {
-    const root = await mkdtemp(path.join(os.tmpdir(), prefix))
+    const root = await mkdtemp(path.join(testFolder(), prefix))
     roots.push(root)
     return root
 }

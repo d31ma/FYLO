@@ -20,9 +20,9 @@ import {
     statSync
 } from 'node:fs'
 import { writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { testFolder } from '../../helpers/root.js'
 
 export { expect }
 
@@ -52,7 +52,7 @@ export function nativeBinary() {
 export function nativeRoot(label) {
     // The real path: macOS hands out /var/folders/..., which the engine
     // reports as /private/var/folders/..., so a scrubbed root would differ.
-    return realpathSync(mkdtempSync(join(tmpdir(), `fylo-e2e-${label}-`)))
+    return realpathSync(mkdtempSync(join(testFolder(), `fylo-e2e-${label}-`)))
 }
 
 /**

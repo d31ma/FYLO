@@ -32,7 +32,7 @@ struct Fixture {
 impl Fixture {
     /// A folder holding the identities `admin` and `reader`.
     fn new() -> Self {
-        let parent = std::env::temp_dir().join(format!(
+        let parent = fylo_test_support::TestFolder::path().join(format!(
             "fylo-protected-field-keys-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed),

@@ -9,7 +9,7 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(label: &str) -> Self {
-        let path = std::env::temp_dir().join(crate::write::unique_name(label));
+        let path = fylo_test_support::TestFolder::path().join(crate::write::unique_name(label));
         fs::create_dir_all(&path).unwrap();
         Self(path)
     }

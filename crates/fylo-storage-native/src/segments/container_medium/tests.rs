@@ -32,7 +32,7 @@ struct Fixture(PathBuf);
 
 impl Fixture {
     fn create(label: &str) -> Self {
-        let path = std::env::temp_dir().join(crate::write::unique_name(label));
+        let path = fylo_test_support::TestFolder::path().join(crate::write::unique_name(label));
         std::fs::create_dir(&path).unwrap();
         let fixture = Self(std::fs::canonicalize(path).unwrap());
         fixture
@@ -575,7 +575,8 @@ fn damage(fixture: &Fixture, needle: &[u8], at: usize) {
 /// salvage` run after a stop does.
 fn fresh_salvage(fixture: &Fixture) -> crate::SalvageReport {
     fixture.crash();
-    let out = std::env::temp_dir().join(crate::write::unique_name("vdbx-salvaged"));
+    let out =
+        fylo_test_support::TestFolder::path().join(crate::write::unique_name("vdbx-salvaged"));
     let report = fixture.writer().salvage_collection("items", &out).unwrap();
     let _ = std::fs::remove_dir_all(out);
     report
@@ -642,8 +643,8 @@ fn a_fresh_salvage_names_nothing_written_again_or_unreadable() {
 }
 
 fn require_byte_range_locks() {
-    let filesystem =
-        crate::FilesystemInfo::of_directory(&std::env::temp_dir()).expect("probe TMPDIR");
+    let filesystem = crate::FilesystemInfo::of_directory(&fylo_test_support::TestFolder::path())
+        .expect("probe TMPDIR");
     assert!(
         filesystem.byte_range_locks_qualified(),
         "this test needs byte-range locks, which FYLO does not trust on TMPDIR's {} filesystem; \

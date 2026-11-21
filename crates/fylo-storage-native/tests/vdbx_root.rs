@@ -23,7 +23,7 @@ struct Fixture {
 
 impl Fixture {
     fn create(label: &str) -> Self {
-        let directory = std::env::temp_dir().join(format!(
+        let directory = fylo_test_support::TestFolder::path().join(format!(
             "fylo-vdbx-root-{label}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

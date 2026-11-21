@@ -44,7 +44,8 @@ impl Rekeyed {
     /// The database with `ledger`, 30 documents with one deleted, and
     /// `notes`, one document.
     fn create(label: &str) -> Self {
-        let directory = std::env::temp_dir().join(crate::write::unique_name(label));
+        let directory =
+            fylo_test_support::TestFolder::path().join(crate::write::unique_name(label));
         std::fs::create_dir(&directory).unwrap();
         let database = Self {
             directory: std::fs::canonicalize(directory).unwrap(),

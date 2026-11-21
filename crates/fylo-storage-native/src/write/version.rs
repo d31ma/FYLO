@@ -2696,7 +2696,7 @@ mod tests {
 
     #[test]
     fn recovery_does_not_normalize_an_idle_javascript_repository() {
-        let root = std::env::temp_dir().join(format!(
+        let root = fylo_test_support::TestFolder::path().join(format!(
             "fylo-idle-version-repository-{}",
             generate_ttid().unwrap()
         ));

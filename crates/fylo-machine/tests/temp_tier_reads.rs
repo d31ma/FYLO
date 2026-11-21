@@ -46,7 +46,7 @@ impl Fixture {
     }
 
     fn with_profile(profile: FilesystemProfile) -> Self {
-        let parent = std::env::temp_dir().join(format!(
+        let parent = fylo_test_support::TestFolder::path().join(format!(
             "fylo-temp-tier-reads-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed),

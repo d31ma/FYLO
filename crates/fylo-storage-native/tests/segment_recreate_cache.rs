@@ -63,7 +63,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(label: &str, medium: Medium) -> Self {
-        let path = std::env::temp_dir().join(format!(
+        let path = fylo_test_support::TestFolder::path().join(format!(
             "fylo-recreate-cache-{label}-{}-{}-{}-{}",
             medium.name(),
             std::process::id(),

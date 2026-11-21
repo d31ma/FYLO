@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import DocsSample from '../../website/client/components/docs/sample/tac.js'
 import Showcase from '../../website/client/components/code/showcase/tac.js'
 import DocsContent from '../../website/client/components/docs/content/tac.js'
+import { testFolder } from '../helpers/root.js'
 
 function sampleCode(topic, lang) {
     const sample = new DocsSample({ topic })
@@ -156,7 +156,7 @@ assert(meta.rating === 4 && !('starred' in meta), 'setMeta update and remove')
     }
 
     static async run(blocks, checks) {
-        const workspace = await mkdtemp(path.join(os.tmpdir(), 'fylo-bucket-samples-'))
+        const workspace = await mkdtemp(path.join(testFolder(), 'fylo-bucket-samples-'))
         BucketSampleRunner.workspaces.push(workspace)
         const upload = path.join(workspace, 'summary.pdf')
         await writeFile(upload, BucketSampleRunner.fileContent)

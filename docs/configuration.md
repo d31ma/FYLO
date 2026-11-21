@@ -280,8 +280,7 @@ fylo access revoke app.vdbx --rule app-collection:orders \
 | | | `--trust-on-first-use` | Trust whoever created it, with a warning |
 
 A flag wins over the environment, which wins over `application.json`. These
-two variables are read directly, as `fylo link`'s hook needs them (ADR 0021,
-Q9). A protected database opened without an anchor fails with `EPOLICY` and
+two variables are read directly (ADR 0021, Q9). A protected database opened without an anchor fails with `EPOLICY` and
 names the anchor to pin. A new database is protected by default: `fylo
 create` needs `--admin <reference>` or `--unprotected`, and the machine
 protocol (`fylo exec`) creates a missing `.vdbx` protected with the

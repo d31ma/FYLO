@@ -10,7 +10,7 @@ struct Fixture(PathBuf);
 
 impl Fixture {
     fn create(label: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
+        let path = fylo_test_support::TestFolder::path().join(format!(
             "fylo-wal-{label}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

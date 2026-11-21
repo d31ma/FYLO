@@ -33,7 +33,7 @@ impl Fixture {
     /// `ssn` encrypted when `encrypted`, and a `cities` collection to join.
     fn new(encrypted: bool) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let parent = std::env::temp_dir().join(format!(
+        let parent = fylo_test_support::TestFolder::path().join(format!(
             "fylo-lazy-migration-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

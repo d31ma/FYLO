@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { testFolder } from '../helpers/root.js'
 
 const workspaces = []
 
@@ -15,7 +15,7 @@ afterEach(async () => {
 })
 
 async function loadRealBridge() {
-    const workspace = await mkdtemp(path.join(os.tmpdir(), 'fylo-mobile-bridge-engine-'))
+    const workspace = await mkdtemp(path.join(testFolder(), 'fylo-mobile-bridge-engine-'))
     workspaces.push(workspace)
     const clientUrl = pathToFileURL(path.resolve('src/browser/client.js')).href
     await writeFile(
@@ -67,7 +67,7 @@ async function openWithUsers() {
 }
 
 async function loadChangeFeedBridge() {
-    const workspace = await mkdtemp(path.join(os.tmpdir(), 'fylo-mobile-bridge-changes-'))
+    const workspace = await mkdtemp(path.join(testFolder(), 'fylo-mobile-bridge-changes-'))
     workspaces.push(workspace)
     await writeFile(
         path.join(workspace, 'fylo.mjs'),
@@ -104,7 +104,7 @@ export function createBrowserClient() {
 
 describe('mobile WebView bridge', () => {
     test('getDoc resolves the browser collection get facade to document data', async () => {
-        const workspace = await mkdtemp(path.join(os.tmpdir(), 'fylo-mobile-bridge-'))
+        const workspace = await mkdtemp(path.join(testFolder(), 'fylo-mobile-bridge-'))
         workspaces.push(workspace)
         await writeFile(
             path.join(workspace, 'fylo.mjs'),
@@ -152,7 +152,7 @@ describe('mobile WebView bridge', () => {
     })
 
     test('rejects unknown operations and invalid collection input', async () => {
-        const workspace = await mkdtemp(path.join(os.tmpdir(), 'fylo-mobile-bridge-'))
+        const workspace = await mkdtemp(path.join(testFolder(), 'fylo-mobile-bridge-'))
         workspaces.push(workspace)
         await writeFile(
             path.join(workspace, 'fylo.mjs'),
@@ -230,7 +230,7 @@ describe('mobile WebView bridge', () => {
     })
 
     test('returns correlated errors for oversized and malformed requests', async () => {
-        const workspace = await mkdtemp(path.join(os.tmpdir(), 'fylo-mobile-bridge-'))
+        const workspace = await mkdtemp(path.join(testFolder(), 'fylo-mobile-bridge-'))
         workspaces.push(workspace)
         await writeFile(
             path.join(workspace, 'fylo.mjs'),
@@ -263,7 +263,7 @@ describe('mobile WebView bridge', () => {
     })
 
     test('replaces oversized UTF-8 responses with a small correlated error', async () => {
-        const workspace = await mkdtemp(path.join(os.tmpdir(), 'fylo-mobile-bridge-'))
+        const workspace = await mkdtemp(path.join(testFolder(), 'fylo-mobile-bridge-'))
         workspaces.push(workspace)
         await writeFile(
             path.join(workspace, 'fylo.mjs'),
@@ -454,7 +454,7 @@ describe('mobile WebView bridge', () => {
 
     test('Swift initialization closes on cancellation, readiness timeout, and failed open', async () => {
         if (!Bun.which('swiftc')) return
-        const workspace = await mkdtemp(path.join(os.tmpdir(), 'fylo-swift-cancel-'))
+        const workspace = await mkdtemp(path.join(testFolder(), 'fylo-swift-cancel-'))
         workspaces.push(workspace)
         const bundle = path.join(workspace, 'FyloTest.bundle')
         const failingBundle = path.join(workspace, 'FyloFailingTest.bundle')
@@ -823,7 +823,7 @@ describe('mobile WebView bridge against the browser engine', () => {
     })
 
     test('a failed open can be retried', async () => {
-        const workspace = await mkdtemp(path.join(os.tmpdir(), 'fylo-mobile-bridge-'))
+        const workspace = await mkdtemp(path.join(testFolder(), 'fylo-mobile-bridge-'))
         workspaces.push(workspace)
         await writeFile(
             path.join(workspace, 'fylo.mjs'),

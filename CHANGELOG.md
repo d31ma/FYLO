@@ -21,9 +21,27 @@
   <id>` (`FYLO_APP_ID`, `fylo.appId`); iOS and Android apps need nothing.
   Network roots stay refused (`EREMOTEROOT`, ADR 0029); the EFS profile
   works as before. See the migration note in ADR 0032.
+- **Turso is removed (ADR 0035, FYLO-SDK1).** The `fylo` crate's `sql`
+  feature is gone, with `Root::sql`, `Sql`, `SqlOptions`, `SqlRows`,
+  `SqlValue`, `TURSO_PIN`, `install_turso_open_hook`, `is_fylo_root` and
+  `LinkIdentity`. `fylo link` is gone, so Turso's SDKs (JS, Go, Python,
+  Java, .NET) can no longer open a FYLO root or `.vdbx` database, and the
+  hand-built Turso SDK libraries (`bindings/turso`) are no longer made.
+  FYLO's own SQL (`fylo sql`, `executeSQL`, `db.sql`) is not affected: it
+  never used Turso. The vendored `turso_core` engine and 129 packages
+  leave `Cargo.lock` (among them `chrono`, `aegis` and `libloading`), and
+  `deny.toml` no longer ignores RUSTSEC-2026-0543. Apps that used `fylo
+  link` move to FYLO's own clients or the machine protocol.
 - **The handshake reports where the root is.** `storage.rootLock` gains
   `systemDisk` and `placement` (`dataDisk`, `systemDiskAllowed`,
   `appOwned`).
+- **SQL comparisons with `NULL` match no row** (ADR 0035, Amendment 1).
+  In `fylo sql` and `executeSQL`, `=`, `<>` and `!=` with `NULL`, as a
+  literal or as a bound `null` parameter, match nothing, as in PostgreSQL,
+  MySQL, SQLite and SQL Server; `<> v` and `!= v` also leave out `NULL` and
+  missing fields. Until now `= NULL` matched like `IS NULL`. Use `IS NULL`
+  and `IS NOT NULL` to test for `NULL`. The Store keeps `eq null` as
+  `isNull` and `ne null` as `isNotNull`.
 
 ### Changed
 
@@ -38,9 +56,8 @@
 - **A repeated document id answers `EDOCEXISTS`.** `putData` with an `id`
   the collection already has failed with the generic `ENATIVE_METADATA`; it
   now fails with its own stable code `EDOCEXISTS` (not retryable), in every
-  layout and in `exec --invocation`. SQL `INSERT` through the `fylo` crate
-  reports it the same way. Code that matched `ENATIVE_METADATA` for this
-  case must match `EDOCEXISTS`.
+  layout and in `exec --invocation`. Code that matched `ENATIVE_METADATA`
+  for this case must match `EDOCEXISTS`.
 - **Waiting invocations take turns.** Two `exec --invocation` processes on
   one root could keep a third waiting until its deadline, because a new
   process took the root in the short gap before the waiter tried again

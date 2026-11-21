@@ -61,3 +61,6 @@ must_use_candidate = "allow"
 # `ios-keychain:` (ADR 0026 section 8): the iOS Data Protection keychain.
 [target.'cfg(target_os = "ios")'.dependencies]
 security-framework.workspace = true
+
+[dev-dependencies]
+fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }

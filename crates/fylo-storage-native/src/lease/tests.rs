@@ -14,7 +14,8 @@ impl LeaseFixture {
     const OVERSIZED_RECORD_BYTES: usize = 4097;
 
     fn new() -> Self {
-        let directory = std::env::temp_dir().join(crate::write::unique_name("fylo-lease-contract"));
+        let directory = fylo_test_support::TestFolder::path()
+            .join(crate::write::unique_name("fylo-lease-contract"));
         let lease = RootLease::acquire(directory.join(Self::ROOT_NAME)).unwrap();
         let metadata_path = directory.join(".db.fylo-root-owner.lock.json");
         Self {
@@ -211,8 +212,8 @@ fn a_lock_refused_as_permission_denied_is_reported_as_root_locked() {
         Err(std::fs::TryLockError::Error(std::io::Error::from(
             std::io::ErrorKind::PermissionDenied,
         ))),
-        &std::env::temp_dir().join(".db.fylo-root-owner.lock.json"),
-        &std::env::temp_dir().join("db"),
+        &fylo_test_support::TestFolder::path().join(".db.fylo-root-owner.lock.json"),
+        &fylo_test_support::TestFolder::path().join("db"),
         crate::FilesystemProfile::EfsSidecarV1,
     )
     .unwrap_err();

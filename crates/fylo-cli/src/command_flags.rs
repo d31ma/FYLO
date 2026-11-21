@@ -58,8 +58,6 @@ impl CommandFlags {
         "--collection",
     ];
     const ACCESS_SWITCHES: [&'static str; 2] = ["--all-collections", "--database"];
-    const LINK_VALUES: [&'static str; 3] = ["--method", "--project", "--artifacts"];
-    const LINK_SWITCHES: [&'static str; 4] = ["--check", "--undo", "--help", "-h"];
     const PACK_VALUES: [&'static str; 5] =
         ["--out", "--admin", "--grants", "--collection", "--new-key"];
     const PACK_SWITCHES: [&'static str; 7] = [
@@ -147,7 +145,6 @@ impl CommandFlags {
                 &Self::ACCESS_VALUES,
                 &Self::ACCESS_SWITCHES,
             )),
-            "link" => Some((Self::LINK_VALUES.to_vec(), Self::LINK_SWITCHES.to_vec())),
             name if PackCommand::COMMANDS.contains(&name) => Some(Self::output_options(
                 &Self::PACK_VALUES,
                 &Self::PACK_SWITCHES,

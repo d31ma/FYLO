@@ -25,7 +25,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(label: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
+        let path = fylo_test_support::TestFolder::path().join(format!(
             "fylo-layout-crash-{label}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

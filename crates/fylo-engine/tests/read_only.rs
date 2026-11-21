@@ -18,7 +18,7 @@ impl TestRoot {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
+        let path = fylo_test_support::TestFolder::path().join(format!(
             "fylo-engine-read-only-{}-{nonce}-{}",
             std::process::id(),
             NEXT_TEST_ROOT.fetch_add(1, Ordering::Relaxed)

@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto'
 import { cp, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { testFolder } from '../helpers/root.js'
 
 const required = process.env.FYLO_REQUIRE_EFS_PROFILE === '1'
 const binary = path.resolve(process.env.FYLO_BINARY ?? 'dist-bin/fylo')
@@ -105,7 +106,7 @@ class ProfileLoop {
 }
 
 async function freshRoot() {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-efs-contract-'))
+    const root = await mkdtemp(path.join(testFolder(), 'fylo-efs-contract-'))
     roots.push(root)
     return root
 }

@@ -127,7 +127,7 @@ mod tests {
     use std::io::Write;
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(crate::write::unique_name(name))
+        fylo_test_support::TestFolder::path().join(crate::write::unique_name(name))
     }
 
     #[test]

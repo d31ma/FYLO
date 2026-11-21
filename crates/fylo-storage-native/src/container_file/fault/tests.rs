@@ -23,7 +23,7 @@ impl Drop for Database {
 /// A container of 1 MiB extents holding one collection, open to write,
 /// and the collection's id.
 fn created(name: &str) -> (Database, PathBuf, ContainerFile, u32) {
-    let directory = std::env::temp_dir().join(crate::write::unique_name(name));
+    let directory = fylo_test_support::TestFolder::path().join(crate::write::unique_name(name));
     std::fs::create_dir_all(&directory).unwrap();
     let path = directory.join("test.vdbx");
     ContainerFile::create(&path, ContainerSuperblock::MIN_EXTENT_SHIFT).unwrap();

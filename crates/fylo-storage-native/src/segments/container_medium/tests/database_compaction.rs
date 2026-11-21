@@ -165,7 +165,8 @@ impl Database {
 
     /// A database holding `items` and `others` with no documents.
     fn empty(label: &str) -> Self {
-        let directory = std::env::temp_dir().join(crate::write::unique_name(label));
+        let directory =
+            fylo_test_support::TestFolder::path().join(crate::write::unique_name(label));
         std::fs::create_dir(&directory).unwrap();
         let database = Self(std::fs::canonicalize(directory).unwrap());
         ContainerFile::create(&database.path(), ContainerMedium::TEST_EXTENT_SHIFT).unwrap();
@@ -180,7 +181,8 @@ impl Database {
 
     /// A copy of this database's file in a directory of its own.
     fn copy(&self, label: &str) -> Self {
-        let directory = std::env::temp_dir().join(crate::write::unique_name(label));
+        let directory =
+            fylo_test_support::TestFolder::path().join(crate::write::unique_name(label));
         std::fs::create_dir(&directory).unwrap();
         let copy = Self(std::fs::canonicalize(directory).unwrap());
         std::fs::copy(self.path(), copy.path()).unwrap();

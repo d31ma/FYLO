@@ -8,6 +8,10 @@ use std::path::Path;
 
 use serde_json::json;
 
+mod test_folder;
+
+pub use test_folder::TestFolder;
+
 /// One evaluated row in a unique-cause MC/DC decision table.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct McdcCase<const N: usize> {

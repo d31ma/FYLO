@@ -1,0 +1,320 @@
+{
+    "protocolVersion": 2,
+    "operations": [
+        {
+            "name": "handshake",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "executeSQL",
+            "class": "mixed",
+            "retry": "operation-dependent"
+        },
+        {
+            "name": "createCollection",
+            "class": "write",
+            "retry": "conditional"
+        },
+        {
+            "name": "dropCollection",
+            "class": "write",
+            "retry": "unsafe"
+        },
+        {
+            "name": "inspectCollection",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "storeFindById",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "storeFindAll",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "storeSave",
+            "class": "write",
+            "retry": "conditional"
+        },
+        {
+            "name": "storePatch",
+            "class": "write",
+            "retry": "conditional"
+        },
+        {
+            "name": "storeDeleteById",
+            "class": "write",
+            "retry": "conditional"
+        },
+        {
+            "name": "storeFind",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "storeCount",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "storeExists",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "storeDelete",
+            "class": "write",
+            "retry": "unsafe"
+        },
+        {
+            "name": "storeScroll",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "storeTransaction",
+            "class": "write",
+            "retry": "unsafe"
+        },
+        {
+            "name": "transactionBegin",
+            "class": "write",
+            "retry": "unsafe"
+        },
+        {
+            "name": "transactionCommit",
+            "class": "write",
+            "retry": "unsafe"
+        },
+        {
+            "name": "transactionRollback",
+            "class": "write",
+            "retry": "safe"
+        },
+        {
+            "name": "collectionExists",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "listCollections",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "rebuildCollection",
+            "class": "derived-write",
+            "retry": "safe"
+        },
+        {
+            "name": "setWordFields",
+            "class": "derived-write",
+            "retry": "safe"
+        },
+        {
+            "name": "reshardCollection",
+            "class": "write",
+            "retry": "safe"
+        },
+        {
+            "name": "migrateLayout",
+            "class": "write",
+            "retry": "safe"
+        },
+        {
+            "name": "compactCollection",
+            "class": "derived-write",
+            "retry": "safe"
+        },
+        {
+            "name": "verifyCollection",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "getFileData",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "getMeta",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "setMeta",
+            "class": "write",
+            "retry": "conditional"
+        },
+        {
+            "name": "findDeletedDocs",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "changes",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "restoreDoc",
+            "class": "write",
+            "retry": "conditional"
+        },
+        {
+            "name": "joinDocs",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "importBulkData",
+            "class": "write",
+            "retry": "unsafe"
+        },
+        {
+            "name": "checkout",
+            "class": "repository-write",
+            "retry": "conditional"
+        },
+        {
+            "name": "branch",
+            "class": "repository-read",
+            "retry": "safe"
+        },
+        {
+            "name": "commit",
+            "class": "repository-write",
+            "retry": "unsafe"
+        },
+        {
+            "name": "log",
+            "class": "repository-read",
+            "retry": "safe"
+        },
+        {
+            "name": "status",
+            "class": "repository-read",
+            "retry": "safe"
+        },
+        {
+            "name": "diff",
+            "class": "repository-read",
+            "retry": "safe"
+        },
+        {
+            "name": "restoreCommit",
+            "class": "repository-write",
+            "retry": "conditional"
+        },
+        {
+            "name": "merge",
+            "class": "repository-write",
+            "retry": "unsafe"
+        },
+        {
+            "name": "schemaInspect",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaCurrent",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaHistory",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaDoctor",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaValidate",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaMaterialize",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaMode",
+            "class": "write",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaCheck",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaMigrate",
+            "class": "write",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaPush",
+            "class": "write",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaPull",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "queuePublish",
+            "class": "queue-write",
+            "retry": "conditional-idempotency-key"
+        },
+        {
+            "name": "queueClaim",
+            "class": "queue-lease",
+            "retry": "unsafe"
+        },
+        {
+            "name": "queueAck",
+            "class": "queue-write",
+            "retry": "safe-with-same-receipt"
+        },
+        {
+            "name": "queueNack",
+            "class": "queue-write",
+            "retry": "conditional"
+        },
+        {
+            "name": "queueExtend",
+            "class": "queue-write",
+            "retry": "safe-with-same-receipt"
+        },
+        {
+            "name": "queueStats",
+            "class": "queue-read",
+            "retry": "safe"
+        },
+        {
+            "name": "queueDeadLetters",
+            "class": "queue-read",
+            "retry": "safe"
+        },
+        {
+            "name": "inspectDatabase",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "verifyDatabase",
+            "class": "read",
+            "retry": "safe"
+        }
+    ]
+}

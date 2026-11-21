@@ -11,8 +11,8 @@ struct Fixture(PathBuf);
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        let path =
-            std::env::temp_dir().join(format!("fylo-cli-vdbx-{name}-{}", std::process::id()));
+        let path = fylo_test_support::TestFolder::path()
+            .join(format!("fylo-cli-vdbx-{name}-{}", std::process::id()));
         fs::create_dir_all(&path).unwrap();
         Self(path)
     }
@@ -670,8 +670,9 @@ fn rekey_moves_an_encrypted_database_to_the_secret_new_key_names() {
 }
 
 fn require_byte_range_locks() {
-    let filesystem = fylo_storage_native::FilesystemInfo::of_directory(&std::env::temp_dir())
-        .expect("probe TMPDIR");
+    let filesystem =
+        fylo_storage_native::FilesystemInfo::of_directory(&fylo_test_support::TestFolder::path())
+            .expect("probe TMPDIR");
     assert!(
         filesystem.byte_range_locks_qualified(),
         "this test needs byte-range locks, which FYLO does not trust on TMPDIR's {} filesystem; \

@@ -1398,7 +1398,8 @@ mod tests {
 
     impl Keys {
         fn new(label: &str) -> Self {
-            let directory = std::env::temp_dir().join(crate::write::unique_name(label));
+            let directory =
+                fylo_test_support::TestFolder::path().join(crate::write::unique_name(label));
             std::fs::create_dir(&directory).unwrap();
             Self(directory)
         }

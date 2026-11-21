@@ -625,7 +625,8 @@ fn timing_cached_compiled_schema_against_the_uncached_path() {
     let direct = start.elapsed();
 
     // The engine's path: a schema file, read on every write.
-    let dir = std::env::temp_dir().join(format!("fylo-chex-timing-{}", std::process::id()));
+    let dir = fylo_test_support::TestFolder::path()
+        .join(format!("fylo-chex-timing-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let path = dir.join("timing.schema.json");
     std::fs::write(&path, serde_json::to_string(&schema).expect("json")).expect("write");
