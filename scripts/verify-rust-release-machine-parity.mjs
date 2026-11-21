@@ -14,9 +14,11 @@ const registry = JSON.parse(await readFile('api/machine/v1/operations.json', 'ut
 const canonicalOperations = registry.operations.map(({ name }) => name).sort()
 const candidateOnlyOperations = [
     'changes',
+    'collectionExists',
     'compactCollection',
     'getFileData',
     'inspectDatabase',
+    'listCollections',
     'migrateLayout',
     'queueAck',
     'queueClaim',
@@ -448,6 +450,19 @@ async function runScenario(label, binary, root) {
 
         await request('rebuild-records', { op: 'rebuildCollection', collection: 'records' })
         await request('inspect-records', { op: 'inspectCollection', collection: 'records' })
+        if (label === 'rust') {
+            const exists = await request(
+                'records-exist',
+                { op: 'collectionExists', collection: 'records' },
+                { record: false }
+            )
+            assert(exists?.exists === true, 'Rust collectionExists did not find records')
+            const listed = await request('list-collections', { op: 'listCollections' }, { record: false })
+            assert(
+                listed?.collections?.includes('records'),
+                'Rust listCollections did not list records'
+            )
+        }
         await request('drop-disposable', { op: 'dropCollection', collection: 'disposable' })
 
         const initial = await request(

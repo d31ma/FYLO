@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 /// One read-only operation on the current thread.
 ///
 /// Inside a scope, a root's ownership and profile checks run once per root
-/// and lease, and a path is resolved to its canonical form once. Each check
+/// and lease, a path is resolved to its canonical form once, and each
+/// collection's catalog descriptor is read once. Each check
 /// reads files that only a write or another owner can change, and a read
 /// operation changes neither, so repeating them inside one operation found
 /// nothing new; on a network filesystem each repeat cost round trips.
@@ -43,6 +44,16 @@ impl ReadScope {
 
     pub(crate) fn remember_verified(key: u64) {
         ReadScopeState::with(|state| state.remember_verified(key));
+    }
+
+    /// The descriptor bytes this scope already read from `path`, or
+    /// `Some(None)` when it found none there.
+    pub(crate) fn known_descriptor(path: &Path) -> Option<Option<Vec<u8>>> {
+        ReadScopeState::with(|state| state.descriptor(path))
+    }
+
+    pub(crate) fn remember_descriptor(path: &Path, bytes: Option<&[u8]>) {
+        ReadScopeState::with(|state| state.remember_descriptor(path, bytes));
     }
 
     fn resolve(path: &Path) -> io::Result<PathBuf> {

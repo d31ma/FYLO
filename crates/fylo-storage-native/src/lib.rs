@@ -71,6 +71,7 @@ mod extended_attribute_namespace;
 #[cfg(unix)]
 mod extended_attribute_probe;
 mod field_keys;
+mod file_access_log;
 mod file_stamp;
 #[cfg(not(target_family = "wasm"))]
 mod filesystem_check;
@@ -174,6 +175,7 @@ pub use document_change::DocumentChange;
 pub use document_rekey::DocumentRekey;
 pub use durability::Durability;
 pub use field_keys::{FieldKey, FieldKeys};
+pub use file_access_log::FileAccessLog;
 pub use file_stamp::FileStamp;
 #[cfg(not(target_family = "wasm"))]
 pub use filesystem_check::FilesystemProbe;
@@ -925,6 +927,73 @@ impl NativeRoot {
         })
     }
 
+    /// Whether a collection named `name` exists. It reads the collection's
+    /// catalog descriptor and checks its folder, and reads no document,
+    /// index or transaction file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name, a corrupt descriptor or an
+    /// unsafe path; a missing collection is `Ok(false)`.
+    pub fn collection_exists(&self, name: &str) -> Result<bool, NativeStorageError> {
+        Self::found(self.collection(name))
+    }
+
+    /// The names of the root's collections, document and file, sorted. Like
+    /// [`Self::collection_exists`] it reads only the catalog and the
+    /// collection folders.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a corrupt descriptor, an unsafe path or a
+    /// storage failure.
+    pub fn collection_names(&self) -> Result<Vec<String>, NativeStorageError> {
+        self.assert_profile_owned()?;
+        let candidates = self.collection_candidates()?;
+        self.existing_names(candidates)
+    }
+
+    fn found(collection: Result<NativeCollection, NativeStorageError>) -> Result<bool, NativeStorageError> {
+        match collection {
+            Ok(_) => Ok(true),
+            Err(error) if error.code() == NativeStorageErrorCode::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn collection_candidates(&self) -> Result<BTreeSet<String>, NativeStorageError> {
+        if let Some(names) = self.database_collection_names() {
+            return Ok(names.into_iter().collect());
+        }
+        let mut names = BTreeSet::new();
+        for namespace in [".collections", ".buckets"] {
+            names.extend(self.folder_names(&self.canonical.join(namespace))?);
+        }
+        Ok(names)
+    }
+
+    fn folder_names(&self, namespace: &Path) -> Result<Vec<String>, NativeStorageError> {
+        if !path_exists_no_follow(namespace)? {
+            return Ok(Vec::new());
+        }
+        self.verify_path(namespace, ExpectedType::Directory)?;
+        Ok(read_dir_sorted(namespace)?
+            .into_iter()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| validate_collection_name(name).is_ok())
+            .collect())
+    }
+
+    fn existing_names(&self, candidates: BTreeSet<String>) -> Result<Vec<String>, NativeStorageError> {
+        let mut names = Vec::with_capacity(candidates.len());
+        for name in candidates {
+            if self.collection_exists(&name)? {
+                names.push(name);
+            }
+        }
+        Ok(names)
+    }
+
     fn collection_descriptor(
         &self,
         name: &str,
@@ -940,34 +1009,50 @@ impl NativeRoot {
             .join(".fylo-catalog")
             .join("collections")
             .join(format!("{name}.json"));
-        let descriptor = if path_exists_no_follow(&descriptor_path)? {
-            let metadata =
-                fs::symlink_metadata(&descriptor_path).map_err(NativeStorageError::io)?;
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                return Err(NativeStorageError::new(
-                    NativeStorageErrorCode::UnsafePath,
-                    "collection descriptor is not a regular file",
-                ));
-            }
-            if metadata.len() > MAX_DESCRIPTOR_BYTES {
-                return Err(NativeStorageError::new(
-                    NativeStorageErrorCode::FileTooLarge,
-                    "collection descriptor exceeds its size limit",
-                ));
-            }
-            let bytes = fs::read(&descriptor_path).map_err(NativeStorageError::io)?;
-            Some(
-                serde_json::from_slice::<CollectionDescriptor>(&bytes).map_err(|error| {
-                    NativeStorageError::new(
-                        NativeStorageErrorCode::CorruptMetadata,
-                        format!("collection descriptor is corrupt: {error}"),
-                    )
-                })?,
+        Self::descriptor_bytes(&descriptor_path)?
+            .map(|bytes| Self::parse_descriptor(&bytes))
+            .transpose()
+    }
+
+    /// A descriptor's bytes, read once per [`ReadScope`]: every collection
+    /// handle and schema lookup of one read operation asks for them again.
+    fn descriptor_bytes(path: &Path) -> Result<Option<Vec<u8>>, NativeStorageError> {
+        if let Some(known) = ReadScope::known_descriptor(path) {
+            return Ok(known);
+        }
+        let bytes = Self::read_descriptor_bytes(path)?;
+        ReadScope::remember_descriptor(path, bytes.as_deref());
+        Ok(bytes)
+    }
+
+    fn read_descriptor_bytes(path: &Path) -> Result<Option<Vec<u8>>, NativeStorageError> {
+        if !path_exists_no_follow(path)? {
+            return Ok(None);
+        }
+        let metadata = fs::symlink_metadata(path).map_err(NativeStorageError::io)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath,
+                "collection descriptor is not a regular file",
+            ));
+        }
+        if metadata.len() > MAX_DESCRIPTOR_BYTES {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                "collection descriptor exceeds its size limit",
+            ));
+        }
+        FileAccessLog::record_open(path);
+        fs::read(path).map(Some).map_err(NativeStorageError::io)
+    }
+
+    fn parse_descriptor(bytes: &[u8]) -> Result<CollectionDescriptor, NativeStorageError> {
+        serde_json::from_slice::<CollectionDescriptor>(bytes).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("collection descriptor is corrupt: {error}"),
             )
-        } else {
-            None
-        };
-        Ok(descriptor)
+        })
     }
 
     /// Read the active branch's first-parent commit history without
@@ -1384,7 +1469,15 @@ impl NativeRoot {
         if self.profile != FilesystemProfile::Native {
             return BeneathOpen::Unavailable;
         }
-        self.open_beneath(target, ExpectedType::File)
+        let opened = self.open_beneath(target, ExpectedType::File);
+        Self::record_opened(target, &opened);
+        opened
+    }
+
+    fn record_opened(target: &Path, opened: &BeneathOpen) {
+        if matches!(opened, BeneathOpen::Opened(..)) {
+            FileAccessLog::record_open(target);
+        }
     }
 
     fn has_canonical_spelling(&self, relative: &Path) -> bool {
@@ -1600,6 +1693,7 @@ impl NativeRoot {
                 "version file exceeds its size limit",
             ));
         }
+        FileAccessLog::record_open(target);
         fs::read(target).map_err(NativeStorageError::io)
     }
 
@@ -1709,6 +1803,7 @@ impl NativeRoot {
                 ),
             ));
         }
+        FileAccessLog::record_open(path);
         let file = File::open(path).map_err(NativeStorageError::io)?;
         let opened = file.metadata().map_err(NativeStorageError::io)?;
         #[cfg(unix)]
@@ -3139,11 +3234,35 @@ impl NativeCollection {
     /// or storage failures.
     pub fn verify_index_references(&self) -> Result<IndexVerification, NativeStorageError> {
         self.root.assert_profile_owned()?;
-        let live: BTreeSet<String> = match self.kind {
-            CollectionKind::Document => self.document_ids()?.into_iter().collect(),
-            CollectionKind::File => self.raw_file_ids()?.into_iter().collect(),
-        };
-        let snapshot = self.index_snapshot()?;
+        let live = self.live_ids()?;
+        let snapshot = self.shared_index_snapshot()?;
+        Self::index_references(&live, &snapshot)
+    }
+
+    /// The identifiers of this collection's live documents, or of its live
+    /// raw files for a file collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsafe or corrupt paths, or storage failures.
+    pub fn live_ids(&self) -> Result<Vec<String>, NativeStorageError> {
+        match self.kind {
+            CollectionKind::Document => self.document_ids(),
+            CollectionKind::File => self.raw_file_ids(),
+        }
+    }
+
+    /// [`Self::verify_index_references`] over identifiers and an index the
+    /// caller already read, so one operation reads each of them once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for corrupt keys or orphaned identifiers.
+    pub fn index_references(
+        live: &[String],
+        snapshot: &IndexSnapshot,
+    ) -> Result<IndexVerification, NativeStorageError> {
+        let live: BTreeSet<&str> = live.iter().map(String::as_str).collect();
         let mut indexed = BTreeSet::new();
         let mut key_count = 0_usize;
         for key in snapshot
@@ -4565,6 +4684,7 @@ fn path_exists_no_follow(path: &Path) -> Result<bool, NativeStorageError> {
 }
 
 fn read_dir_sorted(path: &Path) -> Result<Vec<fs::DirEntry>, NativeStorageError> {
+    FileAccessLog::record_listing(path);
     let mut entries = platform_companion::read_dir_without_companions(path)
         .map_err(NativeStorageError::io)?
         .collect::<Result<Vec<_>, _>>()

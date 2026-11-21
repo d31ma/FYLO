@@ -7,6 +7,7 @@ pub(crate) struct ReadScopeState {
     depth: usize,
     verified: Vec<u64>,
     canonical: Vec<(PathBuf, PathBuf)>,
+    descriptors: Vec<(PathBuf, Option<Vec<u8>>)>,
 }
 
 impl ReadScopeState {
@@ -54,6 +55,22 @@ impl ReadScopeState {
         }
     }
 
+    /// The bytes a collection descriptor had when this scope first read it,
+    /// or `Some(None)` when it was absent; `None` when not read yet.
+    pub(crate) fn descriptor(&self, path: &Path) -> Option<Option<Vec<u8>>> {
+        self.descriptors
+            .iter()
+            .find(|(read, _)| read == path)
+            .map(|(_, bytes)| bytes.clone())
+    }
+
+    pub(crate) fn remember_descriptor(&mut self, path: &Path, bytes: Option<&[u8]>) {
+        if self.is_open() {
+            self.descriptors
+                .push((path.to_path_buf(), bytes.map(<[u8]>::to_vec)));
+        }
+    }
+
     fn is_open(&self) -> bool {
         self.depth > 0
     }
@@ -62,6 +79,7 @@ impl ReadScopeState {
         if !self.is_open() {
             self.verified.clear();
             self.canonical.clear();
+            self.descriptors.clear();
         }
     }
 }

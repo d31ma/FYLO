@@ -35,7 +35,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use base64::Engine as _;
-use fylo_engine::{EngineError, HotSet, ReadDocument, ReadOnlyEngine, WriteEngine};
+use fylo_engine::{
+    EngineError, HotSet, IndexedInspection, ReadDocument, ReadOnlyEngine, WriteEngine,
+};
 use fylo_format::Document;
 use fylo_query::{
     JoinSpec, QueryErrorCode, QueryLimits, SqlOperation, SqlPlan, StructuredQuery, prepare_sql,
@@ -953,6 +955,8 @@ impl Session {
             "getFileData" => self.get_file_data(request),
             "findDocs" => self.find_documents(request),
             "inspectCollection" => self.inspect_collection(request),
+            "collectionExists" => self.collection_exists(request),
+            "listCollections" => self.list_collections(request),
             "inspectDatabase" => self.inspect_database(&self.database_path(request, operation)?),
             "verifyDatabase" => self.verify_database(&self.database_path(request, operation)?),
             "verifyCollection" => self.verify_collection(request),
@@ -1571,22 +1575,28 @@ impl Session {
 
     /// Reshaped into the published `inspectCollection` result so an existing
     /// client sees the same field names both engines have always emitted.
+    ///
+    /// `indexedDocs` comes from the index and the collection's listing, so
+    /// the call reads no document; `"verify": true` counts it with the full
+    /// index check instead, which reads every document and fails on one it
+    /// cannot read, parse or decrypt (FYLO-CR1).
     fn inspect_collection(&self, request: &Value) -> Result<Value, MachineError> {
         let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
-        let inspection = match engine.inspect(collection) {
-            Ok(inspection) => inspection,
+        let full_check = Self::wants_full_check(request)?;
+        let indexed = match Self::indexed_inspection(&engine, collection, full_check) {
+            Ok(indexed) => indexed,
             Err(error) if error.storage_code() == Some(NativeStorageErrorCode::NotFound) => {
                 return Ok(absent_collection(collection));
             }
             Err(error) => return Err(engine_error(&error)),
         };
+        let IndexedInspection {
+            inspection,
+            indexed_documents: indexed,
+        } = indexed;
         let kind =
             serde_json::to_value(inspection.kind).map_err(|error| serialization_error(&error))?;
-        let indexed = engine
-            .verify_index(collection)
-            .map_err(|error| engine_error(&error))?
-            .indexed_documents;
         let validation =
             ValidationMode::resolve(inspection.validation, self.config.storage.strict_schema);
         Ok(json!({
@@ -1602,6 +1612,50 @@ impl Session {
             "schemaViolations": inspection.schema_violations,
             "wordFields": inspection.word_fields,
         }))
+    }
+
+    fn indexed_inspection(
+        engine: &ReadOnlyEngine,
+        collection: &str,
+        full_check: bool,
+    ) -> Result<IndexedInspection, EngineError> {
+        if full_check {
+            return engine.inspect_verified(collection);
+        }
+        engine.inspect_indexed(collection)
+    }
+
+    /// The optional `verify` flag of `inspectCollection`.
+    fn wants_full_check(request: &Value) -> Result<bool, MachineError> {
+        match request.get("verify") {
+            None => Ok(false),
+            Some(Value::Bool(verify)) => Ok(*verify),
+            Some(_) => Err(MachineError::new(
+                "EBADREQUEST",
+                "machine request field \"verify\" must be a boolean",
+            )),
+        }
+    }
+
+    /// Whether a collection exists, from its catalog descriptor and folder
+    /// only: no document, index or transaction file is read.
+    fn collection_exists(&self, request: &Value) -> Result<Value, MachineError> {
+        let engine = self.engine(request)?;
+        let collection = require_string(request, "collection")?;
+        let exists = engine
+            .collection_exists(collection)
+            .map_err(|error| engine_error(&error))?;
+        Ok(json!({ "collection": collection, "exists": exists }))
+    }
+
+    /// The root's collection names, sorted, from the catalog and the
+    /// collection folders only.
+    fn list_collections(&self, request: &Value) -> Result<Value, MachineError> {
+        let names = self
+            .engine(request)?
+            .collection_names()
+            .map_err(|error| engine_error(&error))?;
+        Ok(json!({ "collections": names }))
     }
 
     /// The `.vdbx` file a request names: its `root`, or the session's.
@@ -2086,7 +2140,7 @@ impl Session {
         let kind =
             serde_json::to_value(inspection.kind).map_err(|error| serialization_error(&error))?;
         let indexed = engine
-            .verify_index(collection)
+            .inspect_indexed(collection)
             .map_err(|error| engine_error(&error))?
             .indexed_documents;
         Ok(json!({

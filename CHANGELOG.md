@@ -74,6 +74,21 @@
 
 ### Changed
 
+- **`inspectCollection` reads no document (FYLO-CR1).** Its `indexedDocs`
+  now comes from the collection's listing and its index, read once each, as
+  the full index check counts it: the same number in every case, including a
+  pending index log, a missing index snapshot and a collection in the middle
+  of a write. Before, the call read and parsed every document of the
+  collection, so the first call of a fresh process on a cold page cache cost
+  one disk read per document (about 7 s for 650 documents on a network-backed
+  disk). The one visible change: a document that cannot be read, parsed or
+  decrypted no longer makes `inspectCollection` fail; `verifyCollection`
+  still finds it. Send `"verify": true` to get the old full check, which
+  reads every document and fails on such a document. `rebuildCollection`
+  counts `indexedDocs` the same cheap way after its rebuild. Inside one read
+  request, a collection's catalog descriptor is now read once (it was read
+  twice per document by the full check), and the full check reads the index
+  once instead of three times.
 - **An unknown `fylo` option is an error.** `fylo exec` and the other
   subcommands refuse an option they do not read, and a value option with no
   value after it, with a message on stderr and exit code 1 (no answer
@@ -134,6 +149,14 @@
 
 ### Added
 
+- **`collectionExists` and `listCollections` (FYLO-CR1).** Two read
+  operations that read only the catalog and the collection folders, never a
+  document, index or transaction file. `{"op":"collectionExists",
+  "collection":"posts"}` answers `{"collection":"posts","exists":true}` (or
+  `false`; an invalid name is an error). `{"op":"listCollections"}` answers
+  `{"collections":[...]}` with the document and file collection names,
+  sorted. Both work on folder roots and `.vdbx` databases. The machine
+  registry now has 59 operations.
 - **Temp cache folder (ADR 0030, slice S2).** A new `capabilities.tempCache`
   in every handshake, the options `--temp-cache <off|auto|on>`,
   `--temp-cache-bytes <n>` and `--temp-cache-dir <path>` (and

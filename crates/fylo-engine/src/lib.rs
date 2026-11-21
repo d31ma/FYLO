@@ -8,6 +8,7 @@ mod encryption;
 mod field_rekey;
 mod hot_set;
 mod index_operation;
+mod indexed_inspection;
 mod index_plan;
 mod lazy_migration;
 mod schema;
@@ -24,6 +25,7 @@ use std::sync::Arc;
 
 use encryption::{EncryptionReader, is_encrypted_field, reject_undeclared_ciphertext};
 pub use field_rekey::FieldRekey;
+pub use indexed_inspection::IndexedInspection;
 use fylo_format::{
     CanonicalMetadata, Document, DocumentLimits, FormatError, FormatErrorCode, TtidTimestamps,
 };
@@ -1300,99 +1302,122 @@ impl ReadOnlyEngine {
             .collection(collection)
             .map_err(EngineError::storage)?;
         Self::read_stable(&collection, || {
-            let mut verification = collection
-                .verify_index_references()
-                .map_err(EngineError::storage)?;
-            let encrypted_fields = self
-                .encryption
-                .as_ref()
-                .map(|encryption| encryption.encrypted_fields(collection.name()))
-                .transpose()
-                .map_err(EngineError::encryption)?
-                .unwrap_or_default();
-            let mut expected = BTreeSet::new();
-            let identifiers = match collection.kind() {
-                CollectionKind::Document => {
-                    collection.document_ids().map_err(EngineError::storage)?
-                }
-                CollectionKind::File => collection.raw_file_ids().map_err(EngineError::storage)?,
-            };
-            for identifier in identifiers {
-                let fields = match collection.kind() {
-                    CollectionKind::Document => {
-                        let stored = collection
-                            .read_document(&identifier)
-                            .map_err(EngineError::storage)?;
-                        // The index is built from documents as stored, so it
-                        // is checked against them, not their head shape.
-                        self.decrypt_fields(
-                            collection.name(),
-                            Document::parse(&stored.bytes, DocumentLimits::default())
-                                .map_err(|error| {
-                                    EngineError::damaged_document(error, &stored.path)
-                                })?
-                                .into_fields(),
-                            None,
-                        )?
-                    }
-                    CollectionKind::File => {
-                        let stored = collection
-                            .read_raw_file(&identifier)
-                            .map_err(EngineError::storage)?;
-                        raw_file_index_fields(&identifier, stored)?
-                    }
-                };
-                expected.extend(
-                    index_entries_for_document(&identifier, &fields, |field, value| {
-                        if is_encrypted_field(field, &encrypted_fields) {
-                            let encryption = self.encryption.as_ref().ok_or_else(|| {
-                                "encrypted index field has no schema/key context".to_owned()
-                            })?;
-                            encryption
-                                .blind_index(collection.name(), value)
-                                .map(IndexLookupValue::encrypted)
-                        } else {
-                            Ok(IndexLookupValue::plain(value))
-                        }
-                    })
-                    .map_err(EngineError::encryption)?,
-                );
-            }
-            let snapshot = collection.index_snapshot().map_err(EngineError::storage)?;
-            let actual: BTreeSet<String> = snapshot
-                .as_bytes()
-                .split(|byte| *byte == b'\n')
-                .filter(|key| !key.is_empty())
-                .map(|key| {
-                    std::str::from_utf8(key)
-                        .map(str::to_owned)
-                        .map_err(|error| {
-                            EngineError::new(
-                                EngineErrorCode::Storage,
-                                format!("prefix index key is not valid UTF-8: {error}"),
-                            )
-                        })
-                })
-                .collect::<Result<_, _>>()?;
-            verification.expected_key_count = Some(expected.len());
-            verification.missing_keys = Some(expected.difference(&actual).count());
-            verification.extra_keys = Some(actual.difference(&expected).count());
-            verification.rebuild_equivalent = actual == expected;
-            // A count alone cannot be acted on: an operator, and a failing CI
-            // job, need to see which keys drifted. The sample is bounded so a
-            // wholesale mismatch cannot produce an unbounded report.
-            verification.missing_key_sample = expected
-                .difference(&actual)
-                .take(MAX_DRIFT_SAMPLE)
-                .cloned()
-                .collect();
-            verification.extra_key_sample = actual
-                .difference(&expected)
-                .take(MAX_DRIFT_SAMPLE)
-                .cloned()
-                .collect();
-            Ok(verification)
+            let listing = Self::listing_of(&collection)?;
+            self.verify_listing(&collection, &listing)
         })
+    }
+
+    /// [`Self::inspect_indexed`] whose count comes from the full check of
+    /// [`Self::verify_index`]: every document is read, and one it cannot
+    /// read, parse or decrypt fails the call. The listing and the index are
+    /// still read once.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::inspect_indexed`] and [`Self::verify_index`].
+    pub fn inspect_verified(&self, collection: &str) -> Result<IndexedInspection, EngineError> {
+        let collection = self
+            .root
+            .collection(collection)
+            .map_err(EngineError::storage)?;
+        Self::read_stable(&collection, || {
+            let listing = Self::listing_of(&collection)?;
+            let verification = self.verify_listing(&collection, &listing)?;
+            Ok(IndexedInspection {
+                inspection: self.inspection_of(&collection, &listing)?,
+                indexed_documents: verification.indexed_documents,
+            })
+        })
+    }
+
+    /// The full index check over a listing and index already read.
+    fn verify_listing(
+        &self,
+        collection: &NativeCollection,
+        (live, snapshot): &(Vec<String>, std::sync::Arc<fylo_query::IndexSnapshot>),
+    ) -> Result<IndexVerification, EngineError> {
+        let mut verification = NativeCollection::index_references(live, snapshot)
+            .map_err(EngineError::storage)?;
+        let encrypted_fields = self
+            .encryption
+            .as_ref()
+            .map(|encryption| encryption.encrypted_fields(collection.name()))
+            .transpose()
+            .map_err(EngineError::encryption)?
+            .unwrap_or_default();
+        let mut expected = BTreeSet::new();
+        for identifier in live {
+            let fields = match collection.kind() {
+                CollectionKind::Document => {
+                    let stored = collection
+                        .read_document(&identifier)
+                        .map_err(EngineError::storage)?;
+                    // The index is built from documents as stored, so it
+                    // is checked against them, not their head shape.
+                    self.decrypt_fields(
+                        collection.name(),
+                        Document::parse(&stored.bytes, DocumentLimits::default())
+                            .map_err(|error| EngineError::damaged_document(error, &stored.path))?
+                            .into_fields(),
+                        None,
+                    )?
+                }
+                CollectionKind::File => {
+                    let stored = collection
+                        .read_raw_file(&identifier)
+                        .map_err(EngineError::storage)?;
+                    raw_file_index_fields(&identifier, stored)?
+                }
+            };
+            expected.extend(
+                index_entries_for_document(&identifier, &fields, |field, value| {
+                    if is_encrypted_field(field, &encrypted_fields) {
+                        let encryption = self.encryption.as_ref().ok_or_else(|| {
+                            "encrypted index field has no schema/key context".to_owned()
+                        })?;
+                        encryption
+                            .blind_index(collection.name(), value)
+                            .map(IndexLookupValue::encrypted)
+                    } else {
+                        Ok(IndexLookupValue::plain(value))
+                    }
+                })
+                .map_err(EngineError::encryption)?,
+            );
+        }
+        let actual: BTreeSet<String> = snapshot
+            .as_bytes()
+            .split(|byte| *byte == b'\n')
+            .filter(|key| !key.is_empty())
+            .map(|key| {
+                std::str::from_utf8(key)
+                    .map(str::to_owned)
+                    .map_err(|error| {
+                        EngineError::new(
+                            EngineErrorCode::Storage,
+                            format!("prefix index key is not valid UTF-8: {error}"),
+                        )
+                    })
+            })
+            .collect::<Result<_, _>>()?;
+        verification.expected_key_count = Some(expected.len());
+        verification.missing_keys = Some(expected.difference(&actual).count());
+        verification.extra_keys = Some(actual.difference(&expected).count());
+        verification.rebuild_equivalent = actual == expected;
+        // A count alone cannot be acted on: an operator, and a failing CI
+        // job, need to see which keys drifted. The sample is bounded so a
+        // wholesale mismatch cannot produce an unbounded report.
+        verification.missing_key_sample = expected
+            .difference(&actual)
+            .take(MAX_DRIFT_SAMPLE)
+            .cloned()
+            .collect();
+        verification.extra_key_sample = actual
+            .difference(&expected)
+            .take(MAX_DRIFT_SAMPLE)
+            .cloned()
+            .collect();
+        Ok(verification)
     }
 
     /// Execute a validated structured query over live JSON documents.
@@ -1874,55 +1899,111 @@ impl ReadOnlyEngine {
             .collection(collection)
             .map_err(EngineError::storage)?;
         Self::read_stable(&collection, || {
-            let generation = collection.generation().map_err(EngineError::storage)?;
-            let (document_count, file_count, deleted_count) = match collection.kind() {
-                CollectionKind::Document => (
-                    collection
-                        .document_ids()
-                        .map_err(EngineError::storage)?
-                        .len(),
-                    0,
-                    collection
-                        .deleted_document_ids()
-                        .map_err(EngineError::storage)?
-                        .len(),
-                ),
-                CollectionKind::File => (
-                    0,
-                    collection
-                        .raw_file_ids()
-                        .map_err(EngineError::storage)?
-                        .len(),
-                    collection
-                        .deleted_raw_file_ids()
-                        .map_err(EngineError::storage)?
-                        .len(),
-                ),
-            };
-            let index_bytes = collection
-                .index_snapshot()
-                .map_err(EngineError::storage)?
-                .as_bytes()
-                .len();
-            Ok(CollectionInspection {
-                collection: collection.name().to_owned(),
-                kind: collection.kind(),
-                layout: collection.layout(),
-                generation: generation.generation,
-                state: generation.state,
-                document_count,
-                file_count,
-                deleted_count,
-                index_bytes,
-                validation: collection.validation(),
-                word_fields: collection.word_fields().to_vec(),
-                schema_violations: fylo_storage_native::schema_violations(
-                    self.root.path(),
-                    collection.name(),
-                ),
-                read_only: true,
+            let listing = Self::listing_of(&collection)?;
+            self.inspection_of(&collection, &listing)
+        })
+    }
+
+    /// [`Self::inspect`] with the number of live documents the index refers
+    /// to, as [`Self::verify_index`] counts them, from one read of the
+    /// collection's listing and of its index and no document read.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable error for unsafe, corrupt, missing, or concurrently
+    /// mutating storage, and for an index key that is malformed or names a
+    /// document that does not exist.
+    pub fn inspect_indexed(&self, collection: &str) -> Result<IndexedInspection, EngineError> {
+        let collection = self
+            .root
+            .collection(collection)
+            .map_err(EngineError::storage)?;
+        Self::read_stable(&collection, || {
+            let listing = Self::listing_of(&collection)?;
+            let references = NativeCollection::index_references(&listing.0, &listing.1)
+                .map_err(EngineError::storage)?;
+            Ok(IndexedInspection {
+                inspection: self.inspection_of(&collection, &listing)?,
+                indexed_documents: references.indexed_documents,
             })
         })
+    }
+
+    /// Whether `collection` exists, from its catalog descriptor and folder
+    /// only.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable error for an invalid name, a corrupt descriptor or
+    /// an unsafe path.
+    pub fn collection_exists(&self, collection: &str) -> Result<bool, EngineError> {
+        self.root
+            .collection_exists(collection)
+            .map_err(EngineError::storage)
+    }
+
+    /// The names of the root's collections, sorted, from the catalog and the
+    /// collection folders only.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable error for a corrupt descriptor, an unsafe path or a
+    /// storage failure.
+    pub fn collection_names(&self) -> Result<Vec<String>, EngineError> {
+        self.root.collection_names().map_err(EngineError::storage)
+    }
+
+    /// The collection's live identifiers and its merged index, each read once.
+    fn listing_of(
+        collection: &NativeCollection,
+    ) -> Result<(Vec<String>, std::sync::Arc<fylo_query::IndexSnapshot>), EngineError> {
+        let live = collection.live_ids().map_err(EngineError::storage)?;
+        let index = collection
+            .shared_index_snapshot()
+            .map_err(EngineError::storage)?;
+        Ok((live, index))
+    }
+
+    fn inspection_of(
+        &self,
+        collection: &NativeCollection,
+        (live, index): &(Vec<String>, std::sync::Arc<fylo_query::IndexSnapshot>),
+    ) -> Result<CollectionInspection, EngineError> {
+        let generation = collection.generation().map_err(EngineError::storage)?;
+        let (document_count, file_count) = Self::live_counts(collection.kind(), live.len());
+        Ok(CollectionInspection {
+            collection: collection.name().to_owned(),
+            kind: collection.kind(),
+            layout: collection.layout(),
+            generation: generation.generation,
+            state: generation.state,
+            document_count,
+            file_count,
+            deleted_count: Self::deleted_count(collection)?,
+            index_bytes: index.as_bytes().len(),
+            validation: collection.validation(),
+            word_fields: collection.word_fields().to_vec(),
+            schema_violations: fylo_storage_native::schema_violations(
+                self.root.path(),
+                collection.name(),
+            ),
+            read_only: true,
+        })
+    }
+
+    fn live_counts(kind: CollectionKind, live: usize) -> (usize, usize) {
+        match kind {
+            CollectionKind::Document => (live, 0),
+            CollectionKind::File => (0, live),
+        }
+    }
+
+    fn deleted_count(collection: &NativeCollection) -> Result<usize, EngineError> {
+        let deleted = match collection.kind() {
+            CollectionKind::Document => collection.deleted_document_ids(),
+            CollectionKind::File => collection.deleted_raw_file_ids(),
+        };
+        deleted.map(|ids| ids.len()).map_err(EngineError::storage)
     }
 
     /// Run `read` until it starts and ends at one stable generation. Its

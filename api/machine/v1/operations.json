@@ -27,6 +27,16 @@
             "retry": "safe"
         },
         {
+            "name": "collectionExists",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "listCollections",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
             "name": "rebuildCollection",
             "class": "derived-write",
             "retry": "safe"

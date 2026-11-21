@@ -1433,6 +1433,26 @@ echo '{"op":"inspectCollection","root":"/mnt/fylo","collection":"posts"}' | fylo
 }
 ```
 
+`inspectCollection` reads the collection's listing and its index, and no
+document, so a first call on a cold page cache costs a few disk reads, not
+one per document. Its `indexedDocs` is the number of live documents the
+index refers to. Send `"verify": true` for the full index check instead: it
+reads every document, and fails when one cannot be read, parsed or
+decrypted (without it, `inspectCollection` does not read documents, so it
+does not fail on them; `verifyCollection` finds them).
+
+To check that a collection exists, or to list the collections, without
+reading its index or documents:
+
+```bash
+printf '%s\n' '{"op":"collectionExists","collection":"posts"}' '{"op":"listCollections"}' \
+    | fylo exec --loop --root /mnt/fylo
+```
+
+They answer `{"collection":"posts","exists":true}` and
+`{"collections":["posts", ...]}`. Both read only the catalog and the
+collection folders.
+
 Before sending ordinary operations, supervisors can identify the exact runtime
 and discover its framing contract:
 
@@ -1466,7 +1486,7 @@ including its operation names, delivery model, message/claim limits, consumer
 groups, visibility leases, delayed delivery, idempotent publication, and
 group-specific dead letters.
 
-Supported operations: `handshake`, `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `setWordFields`, `reshardCollection`, `migrateLayout`, `compactCollection`, `verifyCollection`, `getDoc`, `getFileData`, `getLatest`, `getMeta`, `setMeta`, `findDocs`, `findDeletedDocs`, `changes`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, `merge`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`, `schemaMode`, `schemaCheck`, `schemaMigrate`, `schemaPush`, `schemaPull`, `queuePublish`, `queueClaim`, `queueAck`, `queueNack`, `queueExtend`, `queueStats`, `queueDeadLetters`, `inspectDatabase`, `verifyDatabase`.
+Supported operations: `handshake`, `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `collectionExists`, `listCollections`, `rebuildCollection`, `setWordFields`, `reshardCollection`, `migrateLayout`, `compactCollection`, `verifyCollection`, `getDoc`, `getFileData`, `getLatest`, `getMeta`, `setMeta`, `findDocs`, `findDeletedDocs`, `changes`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, `merge`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`, `schemaMode`, `schemaCheck`, `schemaMigrate`, `schemaPush`, `schemaPull`, `queuePublish`, `queueClaim`, `queueAck`, `queueNack`, `queueExtend`, `queueStats`, `queueDeadLetters`, `inspectDatabase`, `verifyDatabase`.
 
 Requests name no caller: a request that carries the removed `access` object
 is refused with `EBADREQUEST`. Access comes from the session's identity.
