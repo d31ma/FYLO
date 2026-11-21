@@ -792,8 +792,8 @@ Each slice proves its part, in its own gates:
 - Changed after the first merge, the same day: section 12 now puts test
   images on HANGAR, one per system (the user's change of mind and N17), in
   place of ATLAS. The decision was not built yet.
-- Hub review of this text: **pending**. Requested from the FYLO Build
-  Coordinator and the hub when this ADR was merged to `develop`. Section 4's
-  claim file, section 7's schema declaration of links and
-  `EFILELINK`, and the new codes `ENOTFYLOROOT` and `EFSPROBE` are details
-  this ADR adds to the spec; the review should confirm them.
+- Reviewed by the hub on 2026-11-21: details 1-5 accepted; detail 5 with the
+  key/nonce rule of ADR 0034 section 4 (a key is never used twice with the
+  same nonce). The details are section 4's claim file, section 7's schema
+  declaration of links and `EFILELINK`, and the new codes `ENOTFYLOROOT` and
+  `EFSPROBE` (this ADR), and those listed in ADR 0034's review.

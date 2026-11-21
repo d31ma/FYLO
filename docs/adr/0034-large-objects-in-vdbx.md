@@ -110,6 +110,9 @@ Facts that decide the design:
   encrypted twice under one object key: compaction copies the sealed frames
   unchanged (section 6), and `fylo pack` and `fylo rekey` give every object a
   new salt. So a (key, nonce) pair is used once.
+- **A key is never used twice with the same nonce.** Overwriting, appending
+  to or compacting a large object gives it a new key (a new salt) or a new
+  object id; FYLO never encrypts a chunk number again under the old key.
 - A range read decrypts only the chunks it reads.
 - The browser engine with a host key (ADR 0025) and protected files (ADR
   0021) use the same frames. A policy that may not read the collection may
@@ -247,8 +250,8 @@ its own decision.
 ## Review
 
 - Decision to design it now: the user, 2026-11-21 (N7), through the hub.
-- Hub review of this text: **pending**. Requested from the FYLO Build
-  Coordinator and the hub when this ADR was merged to `develop`. The fixed
-  chunk size arithmetic, the per-object key with the chunk number as nonce,
-  the 4,096-run cap and the `large-objects` flag are details this ADR adds to
-  the spec; the review should confirm them.
+- Reviewed by the hub on 2026-11-21: details 1-5 accepted; detail 5 with the
+  key/nonce rule above (a key is never used twice with the same nonce, section
+  4). The details are the fixed chunk size arithmetic, the per-object key with
+  the chunk number as nonce, the 4,096-run cap and the `large-objects` flag
+  (this ADR), and those listed in ADR 0033's review.
