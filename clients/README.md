@@ -18,28 +18,25 @@ addon. There are two kinds, sharing the same method names:
 | Node/TS  | `node/fylo.mjs`  | none (stdlib)   |
 | PHP      | `php/fylo.php`   | none (ext-json) |
 | Go       | `go/fylo.go`     | none (stdlib)   |
-| Rust     | `rust/fylo.rs`   | none (std)      |
 | C#       | `csharp/Fylo.cs` | none (BCL)      |
 | Java     | `java/Fylo.java` | none (JDK)      |
 | Dart     | `dart/fylo.dart` | none (SDK)      |
+
+Rust apps link the engine directly through the `fylo` crate, so there is no
+Rust shim.
 
 ### Local-only clients (embed the engine on-device)
 
 | Platform         | File                           | How                                                                                                          |
 | ---------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------ |
 | Browser (JS)     | `browser/fylo.js` loader       | OPFS store                                                                                                   |
-| iOS (Swift)      | `swift/Fylo.swift`             | WKWebView hosting `fylo.mjs`                                                                                 |
-| Android (Kotlin) | `kotlin/Fylo.kt`               | android.webkit.WebView hosting `fylo.mjs`                                                                    |
 | Android (native) | `io.github.d31ma:fylo-android` | FYLO's native engine through JNI ([Android native engine](#android-native-engine-iogithubd31mafylo-android)) |
-| Flutter (Dart)   | `flutter/fylo.dart`            | flutter_inappwebview hosting `fylo.mjs`                                                                      |
+| iOS (native)     | `FyloKit` Swift package        | FYLO's native engine through its C library ([iOS native engine](#ios-native-engine-fylokit))                 |
 
-The mobile hosts load the engine as `fylo.mjs`: save the release asset
-`fylo-web.mjs` under that name (see [Mobile](#mobile-ios--android)). The local-only
-clients do not support raw-file buckets, schemas, or field encryption in this
-release; see [Local-only limits](#local-only-limits).
+The browser client does not support raw-file buckets, schemas, or field
+encryption in this release; see [Local-only limits](#local-only-limits).
 
-See [Browser](#browser-fylo-webmjs), [Mobile](#mobile-ios--android), and
-[Flutter](#flutter) below.
+See [Browser](#browser-fylo-webmjs) and [Mobile](#mobile-ios--android) below.
 
 ## Install the binary
 
@@ -73,11 +70,11 @@ curl -fsSL https://github.com/d31ma/Fylo/releases/latest/download/fylo-clients.t
 
 Each shim exposes a named method per operation, so you call
 `db.findDocs("users", query)` rather than assembling a raw request. Method names
-follow **each language's own paradigm** — `snake_case` in Python/Ruby/Rust,
-`camelCase` in Node/PHP/Java/Swift/Kotlin/Dart, `PascalCase` in Go/C# (their
+follow **each language's own paradigm** — `snake_case` in Python/Ruby,
+`camelCase` in Node/PHP/Java/Dart, `PascalCase` in Go/C# (their
 exported/public methods must be capitalized):
 
-| Op            | Python / Ruby / Rust | Node / PHP / Java / Dart | Go / C#         |
+| Op            | Python / Ruby        | Node / PHP / Java / Dart | Go / C#         |
 | ------------- | -------------------- | ------------------------ | --------------- |
 | putData       | `put_data`           | `putData`                | `PutData`       |
 | getMeta       | `get_meta`           | `getMeta`                | `GetMeta`       |
@@ -99,8 +96,8 @@ shims intentionally expose a smaller dedicated-method set. Use the raw
 language (including branching and schema administration); the authoritative
 operation list is in `fylo --help` and `api/machine/v1/operations.json`.
 
-Most shims unwrap and return the operation's `result`. Rust and Java return the
-validated raw response JSON string from their dedicated methods, so callers
+Most shims unwrap and return the operation's `result`. Java returns the
+validated raw response JSON string from its dedicated methods, so callers
 decode the envelope and read its `result` field. C# returns an unwrapped
 `JsonElement`. Every shim raises, throws, or returns an error for a failed
 machine response.
@@ -181,14 +178,13 @@ outcome = send_email()
 | Ruby            | `db.queue_consumer(...) { ... }` returns a `Proc`                             |
 | PHP             | `#[FyloQueueConsumer(...)]` with `runQueueConsumer`, or `queueConsumer(...)`  |
 | Go              | `QueueConsumer(...)` returns a function using `QueueConsumerOptions`          |
-| Rust            | `queue_consumer(...)` returns a closure using `QueueConsumerOptions`          |
 | Java            | `@Fylo.QueueConsumer(...)` with `runQueueConsumer`, or `queueConsumer(...)`   |
 | C#              | `[FyloQueueConsumer(...)]` with `RunQueueConsumer`, or `QueueConsumer(...)`   |
 | Dart            | `@FyloQueueConsumer(...)` metadata explicitly bound with `queueConsumer(...)` |
 
 Go handlers receive `map[string]any`; C# and Dart receive native JSON objects.
-The dependency-free Rust and Java shims pass one validated raw delivery JSON
-object because those two single-file clients do not bundle a JSON decoder.
+The dependency-free Java shim passes one validated raw delivery JSON
+object because that single-file client does not bundle a JSON decoder.
 Python's `queue_process` also runs `async` handlers; inside an event loop that
 is already running, prefer `queue_process_async`. Decorators process one batch
 rather than polling forever, keeping execution and scaling under the host
@@ -197,8 +193,7 @@ before the visibility deadline.
 
 Object arguments are always the language's **native container** — a `dict`
 (Python), `Hash` (Ruby), object (Node), associative array (PHP), `map[string]any`
-(Go), `Map`/`List` (Java/Kotlin/Dart), `Dictionary`/array (C#/Swift), or the small
-built-in `Json` builder (Rust). No hand-written JSON strings; each shim serializes
+(Go), `Map`/`List` (Java/Dart), or `Dictionary`/array (C#). No hand-written JSON strings; each shim serializes
 for you with a dependency-free encoder (or the platform's built-in one).
 
 ### Collection facade
@@ -214,7 +209,7 @@ db.collection("users").find(query)   // find
 db.collection("users").page(query)   // findPage (a query with $sort)
 ```
 
-Go and Rust take the kind explicitly: `Create("document")` / `create("document")`.
+Go takes the kind explicitly: `Create("document")`.
 
 `db.collection(name)` (PascalCase `Collection` in Go/C#) works in every language.
 In the **dynamic languages** you can drop `collection(...)` entirely and index by
@@ -226,7 +221,7 @@ The browser facade offers the fluent signatures
 `put(id, documentOrFile).metadata(meta)`, `put(id).metadata(meta)`, and
 `get(id).metadata()`. Thin binary shims map those semantics to the machine
 protocol's explicit metadata calls: `getMeta(collection, id)` and
-`setMeta(collection, id, meta)` (snake_case in Python/Ruby/Rust; PascalCase in
+`setMeta(collection, id, meta)` (snake_case in Python/Ruby; PascalCase in
 Go/C#). Collection facades use `getMeta(id)` / `setMeta(id, meta)`, except
 Python and Ruby, which use `get_metadata(id)` / `set_metadata(id, meta)`, and
 PHP, which uses `getMetadata(id)` / `setMetadata(id, meta)`. Creating data and
@@ -237,7 +232,7 @@ In result-unwrapping shims, `getMeta` returns the complete canonical metadata
 record plus developer metadata. Every record includes `id`, `mtime`,
 `updatedAt`, and `createdAt`; raw files also include their stored file
 descriptor. Canonical fields take precedence over custom keys with the same
-name. Rust and Java return their raw response envelope as described above.
+name. Java returns its raw response envelope as described above.
 `setMeta` bulk-edits the record: supplied keys are set, `null` values remove
 keys, and omitted keys remain unchanged. The metadata argument must be a plain native map/object with
 names of 1-64 characters, starting with a letter or digit and containing only
@@ -245,12 +240,6 @@ letters, digits, `.`, `_`, or `-`. Each value must be JSON-serializable and no
 larger than 60 KiB after UTF-8 JSON encoding. The local executable stores
 metadata as filesystem xattrs; the browser client uses an internal OPFS sidecar.
 
-The mobile clients are local-only WebView hosts. They allowlist the three FYLO
-assets, deny other navigation/network resources, cap requests and responses,
-bound pending calls, and time out or drain requests on cancellation, load or
-renderer failure, and close. Configure a shorter RPC timeout when the default
-30 seconds is inappropriate for your application; values are capped at five
-minutes.
 
 ```js
 // Node shim; use the naming convention from the table in other languages.
@@ -276,30 +265,20 @@ versioned contract.
 | Ruby            | `FyloError#code`                                                                             |
 | PHP             | `FyloError::getFyloCode()` (`getCode()` stays `0`)                                           |
 | Go              | `var e *fylo.Error; if errors.As(err, &e) { e.Code }`                                        |
-| Rust            | `FyloError::code_of(&io_error) -> Option<&str>`; methods still return `io::Result`           |
 | Java            | `Fylo.FyloException.getCode()` (extends `IOException`; the message is the raw response line) |
 | C#              | `FyloException.Code`                                                                         |
 | Dart            | `FyloException.code`                                                                         |
 | Browser (JS)    | `err.code`                                                                                   |
-| Swift (iOS)     | `FyloError.code`                                                                             |
-| Kotlin          | `FyloException.code`                                                                         |
-| Flutter         | `FyloException.code`                                                                         |
 
-Swift's `FyloError.failed` case now carries two values, the message and the
-code. Code that matched `case .failed(let message)` must change to
-`case .failed(let message, _)`, or catch `let error as FyloError` and read
-`error.description` and `error.code`.
-
-The raw `request` escape hatch takes one JSON object per line, so the Rust,
-Java, and C# shims reject a raw request string that contains a carriage return
-or line feed before writing anything to the child: Rust returns an
-`io::ErrorKind::InvalidInput` error, Java throws `IllegalArgumentException`,
-and C# throws `ArgumentException`.
+The raw `request` escape hatch takes one JSON object per line, so the Java
+and C# shims reject a raw request string that contains a carriage return or
+line feed before writing anything to the child: Java throws
+`IllegalArgumentException`, and C# throws `ArgumentException`.
 
 ## SQL
 
 Every client has `executeSQL(sql)` for a raw string (`execute_sql` in
-Python/Ruby/Rust, `ExecuteSQL` in Go/C#). Each also exposes a `sql` helper you
+Python/Ruby, `ExecuteSQL` in Go/C#). Each also exposes a `sql` helper you
 interpolate with your language's **native** syntax:
 
 | Language         | Interpolation                            | Escapes values? |
@@ -312,18 +291,13 @@ interpolate with your language's **native** syntax:
 | PHP              | `$db->sql("… $x")`                       | ❌ verbatim     |
 | Go               | `db.Sql(fmt.Sprintf("… %v", x))`         | ❌ verbatim     |
 | Java             | `db.sql("… " + x)`                       | ❌ verbatim     |
-| Rust             | `db.sql(&format!("… {x}"))`              | ❌ verbatim     |
-| Swift (iOS)      | `try await db.sql("… \(x)")`             | ❌ verbatim     |
-| Kotlin (Android) | `db.sql("… $x")`                         | ❌ verbatim     |
 | Dart             | `db.sql("… $x")`                         | ❌ verbatim     |
-| Flutter          | `db.sql("… $x")`                         | ❌ verbatim     |
 
 Node, the browser client, and C# hand the interpolated values to the client,
 which escapes them — those are injection-safe. The rest interpolate **before** the client sees the
 string, so values are inlined verbatim: **escape or validate untrusted input
 yourself**, or keep to app-generated SQL. In the browser, prefer the `sql` tagged
-template over `executeSQL` whenever a statement includes a value. On the mobile
-and Flutter clients, `sql` runs against the local on-device store.
+template over `executeSQL` whenever a statement includes a value.
 
 ### Access control
 
@@ -375,7 +349,6 @@ The former `env` file/map option is replaced by `config`:
 | Ruby            | `Fylo.open(root, config: './application.json')`                                                                  |
 | PHP             | `new Fylo($root, 'fylo', './application.json')`                                                                  |
 | Go              | `fylo.OpenWithOptions(root, fylo.Options{Config: "./application.json"})`                                         |
-| Rust            | `Fylo::open_with_options(root, FyloOptions { config: Some("./application.json".into()), ..Default::default() })` |
 | Java            | `new Fylo(root, options)` with `options.config = "./application.json"`                                           |
 | C#              | `new Fylo.Fylo(root, new Fylo.Fylo.Options { Config = "./application.json" })`                                   |
 | Dart            | `Fylo.open(root, config: './application.json')`                                                                  |
@@ -415,8 +388,8 @@ tenant data. Keep secret files out of source control and owner-readable only
 [configuration guide](../docs/configuration.md) for the full migration and secret
 reference contract.
 
-Browser and mobile clients do not implicitly read these files because they do
-not spawn the native FYLO binary. Configure their storage adapters directly,
+The browser client does not implicitly read these files because it does
+not spawn the native FYLO binary. Configure its storage adapter directly,
 and never publish native secrets in website JSON or bundles.
 
 `exclusiveRoot` makes a competing loop reject its startup handshake with
@@ -444,8 +417,8 @@ binary returns `EINVALIDCURSOR`, discard the partial traversal and restart page
 one. The snapshot is immutable, so writes during traversal appear only in a new
 traversal.
 
-Pagination is a binary machine-protocol feature. Browser, mobile, and Flutter
-clients query their embedded local engine directly and do not accept these
+Pagination is a binary machine-protocol feature. The browser
+client queries its embedded local engine directly and do not accept these
 process-bound cursors.
 
 A query with `$sort` (ADR 0023) uses a different paging model. Call `findPage`
@@ -454,9 +427,7 @@ with `$sort`, `$limit` and, after the first page, `$after`. It returns one page
 as `{items, nextCursor}`. Pass `nextCursor` as `$after` for the next page; it is
 null on the last page. `$match` queries need word fields first:
 `setWordFields(collection, fields)` (`words(fields)` on the facade) chooses
-them, and an empty list clears them. Unlike `findDocsPage`, this paging also
-works in the mobile and Flutter clients, which send the bridge ops
-`setWordFields` and `findPage`.
+them, and an empty list clears them.
 
 **Change feed.** `changes(collection, after, limit)` reads one page of a
 collection's change feed. The collection facade exposes `changes(after, limit)`.
@@ -469,8 +440,7 @@ reading while `more` is true. The cursor is durable: you can save it and use it
 again after a restart. If a call fails with `ECURSOR_EXPIRED`, the cursor is too
 old. Read the collection again (for example with `findDocs`), then continue
 from `after` null. A collection that uses the files layout has no change feed
-and fails with `ELAYOUTUNSUPPORTED`. Mobile and Flutter clients send the same
-call through the WebView bridge.
+and fails with `ELAYOUTUNSUPPORTED`.
 
 ## Browser (`fylo-web.mjs`)
 
@@ -551,8 +521,8 @@ is updated only after a successful Release workflow.
 
 ### Local-only limits
 
-The browser loader (`fylo.js` / `fylo-web.mjs`) and the iOS, Android, and Flutter
-clients that host it do not support these features in this release:
+The browser loader (`fylo.js` / `fylo-web.mjs`) does not support these features
+in this release:
 
 - raw-file buckets (`createCollection(name, "file")`, `kind: 'file'`)
 - schemas (collection schema validation and schema administration)
@@ -568,10 +538,9 @@ fails with `Collection not found`.
 
 ### Android native engine (`io.github.d31ma:fylo-android`)
 
-Since ADR 0026 an Android app can link FYLO's **native engine** instead of
-hosting the web engine in a WebView: the same Rust engine as the `fylo`
-binary, with real files, `.vdbx` databases, schemas, identities and field
-encryption. The app picks one of the two; they share the `.vdbx` format.
+Since ADR 0026 an Android app links FYLO's **native engine**: the same Rust
+engine as the `fylo` binary, with real files, `.vdbx` databases, schemas,
+identities and field encryption.
 (iOS gets the same engine through the Swift package `FyloKit`; see
 [iOS native engine](#ios-native-engine-fylokit).)
 
@@ -654,89 +623,6 @@ try db.close()
   lease. An app extension that opens the same database from a shared app-group
   container is a second process; that case is not tested on iOS yet (see
   `docs/operations/vdbx-byte-range-lock-qualification.md`).
-
-### WebView engine
-
-Phones can't spawn the binary either, so the mobile clients are **local-only**
-like the browser: they host the same web engine (`fylo.mjs`) in a headless
-WebView (WKWebView on iOS, `android.webkit.WebView` on Android) and expose a
-native async API. All reads and writes hit an on-device OPFS store — fully
-offline, no backend.
-
-Bundle three files as app assets: the release asset `fylo-web.mjs` saved as
-`fylo.mjs` (the bridge imports `./fylo.mjs`), plus `host.html` and `bridge.js`
-from [`mobile/`](mobile/). They must be served from a
-**secure origin** — a custom `fylo-app://` scheme on iOS, an `https://` origin via
-request interception on Android — or the browser engine can't use OPFS.
-
-Raw-file buckets, schemas, and field encryption are not available on mobile in
-this release (see [Local-only limits](#local-only-limits)).
-
-The bridge runs the engine on the WebView's main thread. A native `config` may
-set `worker: true` to use a worker instead; the host must then also serve the
-engine's worker scripts.
-
-On iOS, add `Fylo.swift` to your app target; it is compiled with your app, so
-there is no module to import. On Android, add `Fylo.kt` to your app module
-together with the `org.jetbrains.kotlinx:kotlinx-coroutines-android` dependency:
-the client resumes on `Dispatchers.Main`, which that artifact provides at runtime.
-
-```swift
-// iOS — clients/swift/Fylo.swift (Foundation + WebKit)
-let db = try await Fylo()
-try await db.createCollection("users")
-try await db.putData("users", ["name": "Ada", "role": "admin"])
-let admins = try await db.findDocs("users", ["$ops": [["role": ["$eq": "admin"]]]])
-```
-
-```kotlin
-// Android — clients/kotlin/Fylo.kt (android.webkit + org.json + kotlinx-coroutines-android)
-// Inside a coroutine, e.g. lifecycleScope.launch { ... }
-val db = Fylo.open(context)
-db.createCollection("users")
-db.putData("users", mapOf("name" to "Ada", "role" to "admin"))
-val admins = db.findDocs("users", mapOf("\$ops" to listOf(mapOf("role" to mapOf("\$eq" to "admin")))))
-```
-
-Same method names as the shims (`createCollection`, `putData`, `getLatest`,
-`patchDoc`, `delDoc`, `restoreDoc`, `findDocs`, `findPage`, `setWordFields`,
-`executeSQL`, `sql`).
-
-## Flutter
-
-Flutter apps are Dart, so where the app runs decides which client to use:
-
-- **Flutter iOS / Android / desktop** → `flutter/fylo.dart` — the same local-only
-  model as the native mobile clients, hosting `fylo.mjs` in a headless
-  [`flutter_inappwebview`](https://pub.dev/packages/flutter_inappwebview) (`^6.0.0`).
-  It exposes the same async API + `collection()` facade. Add the three engine
-  assets under `assets/fylo/` (the release asset `fylo-web.mjs` saved as
-  `fylo.mjs`, plus `host.html` and `bridge.js` from `mobile/`) and declare them
-  in `pubspec.yaml`. Raw-file buckets, schemas, and field encryption are not
-  available here in this release (see [Local-only limits](#local-only-limits)).
-- **Flutter web** → use `fylo-web.mjs` directly via `dart:js_interop`. It already
-  runs in a browser with OPFS, so no WebView is needed.
-- **Flutter desktop, native binary** → the `dart/fylo.dart` shim also works, since
-  desktop can spawn the `fylo` binary.
-
-```dart
-import 'fylo.dart';
-
-final db = await Fylo.open();
-await db.collection('users').create();
-await db.collection('users').put({'name': 'Ada', 'role': 'admin'});
-final admins = await db.collection('users').find({r'$ops': [{'role': {r'$eq': 'admin'}}]});
-```
-
-Like the browser, it needs the assets served from a **secure origin** — the client
-does this for you by serving them over `http://localhost` (a secure context), so
-OPFS is available. On **iOS**, add an App Transport Security exception so the
-WebView can reach that localhost server — in `ios/Runner/Info.plist`:
-
-```xml
-<key>NSAppTransportSecurity</key>
-<dict><key>NSAllowsLocalNetworking</key><true/></dict>
-```
 
 ## Concurrency
 

@@ -379,7 +379,7 @@ One identity per open database, per process. The identity is named by a
 | `keychain:<label>` | macOS data-protection keychain item in the app's access group, or a Secure Enclave key (`se:` prefix) | macOS, iOS |
 | `cng:<name>` | Windows CNG key, Platform Crypto Provider (TPM) when present, else software KSP; DPAPI-protected | Windows |
 | `creds:<name>` | `systemd-creds` credential (TPM2 or host key), handed by systemd to one named unit | Linux services |
-| `keystore:<alias>` | Android Keystore, which keeps keys per app | Android WebView host |
+| `keystore:<alias>` | Android Keystore, which keeps keys per app | Android (the `fylo-android` AAR) |
 | `file:<path>` | PKCS#8 file, which must be `0400` or `0600` and owned by the process's user | Everywhere; development and CI |
 | `webcrypto:<name>` | Non-extractable `CryptoKey` in the origin's IndexedDB | Browser |
 

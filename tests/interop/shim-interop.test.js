@@ -81,7 +81,6 @@ describe('client shim interop via fylo exec --loop', () => {
             ['ruby/fylo.rb', ['find_docs_page', 'find_deleted_docs_page', 'def changes(']],
             ['php/fylo.php', ['findDocsPage', 'findDeletedDocsPage', 'function changes(']],
             ['go/fylo.go', ['FindDocsPage', 'FindDeletedDocsPage', 'func (f *Fylo) Changes(']],
-            ['rust/fylo.rs', ['find_docs_page', 'find_deleted_docs_page', 'fn changes(']],
             ['java/Fylo.java', ['findDocsPage', 'findDeletedDocsPage', 'public String changes(']],
             [
                 'csharp/Fylo.cs',
@@ -102,7 +101,6 @@ describe('client shim interop via fylo exec --loop', () => {
             ['ruby/fylo.rb', ['"setWordFields"', 'def find_page(collection, query)']],
             ['php/fylo.php', ["'setWordFields'", 'function findPage(string $collection']],
             ['go/fylo.go', ['"setWordFields"', 'func (f *Fylo) FindPage(']],
-            ['rust/fylo.rs', ['"op":"setWordFields"', 'pub fn find_page(&mut self, collection']],
             ['java/Fylo.java', ['"setWordFields"', 'public String findPage(String collection']],
             ['csharp/Fylo.cs', ['\\"op\\":\\"setWordFields\\"', 'FindPage(string collection']],
             ['dart/fylo.dart', ["'setWordFields'", 'findPage(String collection']]
@@ -120,7 +118,6 @@ describe('client shim interop via fylo exec --loop', () => {
             ['ruby/fylo.rb', ['config: nil']],
             ['php/fylo.php', ['?string $config']],
             ['go/fylo.go', ['OpenWithOptions', 'Config']],
-            ['rust/fylo.rs', ['config: Option<PathBuf>', 'open_with_options']],
             ['java/Fylo.java', ['class Options', 'String config']],
             ['csharp/Fylo.cs', ['class Options', 'string Config']],
             ['dart/fylo.dart', ['String? config']]
@@ -209,18 +206,6 @@ describe('client shim interop via fylo exec --loop', () => {
                 ]
             ],
             [
-                'rust/fylo.rs',
-                [
-                    'queue_publish',
-                    'queue_claim',
-                    'queue_ack',
-                    'queue_nack',
-                    'queue_extend',
-                    'queue_stats',
-                    'queue_dead_letters'
-                ]
-            ],
-            [
                 'java/Fylo.java',
                 [
                     'queuePublish',
@@ -275,10 +260,6 @@ describe('client shim interop via fylo exec --loop', () => {
             [
                 'go/fylo.go',
                 ['QueueConsumerOptions', 'QueueProcess', 'QueueConsumer', 'queue handler failed']
-            ],
-            [
-                'rust/fylo.rs',
-                ['QueueConsumerOptions', 'queue_process', 'queue_consumer', 'queue handler failed']
             ],
             [
                 'java/Fylo.java',
@@ -1265,61 +1246,6 @@ Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object>
             expect(parsed.nextIsOwnResponse).toBe(true)
             expect(parsed.code).toBe('EINVALIDDOCID')
             expect(parsed.message).toBe(INVALID_ID_MESSAGE)
-        },
-        COMPILED_CLIENT_TIMEOUT
-    )
-
-    test(
-        'Rust shim rejects a multi-line raw request and exposes the error code',
-        async () => {
-            await requireCommand('rustc')
-            const directory = await tempRoot('fylo-rust-failures-')
-            await writeFile(
-                path.join(directory, 'fylo.rs'),
-                await readFile(path.join(shimRoot, 'rust', 'fylo.rs'))
-            )
-            await writeFile(
-                path.join(directory, 'probe.rs'),
-                `mod fylo;
-use fylo::{Fylo, FyloError, FyloOptions, Json};
-
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let options = FyloOptions { binary: args[1].clone(), config: None };
-    let mut db = Fylo::open_with_options(&args[2], options).unwrap();
-    db.create_collection("users", "document").unwrap();
-    let created = db.put_data("users", Json::obj(vec![("name", "Ada".into())])).unwrap();
-    let id = created.split("\\"result\\":\\"").nth(1).unwrap().split('"').next().unwrap().to_string();
-    let line_break = db
-        .request("{\\"op\\":\\"inspectCollection\\",\\"collection\\":\\"users\\"}\\n{\\"op\\":\\"handshake\\"}")
-        .unwrap_err()
-        .to_string();
-    let next = db.get_latest("users", &id).unwrap();
-    let failure = db.get_doc("users", "bad").unwrap_err();
-    println!(
-        "{{\\"lineBreak\\":{:?},\\"nextIsOwnResponse\\":{},\\"code\\":{:?},\\"messageIsResponse\\":{}}}",
-        line_break,
-        next.contains("\\"op\\":\\"getLatest\\"") && next.contains(&id),
-        FyloError::code_of(&failure).unwrap_or_default(),
-        failure.to_string().contains(${JSON.stringify(INVALID_ID_MESSAGE)})
-    );
-}
-`
-            )
-            const executable = path.join(directory, 'probe')
-            const compile = await run(
-                ['rustc', '--edition', '2021', '-A', 'dead_code', 'probe.rs', '-o', executable],
-                { cwd: directory, timeout: COMPILED_CLIENT_TIMEOUT }
-            )
-            expectSuccess('rustc', compile)
-            const result = await run([executable, binaryPath, path.join(directory, 'root')])
-            expectSuccess('rust line breaks and error code', result)
-            expect(JSON.parse(result.stdout)).toEqual({
-                lineBreak: 'FYLO request must be a single line without CR or LF characters',
-                nextIsOwnResponse: true,
-                code: 'EINVALIDDOCID',
-                messageIsResponse: true
-            })
         },
         COMPILED_CLIENT_TIMEOUT
     )

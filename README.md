@@ -1,6 +1,6 @@
 <p align="center">
   <strong style="font-size: 2em;">FYLO</strong><br/>
-  <em>A single-binary document store with zero-payload prefix indexes and language shims for Python, Ruby, Node, Go, Rust, C#, Java, PHP, and Dart, plus local-first browser, mobile (iOS/Android), and Flutter clients.</em>
+  <em>A single-binary document store with zero-payload prefix indexes and language shims for Python, Ruby, Node, Go, C#, Java, PHP, and Dart, a Rust crate, a local-first browser client, and native iOS and Android packages.</em>
 </p>
 
 <p align="center">
@@ -91,10 +91,11 @@ console.log(doc) // { <id>: { name: 'Ada', role: 'admin' } }
 await db.close()
 ```
 
-Shims ship for Node, Python, Ruby, Go, Rust, C#, Java, PHP, and Dart (see
-[`clients/`](clients/)). Browsers, mobile apps (iOS/Swift, Android/Kotlin), and
-Flutter use local-only clients that embed the engine on-device (OPFS) — see
-[Browser access](#browser-access) and [`clients/`](clients/).
+Shims ship for Node, Python, Ruby, Go, C#, Java, PHP, and Dart (see
+[`clients/`](clients/)). Rust apps use the `fylo` crate. Browsers use a
+local-only client that embeds the engine on-device (OPFS) — see
+[Browser access](#browser-access). iOS and Android apps link the native engine
+through `FyloKit` and the `fylo-android` AAR — see [`clients/`](clients/).
 
 ### Web Applications
 
@@ -276,8 +277,8 @@ the query or transaction path.
 
 The browser client is **local-only**: a bundled OPFS engine (`fylo-web.mjs`,
 released as an asset) that reads and writes a browser-local store directly.
-There is no network access and no backend — each browser (and each mobile app
-hosting the engine in a WebView) owns its own database.
+There is no network access and no backend — each browser owns its own
+database.
 
 Add the version-pinned loader to the document head:
 
@@ -298,10 +299,10 @@ const doc = await db.users.latest(id)
 Create a collection before the first `put`; writing to a collection that does
 not exist fails with `Collection not found`.
 
-**Not supported in the browser or on mobile in this release:** raw-file buckets
+**Not supported in the browser in this release:** raw-file buckets
 (`kind: 'file'`), schemas, and field encryption. The browser loader
-(`fylo.js` / `fylo-web.mjs`) and the iOS, Android, and Flutter clients that
-embed it fail such requests with an error instead of ignoring them. Use the
+(`fylo.js` / `fylo-web.mjs`) fails such requests with an error instead of
+ignoring them. Use the
 native `fylo` binary, through any binary-backed client, for those features.
 
 ### An encrypted `.vdbx` in the browser, with a key from the page
@@ -583,9 +584,8 @@ Databases written by older FYLO versions, where file collections lived under
 `.collections/`, are migrated to `.buckets/` automatically the first time the
 engine opens them.
 
-Buckets need the native `fylo` binary. The browser loader and the iOS, Android,
-and Flutter clients do not support them in this release and reject
-`kind: 'file'` with an error.
+Buckets need the native `fylo` binary. The browser loader does not support
+them in this release and rejects `kind: 'file'` with an error.
 
 The examples use the Node shim. It has a dedicated `putFile`; every other shim
 stores a file by sending the same `putData` request, with a `file` field,

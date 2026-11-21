@@ -16,7 +16,6 @@ const nativeClients = await Promise.all(
         'clients/ruby/fylo.rb',
         'clients/php/fylo.php',
         'clients/go/fylo.go',
-        'clients/rust/fylo.rs',
         'clients/csharp/Fylo.cs',
         'clients/java/Fylo.java',
         'clients/dart/fylo.dart'
@@ -209,7 +208,6 @@ for (const [path, marker] of [
     ['clients/ruby/fylo.rb', 'queue_consumer'],
     ['clients/php/fylo.php', 'FyloQueueConsumer'],
     ['clients/go/fylo.go', 'QueueConsumerOptions'],
-    ['clients/rust/fylo.rs', 'QueueConsumerOptions'],
     ['clients/java/Fylo.java', '@interface QueueConsumer'],
     ['clients/csharp/Fylo.cs', 'FyloQueueConsumerAttribute'],
     ['clients/dart/fylo.dart', 'FyloQueueConsumer']

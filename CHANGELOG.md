@@ -42,6 +42,22 @@
   missing fields. Until now `= NULL` matched like `IS NULL`. Use `IS NULL`
   and `IS NOT NULL` to test for `NULL`. The Store keeps `eq null` as
   `isNull` and `ne null` as `isNotNull`.
+- **Four language clients are removed.** FYLO's clients now follow
+  TACHYON's languages. These files are gone from `clients/` and from the
+  `fylo-clients.tar.gz` release asset:
+  - the Rust shim `clients/rust/fylo.rs`: Rust apps use the `fylo` crate;
+  - the Swift WebView host `clients/swift/Fylo.swift`: iOS apps use the
+    native `FyloKit` Swift package;
+  - the Kotlin WebView host `clients/kotlin/Fylo.kt`: Android apps use the
+    native `io.github.d31ma:fylo-android` AAR;
+  - the Flutter WebView host `clients/flutter/fylo.dart`, and the WebView
+    bridge files `clients/mobile/host.html` and `clients/mobile/bridge.js`:
+    Flutter apps on the web use `fylo-web.mjs`, and on desktop the Dart shim
+    `clients/dart/fylo.dart`.
+
+  The website no longer shows Rust, Swift, Kotlin or Flutter samples. The
+  other shims (Node, Python, Ruby, PHP, Go, C#, Java, Dart) and the browser
+  loader do not change.
 
 ### Changed
 

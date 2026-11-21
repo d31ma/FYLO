@@ -32,7 +32,7 @@ try {
 
     const clients = await clientProbes(workspace)
     const required = new Set(
-        (process.env.FYLO_REQUIRED_LANGUAGE_CLIENTS ?? 'node,python,ruby,php,go,java,rust')
+        (process.env.FYLO_REQUIRED_LANGUAGE_CLIENTS ?? 'node,python,ruby,php,go,java')
             .split(',')
             .map((name) => name.trim())
             .filter(Boolean)
@@ -213,7 +213,6 @@ async function clientProbes(root) {
     probes.push(await phpProbe(root))
     probes.push(await goProbe(root))
     probes.push(await javaProbe(root))
-    probes.push(await rustProbe(root))
     probes.push(await csharpProbe(root))
     probes.push(await dartProbe(root))
     return probes
@@ -407,37 +406,6 @@ async function javaProbe(root) {
                 env: environment
             }
         )
-    )
-}
-
-async function rustProbe(root) {
-    const directory = join(root, 'rust')
-    await mkdir(directory, { recursive: true })
-    await copyFile(resolve('clients/rust/fylo.rs'), join(directory, 'fylo.rs'))
-    await writeFile(
-        join(directory, 'probe.rs'),
-        `mod fylo;
-use fylo::{Fylo, FyloOptions, Json};
-fn main() {
-  let args: Vec<String> = std::env::args().collect();
-  let mut db = Fylo::open_with_options(&args[2], FyloOptions { binary: args[1].clone(), config: Some(args[5].clone().into()) }).unwrap();
-  if args[4].is_empty() {
-    db.create_collection("users", "document").unwrap();
-    print!("{}", db.put_data("users", Json::obj(vec![("configuration", "rust-default".into())])).unwrap());
-    return;
-  }
-  let get = db.request(&format!(r#"{{"op":"getLatest","collection":"users","id":"{}"}}"#, args[4])).unwrap();
-  let find = db.request(r#"{"op":"findDocs","collection":"users","query":{"$ops":[{"role":{"$eq":"admin"}}]}}"#).unwrap();
-  let meta = db.request(&format!(r#"{{"op":"setMeta","collection":"users","id":"{}","meta":{{"reviewer":"{}"}}}}"#, args[4], args[3])).unwrap();
-  assert!(get.contains(r#""name":"Ada""#) && find.contains(&args[4]) && meta.contains(&format!(r#""reviewer":"{}""#, args[3])));
-  print!("{}", db.put_data("users", Json::obj(vec![("configuration", "rust".into())])).unwrap());
-}
-`
-    )
-    const executable = join(directory, platform() === 'win32' ? 'probe.exe' : 'probe')
-    await command(['rustc', 'probe.rs', '-o', executable], { cwd: directory })
-    return probe('rust', 'rustc', (binary, database, reviewer, identifier, config, environment) =>
-        command([executable, binary, database, reviewer, identifier, config], { env: environment })
     )
 }
 
