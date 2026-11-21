@@ -190,7 +190,8 @@ export class Fylo {
         return {
             create: (kind, options) => this.createCollection(name, kind, options),
             drop: () => this.dropCollection(name),
-            inspect: () => this.inspectCollection(name),
+            inspect: (options) => this.inspectCollection(name, options),
+            exists: () => this.collectionExists(name),
             rebuild: () => this.rebuildCollection(name),
             words: (fields) => this.setWordFields(name, fields),
             layout: (layout, options) => this.migrateLayout(name, layout, options),
@@ -325,8 +326,25 @@ export class Fylo {
     dropCollection(collection) {
         return this._op('dropCollection', { collection })
     }
-    inspectCollection(collection) {
-        return this._op('inspectCollection', { collection })
+    /**
+     * `indexedDocs` comes from the index without reading documents;
+     * `{ verify: true }` runs the full check that reads every document.
+     * @param {string} collection
+     * @param {{ verify?: boolean }} [options]
+     */
+    inspectCollection(collection, options = {}) {
+        return this._op('inspectCollection', { collection, verify: options.verify })
+    }
+    /**
+     * Whether `collection` exists, from the catalog only: `{ collection, exists }`.
+     * @param {string} collection
+     */
+    collectionExists(collection) {
+        return this._op('collectionExists', { collection })
+    }
+    /** The root's collection names, sorted: `{ collections }`. */
+    listCollections() {
+        return this._op('listCollections', {})
     }
     rebuildCollection(collection) {
         return this._op('rebuildCollection', { collection })
