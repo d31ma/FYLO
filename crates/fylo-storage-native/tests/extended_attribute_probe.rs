@@ -42,7 +42,7 @@ impl Directory {
     }
 
     fn temporary() -> Self {
-        Self::new(&std::env::temp_dir())
+        Self::new(&fylo_test_support::TestFolder::path())
     }
 
     fn without_attributes() -> Self {

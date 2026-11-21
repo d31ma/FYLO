@@ -171,7 +171,7 @@ mod tests {
 
     impl TemporaryKey {
         fn new(name: &str) -> Self {
-            let path = std::env::temp_dir()
+            let path = fylo_test_support::TestFolder::path()
                 .join(format!("fylo-identity-{name}-{}.pem", std::process::id()));
             let _ = std::fs::remove_file(&path);
             Self(path)

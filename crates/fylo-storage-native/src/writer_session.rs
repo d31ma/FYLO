@@ -77,7 +77,7 @@ mod tests {
 
     impl Key {
         fn new(name: &str) -> Key {
-            let path = std::env::temp_dir()
+            let path = fylo_test_support::TestFolder::path()
                 .join(crate::write::unique_name(&format!("session-{name}")))
                 .with_extension("pem");
             Key(path)

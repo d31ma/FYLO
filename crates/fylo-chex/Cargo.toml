@@ -29,6 +29,7 @@ regex-automata.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
 regex.workspace = true
 
 # Both suites compile schemas from source.

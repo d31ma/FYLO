@@ -24,7 +24,7 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(label: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
+        let path = fylo_test_support::TestFolder::path().join(format!(
             "fylo-vdbx-pack-{label}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

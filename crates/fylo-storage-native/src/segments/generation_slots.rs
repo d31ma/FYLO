@@ -159,7 +159,7 @@ mod tests {
 
     impl Scratch {
         fn new(label: &str) -> Self {
-            let directory = std::env::temp_dir().join(format!(
+            let directory = fylo_test_support::TestFolder::path().join(format!(
                 "fylo-generation-slots-{label}-{}-{}",
                 std::process::id(),
                 crate::write::next_ttid_tick().unwrap()

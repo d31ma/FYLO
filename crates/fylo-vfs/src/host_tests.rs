@@ -418,7 +418,7 @@ fn a_host_without_an_identity_refuses_every_crypto_call() {
 }
 
 fn scratch(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
+    let path = fylo_test_support::TestFolder::path().join(format!(
         "fylo-vfs-host-{}-{}-{name}-{}",
         std::process::id(),
         std::time::SystemTime::now()

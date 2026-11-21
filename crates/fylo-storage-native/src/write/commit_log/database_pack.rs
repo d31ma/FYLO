@@ -848,7 +848,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn scratch(name: &str) -> PathBuf {
-        let directory = std::env::temp_dir().join(format!(
+        let directory = fylo_test_support::TestFolder::path().join(format!(
             "fylo-adopt-{name}-{}-{}-{}",
             std::process::id(),
             crate::wall_clock()

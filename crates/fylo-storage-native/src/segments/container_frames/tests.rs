@@ -276,7 +276,7 @@ struct Fixture(PathBuf);
 
 impl Fixture {
     fn create(label: &str) -> Self {
-        let path = std::env::temp_dir().join(crate::write::unique_name(label));
+        let path = fylo_test_support::TestFolder::path().join(crate::write::unique_name(label));
         std::fs::create_dir(&path).unwrap();
         let fixture = Self(std::fs::canonicalize(path).unwrap());
         fixture

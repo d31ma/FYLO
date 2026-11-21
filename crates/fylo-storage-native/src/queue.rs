@@ -1591,7 +1591,7 @@ mod tests {
     }
 
     fn queue() -> (PathBuf, NativeQueue) {
-        let root = std::env::temp_dir().join(unique_name("fylo-queue-test"));
+        let root = fylo_test_support::TestFolder::path().join(unique_name("fylo-queue-test"));
         std::fs::create_dir_all(&root).unwrap();
         let queue = NativeQueue::open(&root).unwrap();
         (root, queue)

@@ -22,7 +22,7 @@ impl Fixture {
 
     fn with_score(score: usize) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
+        let root = fylo_test_support::TestFolder::path().join(format!(
             "fylo-index-reuse-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

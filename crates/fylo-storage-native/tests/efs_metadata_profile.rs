@@ -35,11 +35,14 @@ impl Fixture {
             .as_nanos();
         // Canonical so engine-reported paths share its prefix: macOS hands
         // out temp dirs under the /var -> /private/var symlink.
-        let parent = std::env::temp_dir().canonicalize().unwrap().join(format!(
-            "fylo-efs-profile-{}-{stamp}-{}",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
+        let parent = fylo_test_support::TestFolder::path()
+            .canonicalize()
+            .unwrap()
+            .join(format!(
+                "fylo-efs-profile-{}-{stamp}-{}",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
         let root = parent.join("root");
         fs::create_dir_all(&root).unwrap();
         let lease =

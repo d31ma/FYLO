@@ -17,5 +17,8 @@ fylo-storage-native = { version = "0.1.0", path = "../fylo-storage-native" }
 fylo-vfs = { version = "0.1.0", path = "../fylo-vfs" }
 serde_json.workspace = true
 
+[dev-dependencies]
+fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
+
 [lints]
 workspace = true

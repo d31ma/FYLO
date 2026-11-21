@@ -11,7 +11,7 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(name: &str) -> Scratch {
-        let directory = std::env::temp_dir().join(format!(
+        let directory = fylo_test_support::TestFolder::path().join(format!(
             "fylo-xattr-{name}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

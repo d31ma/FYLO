@@ -11,7 +11,7 @@ pub(super) struct SchemaFixture(pub(super) PathBuf);
 impl SchemaFixture {
     pub(super) fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let directory = std::env::temp_dir().join(format!(
+        let directory = fylo_test_support::TestFolder::path().join(format!(
             "fylo-schema-rules-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

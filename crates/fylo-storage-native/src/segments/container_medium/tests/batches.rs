@@ -15,7 +15,8 @@ struct Database(PathBuf);
 
 impl Database {
     fn create(label: &str) -> Self {
-        let directory = std::env::temp_dir().join(crate::write::unique_name(label));
+        let directory =
+            fylo_test_support::TestFolder::path().join(crate::write::unique_name(label));
         std::fs::create_dir(&directory).unwrap();
         let database = Self(std::fs::canonicalize(directory).unwrap());
         NativeRoot::create_database(database.path()).unwrap();

@@ -132,7 +132,7 @@ impl Drop for Fixture {
 }
 
 fn scratch(label: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
+    fylo_test_support::TestFolder::path().join(format!(
         "fylo-seg-schemas-{label}-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

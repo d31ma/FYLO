@@ -18,7 +18,7 @@ impl Fixture {
     /// A root with an `items` collection and a schema folder whose `items`
     /// have `v1`.
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
+        let path = fylo_test_support::TestFolder::path().join(format!(
             "fylo-cli-schema-registry-{name}-{}",
             std::process::id()
         ));

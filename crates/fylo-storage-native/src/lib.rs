@@ -4612,8 +4612,8 @@ mod tests {
         fn create_named(prefix: &str) -> Self {
             let nonce = wall_clock().duration_since(UNIX_EPOCH).unwrap().as_nanos();
             let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let path =
-                std::env::temp_dir().join(format!("{prefix}-{}-{nonce}-{sequence}", process_id()));
+            let path = fylo_test_support::TestFolder::path()
+                .join(format!("{prefix}-{}-{nonce}-{sequence}", process_id()));
             fs::create_dir_all(path.join(".collections/users/docs/4V")).unwrap();
             fs::create_dir_all(path.join(".collections/users/index")).unwrap();
             fs::write(

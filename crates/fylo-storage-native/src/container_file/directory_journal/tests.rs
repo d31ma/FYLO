@@ -21,7 +21,7 @@ impl Drop for Database {
 }
 
 fn database(name: &str, secret: Option<&[u8]>) -> (Database, PathBuf) {
-    let directory = std::env::temp_dir().join(crate::write::unique_name(name));
+    let directory = fylo_test_support::TestFolder::path().join(crate::write::unique_name(name));
     std::fs::create_dir_all(&directory).unwrap();
     let path = directory.join("test.vdbx");
     match secret {

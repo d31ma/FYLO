@@ -19,7 +19,7 @@ impl Drop for Database {
 }
 
 fn database(name: &str) -> (Database, PathBuf) {
-    let dir = std::env::temp_dir().join(crate::write::unique_name(name));
+    let dir = fylo_test_support::TestFolder::path().join(crate::write::unique_name(name));
     std::fs::create_dir_all(&dir).expect("create directory");
     let path = dir.join("test.vdbx");
     std::fs::write(&path, b"vdbx").expect("create database file");

@@ -4220,7 +4220,7 @@ mod tests {
     #[cfg(not(target_family = "wasm"))]
     #[test]
     fn inspect_database_describes_a_vdbx_file_without_a_root() {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = fylo_test_support::TestFolder::path().join(format!(
             "fylo-machine-vdbx-{}-{}",
             std::process::id(),
             line!()
@@ -4255,7 +4255,7 @@ mod tests {
     #[cfg(not(target_family = "wasm"))]
     #[test]
     fn read_recovery_names_every_collection_of_a_vdbx_database() {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = fylo_test_support::TestFolder::path().join(format!(
             "fylo-machine-vdbx-{}-{}",
             std::process::id(),
             line!()
@@ -4284,7 +4284,7 @@ mod tests {
     #[cfg(not(target_family = "wasm"))]
     #[test]
     fn verify_database_checks_a_vdbx_file_without_a_root() {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = fylo_test_support::TestFolder::path().join(format!(
             "fylo-machine-vdbx-{}-{}",
             std::process::id(),
             line!()
@@ -4388,7 +4388,7 @@ mod tests {
 
     #[test]
     fn serverless_queue_protocol_publishes_claims_retries_and_acknowledges() {
-        let root = std::env::temp_dir().join(format!(
+        let root = fylo_test_support::TestFolder::path().join(format!(
             "fylo-machine-queue-{}-{}-{}",
             std::process::id(),
             fylo_storage_native::wall_clock()
@@ -4442,7 +4442,7 @@ mod tests {
 
     #[test]
     fn queue_claim_honors_a_small_response_frame_before_leasing() {
-        let root = std::env::temp_dir().join(format!(
+        let root = fylo_test_support::TestFolder::path().join(format!(
             "fylo-machine-queue-budget-{}-{}-{}",
             std::process::id(),
             fylo_storage_native::wall_clock()
@@ -4542,7 +4542,7 @@ mod tests {
 
     #[test]
     fn exclusive_startup_reports_a_contending_owner_in_the_handshake_frame() {
-        let root = std::env::temp_dir().join(format!(
+        let root = fylo_test_support::TestFolder::path().join(format!(
             "fylo-machine-exclusive-{}-{}-{}",
             std::process::id(),
             fylo_storage_native::wall_clock()
@@ -4583,7 +4583,7 @@ mod tests {
     /// 240 MiB of index keys: a write only measures the index files.
     #[test]
     fn a_full_collection_refuses_puts_with_index_full() {
-        let root = std::env::temp_dir().join(format!(
+        let root = fylo_test_support::TestFolder::path().join(format!(
             "fylo-machine-index-full-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -4635,7 +4635,7 @@ mod tests {
     /// covers the surface an operator actually has.
     #[test]
     fn reshard_moves_records_and_keeps_them_readable() {
-        let scratch = std::env::temp_dir().join(format!(
+        let scratch = fylo_test_support::TestFolder::path().join(format!(
             "fylo-machine-reshard-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -4715,7 +4715,7 @@ mod tests {
     /// that `path` exists to escape.
     #[test]
     fn get_file_data_returns_bucket_content_inline_and_to_a_path() {
-        let scratch = std::env::temp_dir().join(format!(
+        let scratch = fylo_test_support::TestFolder::path().join(format!(
             "fylo-machine-bucket-{}-{}-{}",
             std::process::id(),
             fylo_storage_native::wall_clock()
@@ -4771,7 +4771,7 @@ mod tests {
     /// that typed the field as an integer.
     #[test]
     fn every_timestamp_is_whole_milliseconds() {
-        let scratch = std::env::temp_dir().join(format!(
+        let scratch = fylo_test_support::TestFolder::path().join(format!(
             "fylo-machine-timestamps-{}-{}-{}",
             std::process::id(),
             fylo_storage_native::wall_clock()
@@ -4849,7 +4849,7 @@ mod tests {
 
     #[test]
     fn get_file_data_refuses_a_document_collection_and_an_occupied_path() {
-        let scratch = std::env::temp_dir().join(format!(
+        let scratch = fylo_test_support::TestFolder::path().join(format!(
             "fylo-machine-bucket-refusal-{}-{}-{}",
             std::process::id(),
             fylo_storage_native::wall_clock()

@@ -24,7 +24,7 @@ impl Drop for Database {
 }
 
 fn created(name: &str) -> (Database, PathBuf) {
-    let dir = std::env::temp_dir().join(crate::write::unique_name(name));
+    let dir = fylo_test_support::TestFolder::path().join(crate::write::unique_name(name));
     std::fs::create_dir_all(&dir).expect("create directory");
     let path = dir.join("test.vdbx");
     ContainerFile::create(&path, SHIFT).expect("create container");
@@ -404,7 +404,8 @@ fn a_snapshot_the_map_does_not_cover_yet_is_refused_after_reopening() {
 
 #[test]
 fn an_encrypted_snapshot_is_sealed_for_its_place() {
-    let dir = std::env::temp_dir().join(crate::write::unique_name("vdbx-snapshot-sealed"));
+    let dir = fylo_test_support::TestFolder::path()
+        .join(crate::write::unique_name("vdbx-snapshot-sealed"));
     std::fs::create_dir_all(&dir).expect("create directory");
     let _guard = Database(dir.clone());
     let path = dir.join("test.vdbx");

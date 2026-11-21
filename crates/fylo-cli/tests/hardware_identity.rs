@@ -20,8 +20,8 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        let directory =
-            std::env::temp_dir().join(format!("fylo-cli-hardware-{name}-{}", std::process::id()));
+        let directory = fylo_test_support::TestFolder::path()
+            .join(format!("fylo-cli-hardware-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
         let keychain = directory.join("test.keychain-db");

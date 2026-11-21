@@ -45,7 +45,8 @@ struct Database {
 
 impl Database {
     fn create(label: &str) -> Self {
-        let directory = std::env::temp_dir().join(crate::write::unique_name(label));
+        let directory =
+            fylo_test_support::TestFolder::path().join(crate::write::unique_name(label));
         std::fs::create_dir(&directory).unwrap();
         let database = Self {
             directory: std::fs::canonicalize(directory).unwrap(),
@@ -75,7 +76,8 @@ impl Database {
     /// A copy of the database, closed first, in a directory of its own.
     fn copy(&self, label: &str) -> Self {
         NativeRoot::close_database(self.path()).unwrap();
-        let directory = std::env::temp_dir().join(crate::write::unique_name(label));
+        let directory =
+            fylo_test_support::TestFolder::path().join(crate::write::unique_name(label));
         std::fs::create_dir(&directory).unwrap();
         let copy = Self {
             directory: std::fs::canonicalize(directory).unwrap(),

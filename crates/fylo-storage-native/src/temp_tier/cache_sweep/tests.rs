@@ -14,7 +14,7 @@ struct Place {
 impl Place {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let parent = std::env::temp_dir().join(format!(
+        let parent = fylo_test_support::TestFolder::path().join(format!(
             "fylo-cache-sweep-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

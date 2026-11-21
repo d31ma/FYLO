@@ -23,8 +23,8 @@ impl Keychain {
     fn new(name: &str) -> Keychain {
         static TURN: Mutex<()> = Mutex::new(());
         let turn = TURN.lock().unwrap_or_else(PoisonError::into_inner);
-        let directory =
-            std::env::temp_dir().join(format!("fylo-enclave-{name}-{}", std::process::id()));
+        let directory = fylo_test_support::TestFolder::path()
+            .join(format!("fylo-enclave-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("test.keychain-db");
         let password = format!("fylo-test-{}", std::process::id());

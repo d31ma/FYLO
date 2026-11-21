@@ -14,7 +14,7 @@ impl ScopeFixture {
     const OWNER_RECORD: &str = ".db.fylo-root-owner.lock.json";
 
     fn new(name: &str) -> Self {
-        let directory = std::env::temp_dir().join(format!(
+        let directory = fylo_test_support::TestFolder::path().join(format!(
             "fylo-read-scope-{name}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

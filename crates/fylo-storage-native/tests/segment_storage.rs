@@ -72,7 +72,7 @@ struct Fixture {
 
 impl Fixture {
     fn create(label: &str, medium: Medium) -> Self {
-        let path = std::env::temp_dir().join(format!(
+        let path = fylo_test_support::TestFolder::path().join(format!(
             "fylo-seg-{label}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -625,7 +625,7 @@ fn attributes(_path: &std::path::Path) -> Vec<(String, Vec<u8>)> {
 /// get, so it runs once.
 #[test]
 fn migration_round_trips_a_file_collection_exactly() {
-    let path = std::env::temp_dir().join(format!(
+    let path = fylo_test_support::TestFolder::path().join(format!(
         "fylo-seg-migrate-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -701,7 +701,7 @@ fn migration_round_trips_a_file_collection_exactly() {
 }
 
 fn file_layout_fixture(label: &str) -> (Fixture, NativeWriteRoot) {
-    let path = std::env::temp_dir().join(format!(
+    let path = fylo_test_support::TestFolder::path().join(format!(
         "fylo-seg-{label}-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -795,7 +795,7 @@ fn migration_of_one_document_after_a_write_in_segments() {
 }
 
 fn scratch(label: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
+    fylo_test_support::TestFolder::path().join(format!(
         "fylo-seg-out-{label}-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

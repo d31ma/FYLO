@@ -5631,7 +5631,8 @@ fn verify_profiled_payload(_root: &NativeRoot, _path: &Path) -> Result<(), Nativ
 mod tests {
     #[test]
     fn an_unpublished_capture_scratch_is_not_part_of_the_sequence() {
-        let root = std::env::temp_dir().join(format!("fylo-capture-scratch-{}", unique_name("t")));
+        let root = fylo_test_support::TestFolder::path()
+            .join(format!("fylo-capture-scratch-{}", unique_name("t")));
         let captures = root.join("captures");
         fs::create_dir_all(&captures).unwrap();
         fs::write(
@@ -5662,7 +5663,7 @@ mod tests {
 
     impl TestRoot {
         fn create() -> Self {
-            let root = std::env::temp_dir().join(unique_name("fylo-native-write"));
+            let root = fylo_test_support::TestFolder::path().join(unique_name("fylo-native-write"));
             fs::create_dir_all(root.join(".collections/users/docs")).unwrap();
             fs::create_dir_all(root.join(".collections/users/.deleted")).unwrap();
             fs::create_dir_all(root.join(".collections/users/index")).unwrap();

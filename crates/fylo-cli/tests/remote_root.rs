@@ -28,7 +28,7 @@ impl Place {
     }
 
     fn local() -> Self {
-        Self::under(&std::env::temp_dir())
+        Self::under(&fylo_test_support::TestFolder::path())
     }
 
     fn path(&self, name: &str) -> PathBuf {

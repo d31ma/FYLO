@@ -305,7 +305,8 @@ mod tests {
 
     impl Fixture {
         fn create() -> Self {
-            let path = std::env::temp_dir().join(unique_name("fylo-segment-replay"));
+            let path =
+                fylo_test_support::TestFolder::path().join(unique_name("fylo-segment-replay"));
             std::fs::create_dir(&path).unwrap();
             let fixture = Self(std::fs::canonicalize(path).unwrap());
             fixture

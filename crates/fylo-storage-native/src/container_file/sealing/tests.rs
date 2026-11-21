@@ -20,7 +20,7 @@ impl Drop for Scratch {
 }
 
 fn scratch(name: &str) -> Scratch {
-    let dir = std::env::temp_dir().join(crate::write::unique_name(name));
+    let dir = fylo_test_support::TestFolder::path().join(crate::write::unique_name(name));
     std::fs::create_dir_all(&dir).expect("create directory");
     Scratch(dir)
 }
