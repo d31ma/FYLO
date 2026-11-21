@@ -97,6 +97,7 @@ fn assert_storage_report(frame: &Value, profile: &str, owned: bool, kernel_enfor
         frame["result"]["storage"],
         json!({
             "filesystemProfile": profile,
+            "namespace": "public",
             "rootLock": {
                 "owned": owned,
                 "kernelEnforced": kernel_enforced,
