@@ -145,6 +145,33 @@ Browser/Wasm changes also run `bun run build:web:wasm` and the compiled-module
 browser corpus. Transaction, platform, backup, and release changes require
 their dedicated qualification profiles.
 
+### Test roots on the macOS test image
+
+On the maintainers' Mac, tests open their roots in FYLO's macOS test image,
+not on the system disk ([ADR 0033](docs/adr/0033-primary-layout-on-a-data-drive.md)
+section 12). Run a test command through the image helper, inside a
+`mac-heavy` or jobq job:
+
+```bash
+scripts/ci/test-image.sh run --owner <name> -- cargo nextest run --workspace --all-targets --all-features --locked
+```
+
+- `run` attaches the image when it is not attached
+  (`/Volumes/HANGAR/fylo-test/fylo-macos-test.sparsebundle`, at
+  `~/Developer/FyloTestImage`; it is made once, 8 GiB maximum). It gives the
+  command its own folder `<mount>/roots/<owner>-<pid>` as `FYLO_TEST_ROOT`
+  and removes the folder when the command ends.
+- Rust tests take their folder from `fylo_test_support::TestFolder::path()`,
+  bun tests from `testFolder()` in `tests/helpers/root.js`. Without
+  `FYLO_TEST_ROOT` (GitHub CI, the VMs, a laptop) both use the OS temp
+  folder. `TMPDIR` never changes. Files that are not roots, such as the
+  container lease markers and the temp tier, stay in the OS temp folder.
+- There is no fallback. When the image cannot be used, the helper prints
+  `FYLO test image not attached: <reason>` and exits 1.
+- `scripts/ci/test-image.sh status` shows the image; `detach` works only when
+  no job and no process uses it; `compact` (only on a detached image) gives
+  freed space back to the HANGAR SSD.
+
 ### Running the tests in a container
 
 The tests keep their databases, and the lease's host markers, under the
