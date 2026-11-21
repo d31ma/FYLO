@@ -261,7 +261,7 @@ impl NativeCollection {
             payload: stored.bytes.clone(),
             manifest: check.manifest_bytes()?,
         };
-        let admitted = entry.fits() && reading.tier.admits(entry.payload.len());
+        let admitted = entry.fits() && reading.tier.admits(entry.stored_bytes());
         admitted.then_some(entry)
     }
 

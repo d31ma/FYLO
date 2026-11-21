@@ -727,7 +727,13 @@ compares the digest.
 **One place for names.** The tier keys a collection's entries by
 `NativeCollection::cache_name` (namespace and name) and its stamp reads
 `generation_state_path` and `incarnation_path`, so a later change to what
-names a collection touches only those helpers.
+names a collection touches only those helpers. `auto`'s first rule reads
+one function, `TempCacheRoot::is_remote_or_sidecar` (today: the root was
+opened with the EFS profile), so a later layout change can take that fact
+from another source there alone. Two values depend on today's root layout
+and fail safe if it changes (old entries are refused and the tier refills):
+an entry's path below the collection's `docs/` folder, and the record
+identity (namespace, collection, id) the EFS hit check rebuilds.
 
 **The 30% go rule** (measured 2026-11-21, release build, EFS-profile root,
 1,000 documents of about 1 KB, two shared `exec --loop` processes one after

@@ -10,6 +10,10 @@ use crate::{FileStamp, FilesystemProfile, NativeRoot, NativeStorageError};
 pub(crate) struct RecordAttributes {
     values: BTreeMap<String, Vec<u8>>,
     sidecar: Option<File>,
+    #[cfg_attr(
+        target_family = "wasm",
+        expect(dead_code, reason = "only the temp tier reads it, and wasm has none")
+    )]
     sidecar_opened: Option<FileStamp>,
     sidecar_path: PathBuf,
 }
@@ -37,12 +41,14 @@ impl RecordAttributes {
     }
 
     /// The EFS profile's open manifest file, if the record has one.
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) const fn sidecar(&self) -> Option<&File> {
         self.sidecar.as_ref()
     }
 
     /// The manifest's stamp, taken when it was opened and before it was
     /// read (ADR 0030 section 3.2).
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) const fn sidecar_opened(&self) -> Option<FileStamp> {
         self.sidecar_opened
     }

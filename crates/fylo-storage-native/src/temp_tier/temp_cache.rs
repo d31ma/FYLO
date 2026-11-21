@@ -148,7 +148,7 @@ impl TempCache {
     }
 
     fn refuse_local_root(mode: TempCacheMode, root: &TempCacheRoot) -> Result<(), TempCacheReason> {
-        if mode == TempCacheMode::Auto && !root.is_remote_profile() {
+        if mode == TempCacheMode::Auto && !root.is_remote_or_sidecar() {
             return Err(TempCacheReason::RootIsLocal);
         }
         Ok(())

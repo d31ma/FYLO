@@ -68,7 +68,7 @@ impl ReadWindow {
     /// entries would then hold more than `limit` payload bytes.
     pub(crate) fn defer(&self, pending: PendingEntry, limit: usize) {
         let mut state = self.lock();
-        let bytes = state.pending_bytes + pending.entry.payload.len();
+        let bytes = state.pending_bytes + pending.entry.stored_bytes();
         if bytes > limit {
             return;
         }

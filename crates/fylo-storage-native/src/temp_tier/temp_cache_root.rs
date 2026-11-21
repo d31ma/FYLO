@@ -34,10 +34,13 @@ impl TempCacheRoot {
             .is_some_and(crate::NativeRoot::names_database)
     }
 
-    /// Whether the root was opened with the EFS profile, the only way a
-    /// root may sit on a remote filesystem (ADR 0029).
+    /// Whether the root is remote or keeps its records in the sidecar
+    /// format: the one fact `auto`'s first rule reads (ADR 0030 section
+    /// 4.1). Today that is a root opened with the EFS profile, the only way
+    /// a root may sit on a remote filesystem (ADR 0029); a later layout
+    /// change may take it from another source, here alone.
     #[must_use]
-    pub fn is_remote_profile(&self) -> bool {
+    pub fn is_remote_or_sidecar(&self) -> bool {
         self.profile == FilesystemProfile::EfsSidecarV1
     }
 }

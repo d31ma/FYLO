@@ -46,6 +46,12 @@ impl DocumentEntry {
         bytes
     }
 
+    /// The bytes the entry keeps from the root: the payload and the
+    /// manifest. The budget's limits count these.
+    pub(crate) fn stored_bytes(&self) -> usize {
+        self.payload.len().saturating_add(self.manifest.len())
+    }
+
     /// Whether every text of the entry fits its header's length fields.
     pub(crate) fn fits(&self) -> bool {
         let texts = [&self.collection, &self.identifier, &self.relative_path];

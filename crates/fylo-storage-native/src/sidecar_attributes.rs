@@ -123,6 +123,7 @@ impl SidecarAttributes {
     /// Whether `attributes` bind `bytes` as the document `record` names
     /// (namespace, collection, id), with no file call: the check a temp
     /// tier hit repeats from what its entry holds (ADR 0030 section 4.4).
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn binds(
         attributes: &BTreeMap<String, Vec<u8>>,
         record: [&str; 3],
@@ -450,7 +451,7 @@ fn corrupt() -> NativeStorageError {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use std::collections::BTreeMap;
 
