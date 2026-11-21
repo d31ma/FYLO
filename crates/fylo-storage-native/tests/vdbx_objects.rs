@@ -253,7 +253,9 @@ fn refuses_a_range_outside_the_object() {
         error,
         ContainerObjectError::RangeOutside { length: 3, .. }
     ));
-    let error = db.get_range(&object, None, 3..2).unwrap_err();
+    let error = db
+        .get_range(&object, None, std::ops::Range { start: 3, end: 2 })
+        .unwrap_err();
     assert!(matches!(error, ContainerObjectError::RangeOutside { .. }));
 }
 
@@ -312,6 +314,19 @@ impl Read for Pattern {
     }
 }
 
+struct HashSink(Sha256);
+
+impl Write for HashSink {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[test]
 fn streams_an_object_of_the_full_limit() {
     let mut db = database("full-limit", DEFAULT_SHIFT);
@@ -321,7 +336,7 @@ fn streams_an_object_of_the_full_limit() {
         left: length,
         state: 5,
     };
-    let mut expected = Sha256::new();
+    let mut expected = HashSink(Sha256::new());
     let mut tee = Pattern {
         left: length,
         state: 5,
@@ -331,11 +346,11 @@ fn streams_an_object_of_the_full_limit() {
         .unwrap()
         .copy_from(&mut source)
         .unwrap();
-    assert_eq!(object.sha256, ContainerObject::hex(&expected.finalize()));
+    assert_eq!(object.sha256, ContainerObject::hex(&expected.0.finalize()));
     let mut reader = ContainerObjectReader::open(&db.container, &object, Some(&FILE_KEY)).unwrap();
-    let mut read = Sha256::new();
+    let mut read = HashSink(Sha256::new());
     assert_eq!(io::copy(&mut reader, &mut read).unwrap(), length);
-    assert_eq!(object.sha256, ContainerObject::hex(&read.finalize()));
+    assert_eq!(object.sha256, ContainerObject::hex(&read.0.finalize()));
 }
 
 #[test]

@@ -37,6 +37,9 @@ impl ContainerObject {
     const FRAME_LABEL: &'static [u8] = b"fylo.vdbx.object.frame.v1";
     const HASH_BYTES: usize = 8;
     const KEY_BYTES: usize = 32;
+    const HEX_DIGITS: [char; 16] = [
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+    ];
 
     /// The hash every frame of this object write carries.
     #[must_use]
@@ -111,7 +114,12 @@ impl ContainerObject {
     /// Lowercase hex of `bytes`.
     #[must_use]
     pub fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+        let mut text = String::with_capacity(2 * bytes.len());
+        for byte in bytes {
+            text.push(Self::HEX_DIGITS[usize::from(byte >> 4)]);
+            text.push(Self::HEX_DIGITS[usize::from(byte & 0x0f)]);
+        }
+        text
     }
 
     fn extend_runs(runs: &mut Vec<[u64; 2]>, extent: u64) {
