@@ -1,6 +1,7 @@
 # ADR 0006: Shard records by the trailing creation characters
 
 - Status: **accepted**
+- Later decision: [ADR 0033](0033-primary-layout-on-a-data-drive.md) (accepted, not yet built) brings back width 0 while a collection holds up to 10,000 entries, with an automatic reshard after that, when it ships.
 - Date: **2026-07-28**
 - Amended: **2026-08-09** — default width 1, width 0 removed, `reshard` exposed
   on the CLI and machine protocol, the `ESHARDWIDTH` guard implemented, and the

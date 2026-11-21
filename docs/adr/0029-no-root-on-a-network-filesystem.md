@@ -1,6 +1,7 @@
 # ADR 0029: No root on a network filesystem
 
 - Status: **Accepted** (the user chose "Yes, fix it", 2026-11-12)
+- To be replaced by [ADR 0033](0033-primary-layout-on-a-data-drive.md) (accepted, not yet built) when its layout release ships: no refusal by file-system type; a probe at creation instead. Until then this ADR is in force.
 - Date: **2026-11-12**
 - Owners: **FYLO maintainers**
 - Enforces: ADR 0003 ("Network shares and synchronized folders are

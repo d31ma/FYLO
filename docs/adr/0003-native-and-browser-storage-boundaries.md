@@ -1,6 +1,7 @@
 # ADR 0003: Native and Browser Storage Boundaries
 
 - Status: **Accepted; S3 scope superseded by ADR 0007**
+- Later decision: [ADR 0033](0033-primary-layout-on-a-data-drive.md) (accepted, not yet built) makes the unit of ownership one namespace instead of one root, when it ships.
 - Date: **2026-07-26**
 - Owners: **FYLO maintainers**
 

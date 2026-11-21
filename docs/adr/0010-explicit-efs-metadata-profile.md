@@ -3,6 +3,11 @@
 Status: accepted for isolated candidate source preparation. Native execution,
 format qualification, migration and production support remain pending.
 
+To be amended by [ADR 0033](0033-primary-layout-on-a-data-drive.md) (accepted,
+not yet built) when its layout release ships: the sidecar format is chosen by
+a probe when an app folder is created, on every OS, and sidecar files get a
+leading dot. Until then this ADR is in force.
+
 ## Context
 
 FYLO's native Unix profile uses xattrs. EFS lacks xattrs and provides advisory

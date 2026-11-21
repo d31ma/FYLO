@@ -54,6 +54,8 @@ ADR.
 | [0030](0030-tiered-read-cache.md)                          | Proposed | Tiered read cache (temp-disk documents, in-memory query results); slice R cuts file calls per read |
 | [0031](0031-windows-acl-for-the-temp-cache-folder.md)          | Accepted | Windows ACL for the temp cache folder (one Windows-only unsafe boundary) |
 | [0032](0032-primary-root-on-a-data-disk.md)                    | Accepted | A server root lives on a data disk, not the system disk (`ESYSTEMDISK`, opt-out, app mode) |
+| [0033](0033-primary-layout-on-a-data-drive.md)                 | Accepted (not yet built; ships after the next release) | Primary layout `<drive>/<app>/<namespace>/<collection>/<TTID>.json`: namespaces, one lease per namespace, any file system |
+| [0034](0034-large-objects-in-vdbx.md)                          | Accepted (not yet built; ships with ADR 0033) | Large objects (images, videos, files) in `.vdbx`: extent runs, ~1 MiB chunks, range reads |
 
 ## When another ADR is required
 

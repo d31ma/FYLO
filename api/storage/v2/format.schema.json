@@ -1,0 +1,46 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://fylo.del.ma/api/storage/v2/format.schema.json",
+    "title": "FYLO app folder format marker (DRAFT, ADR 0033, not yet built)",
+    "description": "Describes <drive>/<app>/.fylo/format.json. Written once when FYLO creates the app folder. A folder without it is not a FYLO app folder (ENOTFYLOROOT).",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "format",
+        "createdBy",
+        "probe"
+    ],
+    "properties": {
+        "format": {
+            "const": "fylo.layout.v2"
+        },
+        "createdBy": {
+            "description": "The FYLO version that created the app folder, for example 26.50.02.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+        },
+        "probe": {
+            "description": "The file-system probe result recorded at creation (ADR 0033 section 6). Every open checks that the recorded way still works, or refuses with EFSPROBE.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "metadata",
+                "hardLinks"
+            ],
+            "properties": {
+                "metadata": {
+                    "description": "xattr: extended attributes (Windows: NTFS alternate data streams). sidecar: hidden .<payload>.fylo-attrs files beside each payload.",
+                    "enum": [
+                        "xattr",
+                        "sidecar"
+                    ]
+                },
+                "hardLinks": {
+                    "description": "false: transaction before-images are copied instead of linked.",
+                    "type": "boolean"
+                }
+            }
+        }
+    }
+}

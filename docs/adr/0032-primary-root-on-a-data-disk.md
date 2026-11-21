@@ -4,6 +4,7 @@
   end). Windows unsafe calls: accepted 2026-11-15, the user approved ("Yes,
   with review"); hub review of the SAFETY summary: <date, before merge>. The user chose the scope ("Servers only (Recommended)", option A)
   and the timing ("This FYLO release") the same day, through the hub.
+- To be amended by [ADR 0033](0033-primary-layout-on-a-data-drive.md) (accepted, not yet built) when its layout release ships: the root's parent must also be a mount point ("not the boot disk" stays the disk rule). Until then this ADR is in force as written.
 - Date: **2026-11-14**
 - Owners: **FYLO maintainers**
 - Extends: ADR 0029 (no root on a network filesystem). Uses the same check

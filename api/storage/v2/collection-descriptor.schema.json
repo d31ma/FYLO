@@ -1,0 +1,57 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://fylo.del.ma/api/storage/v2/collection-descriptor.schema.json",
+    "title": "FYLO collection descriptor in a namespace catalog (DRAFT, ADR 0033, not yet built)",
+    "description": "Describes <drive>/<app>/<namespace>/.fylo/catalog/<collection>.json. One file per collection, so creating one collection never rewrites another's descriptor.",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "format",
+        "name",
+        "storage",
+        "shardWidth"
+    ],
+    "properties": {
+        "format": {
+            "const": "fylo.collection-descriptor.v2"
+        },
+        "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$"
+        },
+        "storage": {
+            "description": "files: one <TTID>.json or <TTID>.<ext> per entry. segments: ADR 0015 segment files under <collection>/.fylo/segments/.",
+            "enum": [
+                "files",
+                "segments"
+            ]
+        },
+        "shardWidth": {
+            "description": "0 while the collection is flat (up to the flat limit, 10,000 entries by default); then 1, then 2 (ADR 0033 section 8). Never lowered automatically.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4
+        },
+        "resharding": {
+            "description": "Present only while an automatic or manual reshard runs. Lookups try the new width, then the old one.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "from",
+                "to"
+            ],
+            "properties": {
+                "from": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4
+                },
+                "to": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4
+                }
+            }
+        }
+    }
+}

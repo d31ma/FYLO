@@ -1,0 +1,22 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://fylo.del.ma/api/storage/v2/namespace.schema.json",
+    "title": "FYLO namespace marker (DRAFT, ADR 0033 section 3, not yet built)",
+    "description": "Describes <drive>/<app>/<namespace>/.fylo/namespace.json, written by createNamespace under <app>/.fylo/namespaces.lock.",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "format",
+        "name"
+    ],
+    "properties": {
+        "format": {
+            "const": "fylo.namespace.v1"
+        },
+        "name": {
+            "description": "Equals the folder name. 2-64 bytes, lowercase a-z, digits and '-', first and last a letter or digit; Windows device names and reserved words are refused (ENAMESPACE).",
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$"
+        }
+    }
+}

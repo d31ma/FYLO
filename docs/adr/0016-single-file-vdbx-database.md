@@ -2,6 +2,7 @@
 
 - Status: **Accepted** (Samuel, 2026-10-29; spike results are added as they
   arrive and may only settle the codec and the lock qualification list)
+- Later decisions: [ADR 0033](0033-primary-layout-on-a-data-drive.md) (one `.vdbx` per namespace) and [ADR 0034](0034-large-objects-in-vdbx.md) (large objects, the follow-up named in section 1), both accepted, not yet built.
 - Date: **2026-10-29**
 - Owners: **FYLO maintainers**
 - Builds on: ADR 0015 (append-only document segments), ADR 0013 (the record
