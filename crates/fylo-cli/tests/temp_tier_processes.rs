@@ -325,6 +325,9 @@ fn assert_tier_reads_for_a_data_disk_root(parent: &Path) {
     let (second, stderr) = place.session(&frames);
     assert_eq!(second[0]["result"][FIRST]["title"], "one", "{second:?}");
     let temp_cache = &second[1]["result"]["capabilities"]["tempCache"];
+    let lock = &second[1]["result"]["storage"]["rootLock"];
+    assert_eq!(lock["placement"], "dataDisk", "{lock}");
+    assert_eq!(lock["systemDisk"], false, "{lock}");
     assert_eq!(temp_cache["active"], true, "{temp_cache}");
     assert_eq!(temp_cache["hits"], 1, "{temp_cache}");
     let cache_folder = PathBuf::from(temp_cache["dir"].as_str().unwrap());
