@@ -29,6 +29,11 @@ impl StoreComparison {
         }
     }
 
+    pub(crate) fn not_equal(actual: Option<&Value>, expected: &Value) -> bool {
+        let present = !Self::is_null(actual);
+        present && !Self::equal(actual, expected)
+    }
+
     pub(crate) fn is_null(actual: Option<&Value>) -> bool {
         matches!(actual, None | Some(Value::Null))
     }

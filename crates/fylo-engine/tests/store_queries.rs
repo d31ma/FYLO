@@ -158,10 +158,7 @@ fn null_matches_missing_and_null_fields() {
     let not_null = json!({ "where": [{ "field": "status", "operator": "isNotNull" }] });
     assert_eq!(fixture.count(&not_null), 6);
     let not_open = json!({ "where": [{ "field": "status", "operator": "ne", "value": "open" }] });
-    assert_eq!(
-        fixture.titles(&not_open, first_page()),
-        ["charlie", "echo", "foxtrot", "golf"]
-    );
+    assert_eq!(fixture.titles(&not_open, first_page()), ["charlie", "echo"]);
 }
 
 #[test]

@@ -63,7 +63,7 @@ impl StorePredicate {
         let expected = &self.value;
         match self.operator {
             StoreOperator::Equal => StoreComparison::equal(actual, expected),
-            StoreOperator::NotEqual => !StoreComparison::equal(actual, expected),
+            StoreOperator::NotEqual => StoreComparison::not_equal(actual, expected),
             StoreOperator::LessThan => {
                 StoreComparison::order(actual, expected).is_some_and(|order| order.is_lt())
             }
