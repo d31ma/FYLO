@@ -59,10 +59,12 @@ to the same question.
 | N11 Memory file systems | "Keep refusing (Rec.)" |
 | N12 Staying correct on any file system | "Test drive once (Rec.)" |
 | N13 What turns the temp tier on | "Network file system (Rec.)" |
-| N14 Test images where ATLAS cannot be reached | "Local image in each, but also look into figuring out a way to mount ATLAS on Linux and Windows VMs on the mac" |
-| N15 windows-vm test images | "figure out how to mount ATLAS volume on windows VM" |
+| N14 Test images where ATLAS cannot be reached (replaced, see "Test images" below) | "Local image in each, but also look into figuring out a way to mount ATLAS on Linux and Windows VMs on the mac" |
+| N15 windows-vm test images (replaced, see "Test images" below) | "figure out how to mount ATLAS volume on windows VM" |
 | N16 What "external drive" means | "Not the boot disk (Rec.)" |
-| Q4 Tests and CI | "Real disk images"; then N4: "On the ATLAS drive" |
+| Q4 Tests and CI | "Real disk images" |
+| Test images (replaces N4 "On the ATLAS drive", N14 and N15 for test images) | "actually i've changed my mind, for testing lets create a virtual disk image that can be used for all FYLO testing instead of ATLAS as ATLAS is used for production data"; where the file lives: "HANGAR SSD (Rec.)" |
+| N17 One image for all testing, or one per system | "One image per system (Rec.)" |
 
 Facts that decide the design:
 
@@ -533,41 +535,65 @@ Q9: "Offline copy command (Rec.)".
   --out <drive>/<app> --namespace <ns>`. The name `migrateLayout` stays for
   ADR 0015's segments operation.
 
-### 12. Tests and CI: real disk images
+### 12. Tests and CI: real disk images on HANGAR
 
-Q4: "Real disk images". N4: "On the ATLAS drive". N14: "Local image in each,
-but also look into figuring out a way to mount ATLAS on Linux and Windows VMs
-on the mac". N15: "figure out how to mount ATLAS volume on windows VM".
+Q4: "Real disk images". Then the user changed where the images live, quoted
+exactly: "actually i've changed my mind, for testing lets create a virtual
+disk image that can be used for all FYLO testing instead of ATLAS as ATLAS is
+used for production data", with the file on "HANGAR SSD (Rec.)". N17: "One
+image per system (Rec.)". This replaces the earlier answers N4 ("On the
+ATLAS drive"), N14 and N15 for test images. **Nothing FYLO tests lives on
+ATLAS**; ATLAS is for production data.
 
-Roots in tests sit on a real mounted disk image: `<image mount>/<unique
-app>`, directly below the mount point, with namespaces as needed. One image
-per CI job, not per test.
+**It passes the drive rule.** HANGAR is a USB SSD that is not the boot disk,
+so an image whose file is on HANGAR passes section 5 with no waiver (ADR
+0032 section 2.2 follows an image to its file).
 
-| Lane | Where the image lives | Status |
-| ---- | --------------------- | ------ |
-| macOS (this Mac, jobq jobs, the nightly) | a sparsebundle on **ATLAS**, attached on the Mac. ADR 0032 section 2.2 admits an image whose file is on a network share. | decided; attaching from a jobq job is proven (Mesail, 2026-11-21) |
-| Linux (Colima) | a local loop image whose file is on the VM's data disk, not on its root disk | decided |
-| GitHub Linux and Windows runners (release PRs only) | a local image on the second disk (`/mnt`, `D:`) | decided; that those disks pass section 5 is checked in L1-11 |
-| windows-vm | an image on **ATLAS**, given to the VM as a disk | **blocked on Platform's study PLAT-11** (mounting ATLAS in the VMs). Any network or CITADEL change it needs requires the user's yes. No other choice is taken: no second local drive, no waiver, no skip. |
-| GitHub macOS runners | one disk only | **open**; to be asked again when the CI slice (L1-11) is near |
+**One file system, one system at a time.** An image that holds one file
+system is never attached to two systems at once (the Mac and windows-vm, or
+the Mac and Colima): each OS caches the file system in its own memory, and
+two writers corrupt it. FYLO's leases work on files, below that cache, so
+they cannot prevent it. No file system is native to all three systems (only
+exFAT, which has no extended attributes or hard links, so FYLO's normal mode
+would never be tested). So each system has **its own reusable test image,
+all on HANGAR**:
 
-**Every attach carries Mesail's guards** (reuse the logic of Mesail's
-`scripts/fylo-image.sh`, develop commit 753b1986):
+| System | The test image | Attached by | File system |
+| ------ | -------------- | ----------- | ----------- |
+| macOS lane (this Mac, jobq jobs, the nightly) | a sparsebundle on HANGAR, in a folder Platform confirms when slice L1-11 is near | the test helper, `hdiutil attach -nobrowse` at a fixed mount point, kept attached between jobs | APFS |
+| windows-vm | one reusable sparse raw image in `/Volumes/HANGAR/test-disks/windows-vm/`, the VM's second disk | **only `testvm`** (Platform's change), at boot, under the `vm-windows` lock | NTFS |
+| Linux lane (Colima) | no image file: a named Docker volume (for example `fylo-test-volume`) mounted at `/data` in FYLO's test container. Colima's data disk is itself a file on HANGAR and is not the VM's boot disk, so it passes. No `--privileged` and no loop devices are needed. | Docker | ext4 |
+| Laptops away from home, GitHub Linux and Windows runners | a small image the test helper makes on a disk that is not the boot disk (GitHub: `/mnt`, `D:`) | the test helper, per run | native |
+| GitHub macOS runners | one disk only | - | **open**; to be asked again when the CI slice (L1-11) is near |
 
-1. one image per job, with a unique name, created and attached under a
-   lock; a sparsebundle (small band files), not a single-file image;
-2. attach with `-nobrowse` (no Finder or Spotlight indexing);
-3. a write-and-delete probe after every attach, and when the image is
-   already attached, because `diskutil` can attach read-only and still return
-   0; never trust the exit code alone;
-4. after an ATLAS remount an attached image can fail with `EIO`: on `EIO` or
-   a failed probe, detach and attach again under the lock when nothing uses
-   the image (a bounded `lsof`), otherwise stop and say so; never
-   force-detach an image another job uses;
-5. detach and delete the job's image on every exit path, failures included.
+Rules that keep each image safe:
+
+1. **Each image belongs to exactly one system.** The Mac never attaches the
+   windows-vm image, and the other way round. The test helper refuses to
+   attach any image under the test-disk folders except the Mac lane's own,
+   and checks `hdiutil info` so it never attaches it twice.
+2. **The Mac image is attached and detached under one lock**
+   (`~/Library/Caches/mac-locks/fylo-test-image`). A write-and-delete probe
+   runs after every attach and before every job, because an attach can be
+   read-only and still return 0; never trust the exit code alone.
+3. **Many jobs share one system's image at once** without waiting for each
+   other: each test makes its own root `<mount>/t-<job id>-<test id>`
+   (directly below the mount point, a valid app name), so no two jobs share
+   a root or a lease. Tests that need namespaces use them inside their own
+   app.
+4. **Cleanup.** Each job deletes its own `t-<job id>-*` folders on every exit
+   path, failures included. At the start of each job a sweep deletes `t-*`
+   folders older than 24 hours whose leases are not held (leftovers of
+   crashed jobs).
+5. **Space.** Each image is sparse with a maximum of **8 GiB**, so the Mac
+   and windows-vm images together never take more than 16 GiB of HANGAR. The
+   helper refuses to start a job when the image has under 1 GiB free inside.
+   Freed space goes back to HANGAR: `hdiutil compact` on the Mac image about
+   once a week, when no job holds it; Windows trim and `testvm`'s
+   `discard=unmap` for the windows-vm image.
 
 Attach only inside `mac-heavy`/jobq jobs; the Bash tool's sandbox cannot be
-relied on. Keep each image small (about 2 GiB maximum, sparse).
+relied on. The nightly run uses the same images.
 
 The ADR 0032 opt-out stays available for tests of other projects (TACHYON's
 temporary folders) and for tests of the drive rule itself. Tests of the rule
@@ -702,7 +728,8 @@ yet, because its `Unreleased` section is the S5 release.
 - Paths change once for a collection when it reaches 10,000 entries. Tools
   must allow for both shapes or ask FYLO.
 - Tests need a real mounted image, which costs a few seconds per job and
-  needs the guards of section 12. windows-vm waits for PLAT-11.
+  needs the rules of section 12. windows-vm waits for Platform's `testvm`
+  change that adds its second disk from HANGAR.
 - The break needs a migration of every persistent root, and changes in
   TACHYON and Mesail (L1-13).
 - Two layouts are read by one release (the new one, and the old one
@@ -736,7 +763,8 @@ yet, because its `Unreleased` section is the S5 release.
 Each slice proves its part, in its own gates:
 
 - **L1-1 drive rule:** admitted and refused cases of section 5.1 on macOS
-  (an image on ATLAS, the boot disk, a nested folder), Linux (a loop image on
+  (the test image on HANGAR, the boot disk, an image whose file is on the
+  boot disk, a nested folder), Linux (a Docker volume on
   the VM's data disk, `tmpfs`, overlay) and Windows; the opt-out waives every
   check and still prints its warning; app mode admits the OS app folder.
 - **L1-2 names:** every reason of `EAPPNAME` and `ENAMESPACE`; Windows
@@ -753,12 +781,17 @@ Each slice proves its part, in its own gates:
 - **L1-10 migration:** `fylo upgrade-root` on the 5k fixture with buckets,
   version control and a queue, then `fylo verify`; `ELEGACYLAYOUT` on a write
   to an old root; an old binary refuses a new app folder.
-- **L1-11 tests:** one attach test per lane, with Platform.
+- **L1-11 tests:** one attach test per system, with Platform; the helper
+  refuses to attach another system's image or the same image twice; two
+  jobs on one image at once; the 24-hour sweep leaves held roots alone.
 
 ## Review
 
 - Decisions: the user, 2026-11-21, five rounds through the hub (quoted in
   "Context").
+- Changed after the first merge, the same day: section 12 now puts test
+  images on HANGAR, one per system (the user's change of mind and N17), in
+  place of ATLAS. The decision was not built yet.
 - Hub review of this text: **pending**. Requested from the FYLO Build
   Coordinator and the hub when this ADR was merged to `develop`. Section 4's
   claim file, section 7's schema declaration of links and
