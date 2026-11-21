@@ -52,7 +52,7 @@ operations also take `idField` and `transaction` (`api/store/v1`).
 | --------- | --------------------------------------------------------------------------- | -------- |
 | `storeFindById` | `id` | entity or `null` |
 | `storeFindAll` | `page?` | list of entities |
-| `storeSave` | `entity` | the saved entity |
+| `storeSave` | `entity`, `requireExisting?` | the saved entity |
 | `storePatch` | `id`, `fields` | the patched entity or `null` |
 | `storeDeleteById` | `id` | `0` or `1` |
 | `storeFind` | `query?`, `page?` | list of entities |

@@ -60,6 +60,9 @@ in FYLO 26.45.07; they are not part of the Store plan.
 - The meaning of every comparison, of `NULL`, and of the sort order is the
   Store's ("Equality" and "Sort order" in `api/store/v1`). `= NULL` behaves
   like `IS NULL`.
+- `<f> <> v` and `<f> != v` leave out rows where `<f>` is `NULL` or missing,
+  as in standard SQL and as the Store's `ne` (ADR 0035, Amendment 1). Ask for
+  them with `IS NULL`. `<> NULL` and `!= NULL` behave like `IS NOT NULL`.
 
 ## `ORDER BY`, `LIMIT`, `OFFSET`
 

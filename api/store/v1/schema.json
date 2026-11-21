@@ -153,7 +153,17 @@
         "requests": {
             "storeFindById": { "required": ["collection", "id"], "properties": { "id": { "$ref": "#/$defs/documentId" } } },
             "storeFindAll": { "required": ["collection"], "properties": { "page": { "$ref": "#/$defs/page" } } },
-            "storeSave": { "required": ["collection", "entity"], "properties": { "entity": { "$ref": "#/$defs/entity" } } },
+            "storeSave": {
+                "required": ["collection", "entity"],
+                "properties": {
+                    "entity": { "$ref": "#/$defs/entity" },
+                    "requireExisting": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Amendment 1: only replace; a missing id fails with ENATIVE_NOT_FOUND and writes nothing."
+                    }
+                }
+            },
             "storePatch": {
                 "required": ["collection", "id", "fields"],
                 "properties": { "id": { "$ref": "#/$defs/documentId" }, "fields": { "type": "object" } }

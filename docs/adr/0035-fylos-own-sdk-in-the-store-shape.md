@@ -203,6 +203,30 @@ segments, identities, verify and rebuild.
   TACHYON and Mesail keep their `develop` pinned to FYLO 26.45.07 and merge
   their switches together with the pin bump right after the release.
 
+### Amendment 1 (2026-11-21): `ne` and `null`; `storeSave` with `requireExisting`
+
+TACHYON's TAC-FY2 checked the frozen contracts on `develop` 88c31fa and asked
+for two changes. The FYLO Build Coordinator accepted both as maintainer. Both
+ship in the same release (DB-2 builds).
+
+1. **`ne` never matches `null` or a missing field**, as SQL `<> X` does.
+   The draft said a missing field counts as `null` and `ne` was the opposite
+   of `eq`; now `ne X` matches only a present, non-`null` value that is not
+   equal to `X`. `isNull` and `isNotNull` stay the way to ask for `null`.
+   `ne null` matches like `isNotNull`, as `eq null` matches like `isNull`.
+   FYLO's SQL follows the same rule for `<>` and `!=` (`<> NULL` behaves
+   like `IS NOT NULL`), so the Store and SQL answer the same. Built in SDK-2
+   (Store) and SDK-4 (SQL).
+2. **`storeSave` takes `requireExisting`** (default `false`). With `true`,
+   the save only replaces: an `entity[idField]` that is missing, `null` or
+   names no existing document fails with `ENATIVE_NOT_FOUND`, writes nothing,
+   and the message names the collection and the id. This is TACHYON's update
+   contract (TACHYON ADR 0032). The default stays create-or-replace. Built in
+   SDK-3.
+
+`api/store/v1` (README and `schema.json`), `api/machine/v2` and
+`api/sql/v1` carry both changes.
+
 ## Consequences
 
 - **Breaking Changes** (CHANGELOG of the next release): machine protocol v2;

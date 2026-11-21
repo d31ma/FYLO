@@ -4,6 +4,8 @@
 Not built yet; slices SDK-2 and SDK-3 build it, and it ships in the next FYLO
 release.** TACHYON and Mesail code against this text. A change needs an
 amendment to ADR 0035 and a notice to their Build Coordinators.
+Amendment 1 (2026-11-21, ADR 0035): `ne` never matches `null` or a missing
+field, and `storeSave` takes `requireExisting`.
 
 The Store is FYLO's document API in the shape of TACHYON's `Store`: a
 Repository base and queries with AND-joined predicates, an order and a page.
@@ -54,6 +56,12 @@ Every Store operation takes:
   FYLO replaces the whole document (same id). When it names a valid TTID that
   does not exist, FYLO creates the document with that id. An id that is not a
   valid TTID fails with `EINVALIDDOCID`. The answer is the saved entity.
+- **`save(entity, { requireExisting: true })`** (machine field
+  `requireExisting`, default `false`; Amendment 1): the save only replaces.
+  When `entity[idField]` is missing, `null` or names an id that does not
+  exist, it fails with `ENATIVE_NOT_FOUND`, writes nothing, and the message
+  names the collection and the id. This is TACHYON's update contract (TACHYON
+  ADR 0032).
 - **`patch(id, fields)`**: a shallow merge of top-level fields into the
   existing document (same id); a field set to `null` is stored as `null`.
   The answer is the patched entity, or `null` when the id does not exist.
@@ -83,7 +91,7 @@ Every Store operation takes:
 | Operator | `value` | Matches when |
 | -------- | ------- | ------------ |
 | `eq` | a scalar | equal (see "Equality") |
-| `ne` | a scalar | not equal; a missing field counts as `null` |
+| `ne` | a scalar | the field is present, not `null`, and not equal (as SQL `<>`); a `null` or missing field never matches. Use `isNull` and `isNotNull` to ask for `null` |
 | `lt`, `lte`, `gt`, `gte` | a number or a string | ordered compare within the same type; other types never match |
 | `in` | a list of 1 to 100 scalars | equal to one of them |
 | `isNull` | none | the field is `null` or missing |
@@ -103,6 +111,9 @@ Every Store operation takes:
 - Strings compare by exact Unicode code points: no case folding, no locale,
   no normalization.
 - A value never equals a value of another type (`"1"` is not `1`).
+- `ne` is not the opposite of `eq` for `null`: `ne X` leaves out a `null` or
+  missing field, as SQL `<> X` does (Amendment 1). `ne null` matches like
+  `isNotNull`, just as `eq null` matches like `isNull`.
 - `eq null` matches `null` and a missing field, like `isNull`.
 
 ### Sort order
