@@ -788,10 +788,10 @@ fixes the same race for reads without the tier).
 
 **Measured** (2026-11-21, ANVIL NFSv3, EFS-profile root, same benchmark as
 S4; `auto`, second process): repeated `findDocs` p50 52 ms (S4: 66 to 111
-ms; `off`: 300 to 333 ms); `getDoc` unchanged (9.2 to 9.7 ms). CITADEL could
-not be measured that day: every EFS session there failed its first read
-with `EIO`, the released 26.33.02 binary included (an NFS server problem,
-reported to Platform).
+ms; `off`: 300 to 333 ms); `getDoc` unchanged (9.2 to 9.7 ms). There is no second NFS measurement:
+HAVEN and ATLAS are production volumes and are not used for tests (the
+user's rule, 2026-11-21); a later measurement needs a test export on ANVIL
+or HANGAR.
 
 **Tests.** `fylo-machine/tests/temp_tier_reads.rs` adds index tests on
 native and EFS roots: queries read the index from the tier; a document
