@@ -72,6 +72,57 @@ Run `cargo fmt --all --check` as before. Name the crate list in the merge
 report so anyone can rerun the same gates. The script's tests are
 `bun test tests/interop/affected-crates.test.js`.
 
+### Development builds of `develop`
+
+Products that use FYLO (TACHYON, Mesail) test against `develop` before a
+release. `scripts/ci/publish-dev-build.mjs` builds the `fylo` executable for
+one `develop` commit on the maintainers' build Mac and publishes it:
+
+```bash
+bun scripts/ci/publish-dev-build.mjs <develop commit> --gate-log <file> [--contains <commit>]...
+```
+
+Name the log of the FYLO gates that passed for the commit with `--gate-log`,
+or pass `--ungated` to publish a commit whose gates have not run; exactly one
+is required. `--contains` records an earlier commit whose changes the build
+includes (it must be an ancestor of the commit).
+
+It writes one folder per commit, under `$FYLO_DEV_BUILDS_ROOT` (default
+`~/Developer/AnvilTargets/fylo-builds`):
+
+```text
+<full sha>/macos-arm64/fylo        <full sha>/macos-arm64/fylo.sha256
+<full sha>/linux-arm64/fylo        <full sha>/linux-arm64/fylo.sha256
+<full sha>/windows-arm64/fylo.exe  <full sha>/windows-arm64/fylo.sha256
+<full sha>/manifest.json
+```
+
+- Each build is a release-profile `build-executable.mjs` build with build kind
+  `development-compiled`, so `fylo version` reports
+  `<newest release>-develop.<short sha>` and the exact commit.
+- macOS builds natively; Linux builds in an Ubuntu 24.04 container in Colima
+  and must need glibc 2.39 or older; Windows builds natively in the ARM64
+  test VM. Each build runs as its own `mac-heavy` job (coordinator `fylo`),
+  the Linux and Windows ones under their VM's lock.
+- `fylo.sha256` uses `shasum`'s format. `manifest.json` records the commit,
+  the commits it contains, whether it is gated and the gate log, the build
+  time, the version, the Rust compiler, and for each platform the Rust target
+  triple, the file's SHA-256 and size (and the glibc version Linux needs). It
+  is written last.
+- The commit must be on `origin/develop`. All three builds must pass and agree
+  on the version and the Rust compiler; otherwise nothing is published. The
+  script exits 0 when it published the commit or the commit was already
+  published, and 1 on any failure.
+- A stopped run removes its temporary folder and lock.
+- The folder appears in one rename from a temporary folder, so a reader sees a
+  whole build or nothing. A published folder is never replaced: running the
+  script again for the same commit does nothing. Only one publisher runs at a
+  time (`.publish.lock` in the builds root).
+- The builds root is refused on the production volumes HAVEN and ATLAS.
+
+Logs go to `$LOG_ROOT/FYLO/publish-<time>-<short sha>/`. The script's tests are
+`bun test tests/interop/publish-dev-build.test.js`.
+
 ### The system-disk opt-out in a checkout
 
 FYLO refuses a root on the system disk
