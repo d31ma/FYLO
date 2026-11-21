@@ -756,3 +756,46 @@ and an opt-in test on real network mounts
 (`FYLO_TEST_NETWORK_ROOTS`, `--run-ignored only`) where the default `auto`
 turns the tier on; it passed on both mounts above. Unit tests cover the
 binding check and entry format v2.
+
+## Slice S5: index bytes in the temp tier (built 2026-11-21)
+
+**What.** A files-layout collection's stored index (`index/keys.snapshot`
+and `index/keys.wal`, exactly as read from the root) is kept in one entry
+per collection, `<root key>/<collection key>/index.fyc` (kind 2, the same
+header and checksums as a document entry), under the digest of the
+collection stamp it was read at. A newer stamp replaces it in place, and an
+entry of an older stamp is removed when it is found (a stamp never comes
+back). It is used only under an equal stamp, with no revalidation, and still
+goes through the content-verified index cache, so a hit costs a local read
+instead of two files on the root. A range read (`index_snapshot_in_ranges`)
+uses the entry too; on a miss it reads the whole snapshot once, when it is
+small enough to keep, and keeps it. Larger indexes are read in place as
+before.
+
+**Every index change moves the stamp or keeps the index logically the
+same.** Writers never read through the tier. Transaction writes change the
+index while `state.json` says `writing`, which is not cacheable; logged
+writes publish their log position before they append to the index log;
+`rebuildCollection`, `reshard`, `setWordFields` and `repairWordFields` run
+a rebuild, which moves the generation; compaction exists only for the
+segment layout, which never uses the tier. A log checkpoint keeps the index
+logically the same but replaces the snapshot and then empties the log, so a
+reader could see the old snapshot beside an emptied log. Every index read
+therefore reads the log first and the snapshot second: replaying a log over
+a snapshot that already holds it gives the same keys, so a read during a
+checkpoint never misses one (a review found this before merge; it also
+fixes the same race for reads without the tier).
+
+**Measured** (2026-11-21, ANVIL NFSv3, EFS-profile root, same benchmark as
+S4; `auto`, second process): repeated `findDocs` p50 52 ms (S4: 66 to 111
+ms; `off`: 300 to 333 ms); `getDoc` unchanged (9.2 to 9.7 ms). CITADEL could
+not be measured that day: every EFS session there failed its first read
+with `EIO`, the released 26.33.02 binary included (an NFS server problem,
+reported to Platform).
+
+**Tests.** `fylo-machine/tests/temp_tier_reads.rs` adds index tests on
+native and EFS roots: queries read the index from the tier; a document
+written after the index was kept is found; a damaged index entry is refused;
+an index over its share of the budget is not kept; and `$match` answers the
+same after word keys are added (a rebuild) once the index was kept. Unit
+tests cover the index entry format.

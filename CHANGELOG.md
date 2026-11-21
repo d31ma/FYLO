@@ -99,6 +99,13 @@
   (`root is local` for a local root in the default `auto` mode, or `read
   path not built`). `auto` creates nothing for a local root.
 
+- **Index bytes in the temp tier (ADR 0030, slice S5).** A files-layout
+  collection's index snapshot and write-ahead log are kept in the temp tier
+  as read from the root, in one entry per collection, and used only while
+  the collection has the same stamp; they still pass through the
+  content-verified index cache. Repeated `findDocs` on a network root read
+  the index from the local disk. An index read now reads the log before the
+  snapshot, so a read during a checkpoint never misses a key.
 - **Temp tier for EFS-profile roots, and `auto` (ADR 0030, slice S4).** A
   root opened with `--filesystem-profile efs-sidecar-v1` now reads through
   the temp tier, and in the default `auto` mode the tier turns itself on for
