@@ -316,10 +316,14 @@ fylo_disk_job_pid() {
   echo "${1##*-}"
 }
 
+fylo_disk_job_recent() {
+  [ -n "$(find "$1" -maxdepth 0 -mmin -"$(fylo_disk_stale_minutes)" 2> /dev/null)" ]
+}
+
 fylo_disk_job_alive() {
   local name
   name="$(basename "$1")"
-  [ "$(fylo_disk_job_host "$name")" = "$(fylo_disk_host)" ] || return 0
+  [ "$(fylo_disk_job_host "$name")" = "$(fylo_disk_host)" ] || { fylo_disk_job_recent "$1"; return; }
   kill -0 "$(fylo_disk_job_pid "$name")" 2> /dev/null
 }
 
