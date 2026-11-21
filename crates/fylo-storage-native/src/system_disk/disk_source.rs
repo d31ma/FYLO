@@ -18,4 +18,8 @@ pub(crate) trait DiskSource {
 
     /// Whether `path` is on a network filesystem.
     fn remote(&self, path: &Path) -> Result<bool, String>;
+
+    /// The mount point of the filesystem that holds `path` (or its nearest
+    /// existing parent), as the OS reports it (ADR 0033 section 5.1).
+    fn mount_point(&self, path: &Path) -> Result<PathBuf, String>;
 }

@@ -1,7 +1,9 @@
-//! ADR 0032: a server root lives on a local disk that is not the system
-//! disk. These tests start `fylo` with the opt-out cleared, because the
-//! repository's `.cargo/config.toml` (and CI, and the nightly run) turn it
-//! on for every test process.
+//! ADR 0032 and ADR 0033 section 5: a server root lives directly below the
+//! mount point of a disk that is not the system disk. A folder in the OS
+//! temp folder is not directly below a mount point, so it is refused with
+//! `ENOTVOLUMEROOT` before its disk is read. These tests start `fylo` with
+//! the opt-out cleared, because the repository's `.cargo/config.toml` (and
+//! CI, and the nightly run) turn it on for every test process.
 
 use std::ffi::OsString;
 use std::fs;
@@ -20,6 +22,7 @@ impl Place {
     const ALLOW: &'static str = "FYLO_ALLOW_SYSTEM_DISK";
     const APP_ID: &'static str = "FYLO_APP_ID";
     const SYSTEM_DISK: &'static str = "ESYSTEMDISK";
+    const NOT_VOLUME_ROOT: &'static str = "ENOTVOLUMEROOT";
     const REMOTE_ROOT: &'static str = "EREMOTEROOT";
     const NETWORK_ROOTS: &'static str = "FYLO_TEST_NETWORK_ROOTS";
     const DATA_DISK_ROOTS: &'static str = "FYLO_TEST_DATA_DISK_ROOTS";
@@ -177,13 +180,19 @@ fn a_plain_loop_answers_the_handshake_and_refuses_the_first_request() {
     let lock = Place::lock(&frames[0]);
     assert_eq!(frames[0]["ok"], true, "{}", frames[0]);
     assert_eq!(lock["placement"], Value::Null, "{lock}");
+    assert!(
+        frames[0]["result"]["storage"]["volume"].is_string(),
+        "{}",
+        frames[0]
+    );
     assert_eq!(
         Place::error_code(&frames[1]),
-        Place::SYSTEM_DISK,
+        Place::NOT_VOLUME_ROOT,
         "{}",
         frames[1]
     );
     let message = frames[1]["error"]["message"].as_str().unwrap();
+    assert!(message.contains("is not a mount point"), "{message}");
     assert!(message.contains("--allow-system-disk"), "{message}");
     assert!(message.contains("FYLO_ALLOW_SYSTEM_DISK=1"), "{message}");
     assert!(message.contains("fylo.allowSystemDisk"), "{message}");
@@ -199,7 +208,7 @@ fn an_owned_loop_refuses_in_its_first_frame() {
     );
     assert_eq!(
         Place::error_code(&frames[0]),
-        Place::SYSTEM_DISK,
+        Place::NOT_VOLUME_ROOT,
         "{}",
         frames[0]
     );
@@ -214,7 +223,7 @@ fn a_one_shot_handshake_answers_and_a_one_shot_write_is_refused() {
     assert_eq!(handshake["ok"], true, "{handshake}");
     assert_eq!(Place::lock(&handshake)["placement"], Value::Null);
     let write = Place::frame(&place.request(&root, &Place::create_collection()));
-    assert_eq!(Place::error_code(&write), Place::SYSTEM_DISK, "{write}");
+    assert_eq!(Place::error_code(&write), Place::NOT_VOLUME_ROOT, "{write}");
     assert_eq!(place.entries(), vec![OsString::from("application.json")]);
 }
 
@@ -225,7 +234,7 @@ fn an_invocation_is_refused_in_its_frame() {
     fs::create_dir(&root).unwrap();
     let output = place.invoke(&root, &Place::create_collection());
     let frame = Place::frame(&output);
-    assert_eq!(Place::error_code(&frame), Place::SYSTEM_DISK, "{frame}");
+    assert_eq!(Place::error_code(&frame), Place::NOT_VOLUME_ROOT, "{frame}");
     assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
 }
 
@@ -304,7 +313,7 @@ fn the_refusal_holds_when_the_parent_has_the_opt_out_on() {
     let place = Place::temp();
     let output = place.request(&place.path("root"), &Place::create_collection());
     let frame = Place::frame(&output);
-    assert_eq!(Place::error_code(&frame), Place::SYSTEM_DISK, "{frame}");
+    assert_eq!(Place::error_code(&frame), Place::NOT_VOLUME_ROOT, "{frame}");
     assert!(!String::from_utf8_lossy(&output.stderr).contains(Place::WARNING));
 }
 
@@ -385,7 +394,7 @@ fn app_mode_admits_a_root_in_the_app_folder_only() {
     let (frames, _) = Place::exec_loop(command, &[Place::create_collection()]);
     assert_eq!(
         Place::error_code(&frames[0]),
-        Place::SYSTEM_DISK,
+        Place::NOT_VOLUME_ROOT,
         "{}",
         frames[0]
     );
@@ -430,29 +439,50 @@ fn network_roots_are_never_admitted_by_the_opt_out_or_app_mode() {
     }
 }
 
-/// Opt-in: every folder in `FYLO_TEST_DATA_DISK_ROOTS` is on a local disk
-/// that is not the system disk (on this Mac: Mesail's ATLAS-backed disk
-/// image, and HANGAR), and is admitted as a data disk.
+/// Opt-in: every folder in `FYLO_TEST_DATA_DISK_ROOTS` is the mount point
+/// of a local disk that is not the system disk (on this Mac: the FYLO test
+/// image on HANGAR). A root directly below it is admitted as a data disk; a
+/// root one folder deeper is refused with `ENOTVOLUMEROOT`.
 #[test]
-fn data_disk_roots_are_admitted() {
+fn data_disk_roots_are_admitted_only_directly_below_the_mount_point() {
     for base in Place::listed(Place::DATA_DISK_ROOTS) {
-        let place = Place::under(&base);
-        let root = place.path("root");
+        let mount = fs::canonicalize(&base).unwrap();
+        let top = Place::under(&mount);
+        let place = Place::temp();
         let (frames, stderr) = Place::exec_loop(
-            place.loop_command(&root, &[]),
+            place.loop_command(&top.0, &[]),
             &[Place::handshake(), Place::create_collection()],
         );
         let lock = Place::lock(&frames[0]);
         assert_eq!(lock["placement"], "dataDisk", "{} {lock}", base.display());
         assert_eq!(lock["systemDisk"], false, "{lock}");
+        assert_eq!(
+            frames[0]["result"]["storage"]["volume"],
+            mount.to_string_lossy().as_ref(),
+            "{}",
+            frames[0]
+        );
         assert_eq!(frames[1]["ok"], true, "{} {}", base.display(), frames[1]);
         assert!(!stderr.contains(Place::WARNING), "{stderr}");
+        let deeper = Place::under(&mount);
+        let (frames, _) = Place::exec_loop(
+            place.loop_command(&deeper.path("root"), &[]),
+            &[Place::create_collection()],
+        );
+        assert_eq!(
+            Place::error_code(&frames[0]),
+            Place::NOT_VOLUME_ROOT,
+            "{}",
+            frames[0]
+        );
     }
 }
 
-/// A disk image whose file is in the temp folder (the system disk) is
-/// refused; a fake `hdiutil` first in `PATH`, which would answer that
-/// nothing is attached, is ignored.
+/// A root directly below the mount point of a disk image whose file is in
+/// the temp folder (the system disk) is refused with `ESYSTEMDISK`, and the
+/// handshake names the mount point; a fake `hdiutil` first in `PATH`, which
+/// would answer that nothing is attached, is ignored. A root one folder
+/// deeper is refused with `ENOTVOLUMEROOT` first.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_disk_image_whose_file_is_on_the_system_disk_is_refused() {
@@ -494,19 +524,42 @@ fn a_disk_image_whose_file_is_on_the_system_disk_is_refused() {
         std::env::var("PATH").unwrap_or_default()
     );
     let mut command = place.loop_command(&mount.join("root"), &[]);
-    command.env("PATH", path);
-    let (frames, _) = Place::exec_loop(command, &[Place::create_collection()]);
+    command.env("PATH", &path);
+    let (frames, _) = Place::exec_loop(command, &[Place::handshake(), Place::create_collection()]);
+    let mut nested = place.loop_command(&mount.join("roots").join("root"), &[]);
+    nested.env("PATH", &path);
+    let (deeper, _) = Place::exec_loop(nested, &[Place::create_collection()]);
     let _ = Command::new("/usr/bin/hdiutil")
         .args(["detach", "-quiet", "-force"])
         .arg(&mount)
         .status();
     assert_eq!(
-        Place::error_code(&frames[0]),
-        Place::SYSTEM_DISK,
+        frames[0]["result"]["storage"]["volume"],
+        mount.to_string_lossy().as_ref(),
         "{}",
         frames[0]
     );
-    let message = frames[0]["error"]["message"].as_str().unwrap();
+    assert_eq!(
+        Place::error_code(&frames[1]),
+        Place::SYSTEM_DISK,
+        "{}",
+        frames[1]
+    );
+    let message = frames[1]["error"]["message"].as_str().unwrap();
     assert!(message.contains("disk image"), "{message}");
     assert!(message.contains("image.dmg"), "{message}");
+    assert_eq!(
+        Place::error_code(&deeper[0]),
+        Place::NOT_VOLUME_ROOT,
+        "{}",
+        deeper[0]
+    );
+    let message = deeper[0]["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains(&format!(
+            "the nearest mount point above it is {}",
+            mount.display()
+        )),
+        "{message}"
+    );
 }

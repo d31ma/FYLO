@@ -13,21 +13,24 @@ use super::placement_kind::PlacementKind;
 use super::placement_report::PlacementReport;
 use super::root_placement::RootPlacement;
 use super::system_disk_refusal::SystemDiskRefusal;
+use super::volume_root::VolumeRoot;
 
-/// The rule that a server root lives on a local disk that is not the system
-/// disk (ADR 0032). It runs after ADR 0029's network check, on a root that
-/// is local or admitted by the EFS profile.
+/// The rule that a server root lives directly below the mount point of a
+/// drive that is not the system disk (ADR 0032, ADR 0033 section 5). It
+/// runs after ADR 0029's network check, on a root that is local, or on a
+/// network root once the network switch admits it.
 pub(crate) struct SystemDiskRule;
 
 impl SystemDiskRule {
     const IMAGE_DEPTH: usize = 4;
 
     /// Admit the root at `path` under `placement`, or refuse it with
-    /// `ESYSTEMDISK`.
+    /// `ENOTVOLUMEROOT` or `ESYSTEMDISK`.
     ///
     /// # Errors
     ///
-    /// Returns `ESYSTEMDISK` for a root on the system disk, on a memory
+    /// Returns `ENOTVOLUMEROOT` for a root whose parent is not a mount
+    /// point, and `ESYSTEMDISK` for a root on the system disk, on a memory
     /// filesystem, on a disk image whose file is on the system disk, or on a
     /// disk FYLO cannot tell.
     pub(crate) fn admit(
@@ -110,7 +113,25 @@ impl SystemDiskRule {
         })
     }
 
+    /// The drive rule, in the order of ADR 0033 section 5.2: the mount
+    /// point first, then the disk.
     fn data_disk(
+        disks: &dyn DiskSource,
+        path: &Path,
+    ) -> Result<PlacementReport, SystemDiskRefusal> {
+        VolumeRoot::check(disks, path)?;
+        Self::drive(disks, path)
+    }
+
+    /// A network share has no disk, so it is never the system disk.
+    fn drive(disks: &dyn DiskSource, path: &Path) -> Result<PlacementReport, SystemDiskRefusal> {
+        if disks.remote(path).map_err(Self::could_not_tell)? {
+            return Ok(PlacementReport::admitted(None, PlacementKind::DataDisk));
+        }
+        Self::local_disk(disks, path)
+    }
+
+    fn local_disk(
         disks: &dyn DiskSource,
         path: &Path,
     ) -> Result<PlacementReport, SystemDiskRefusal> {
@@ -222,7 +243,7 @@ mod tests {
     /// Disks by path prefix: `/system` is the system disk, `/data` a second
     /// local disk, `/share` a network share, `/tmp` a memory filesystem.
     /// `/data/image` and `/system/image` are disk images whose files are
-    /// named by `image_files`.
+    /// named by `image_files`. Each prefix is also its mount point.
     struct FakeDisks {
         image_files: Vec<(&'static str, &'static str)>,
         broken_images: bool,
@@ -246,6 +267,7 @@ mod tests {
                 "/data",
                 "/tmp",
                 "/other",
+                "/share",
             ]
             .into_iter()
             .find(|prefix| path.starts_with(prefix))
@@ -283,6 +305,13 @@ mod tests {
         fn remote(&self, path: &Path) -> Result<bool, String> {
             Ok(path.starts_with("/share"))
         }
+
+        fn mount_point(&self, path: &Path) -> Result<PathBuf, String> {
+            match Self::disk_of(path) {
+                "/unknown" => Err("no mount holds it".to_owned()),
+                disk => Ok(PathBuf::from(disk)),
+            }
+        }
     }
 
     const IMAGES: &[(&str, &str)] = &[
@@ -303,11 +332,49 @@ mod tests {
     fn a_root_on_the_system_disk_is_refused() {
         let disks = FakeDisks::new(IMAGES);
         assert_eq!(
-            verdict(&disks, "/system/Users/me/root"),
+            verdict(&disks, "/system/root"),
             Err(SystemDiskRefusal::SystemDisk {
                 disk: "system".to_owned()
             })
         );
+    }
+
+    #[test]
+    fn a_root_below_a_folder_of_a_data_disk_is_refused_before_the_disk_is_read() {
+        let disks = FakeDisks::new(IMAGES);
+        assert_eq!(
+            verdict(&disks, "/data/roots/job/root"),
+            Err(SystemDiskRefusal::NotVolumeRoot {
+                parent: PathBuf::from("/data/roots/job"),
+                mount: PathBuf::from("/data"),
+            })
+        );
+    }
+
+    #[test]
+    fn a_home_folder_root_is_refused_for_its_folder_first() {
+        let disks = FakeDisks::new(IMAGES);
+        assert!(matches!(
+            verdict(&disks, "/system/Users/me/root"),
+            Err(SystemDiskRefusal::NotVolumeRoot { .. })
+        ));
+    }
+
+    #[test]
+    fn a_root_directly_below_a_network_share_is_admitted_without_a_disk() {
+        let disks = FakeDisks::new(IMAGES);
+        let report = SystemDiskRule::data_disk(&disks, Path::new("/share/root")).unwrap();
+        assert_eq!(report.placement, Some(PlacementKind::DataDisk));
+        assert_eq!(report.system_disk, None);
+    }
+
+    #[test]
+    fn a_root_below_a_folder_of_a_network_share_is_refused() {
+        let disks = FakeDisks::new(IMAGES);
+        assert!(matches!(
+            verdict(&disks, "/share/Mesail/root"),
+            Err(SystemDiskRefusal::NotVolumeRoot { .. })
+        ));
     }
 
     #[test]

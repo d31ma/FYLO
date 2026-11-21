@@ -1136,6 +1136,10 @@ impl Session {
             .as_ref()
             .map(RootFilesystem::placement)
             .unwrap_or_default();
+        let volume = filesystem
+            .as_ref()
+            .and_then(RootFilesystem::volume)
+            .map(|volume| volume.to_string_lossy().into_owned());
         // A lock on a remote filesystem binds only this machine's processes.
         let kernel_enforced =
             lease.is_some_and(RootLease::kernel_enforced) && remote == Some(false);
@@ -1161,6 +1165,7 @@ impl Session {
             "storage": {
                 "filesystemProfile": self.filesystem_profile.as_str(),
                 "namespace": self.default_namespace(),
+                "volume": volume,
                 "rootLock": {
                     "owned": owned,
                     "kernelEnforced": kernel_enforced,

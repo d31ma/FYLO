@@ -28,6 +28,20 @@ impl AppleDisks {
         Ok(DiskDescription::named(&disk))
     }
 
+    /// The mount point of the filesystem that holds the existing `path`:
+    /// `statfs`'s `f_mntonname`.
+    pub(crate) fn mount_point(path: &Path) -> Result<PathBuf, String> {
+        let stat = rustix::fs::statfs(path)
+            .map_err(|error| format!("statfs of {} failed ({error})", path.display()))?;
+        let mount: Vec<u8> = stat
+            .f_mntonname
+            .iter()
+            .take_while(|&&character| character != 0)
+            .map(|&character| character.to_ne_bytes()[0])
+            .collect();
+        Ok(PathBuf::from(String::from_utf8_lossy(&mount).into_owned()))
+    }
+
     /// The file of the image that presents `disk`; none for a real disk.
     pub(crate) fn images(disk: &DiskDescription) -> Result<Vec<PathBuf>, String> {
         let table = Self::table()?;
@@ -62,6 +76,14 @@ mod tests {
             AppleDisks::describe(&std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
         assert!(temp.shares_disk_with(&system), "{temp:?} {system:?}");
         assert!(system.label.starts_with("disk"), "{system:?}");
+    }
+
+    #[test]
+    fn the_boot_volume_is_mounted_at_the_top_folder() {
+        assert_eq!(
+            AppleDisks::mount_point(Path::new("/")).unwrap(),
+            Path::new("/")
+        );
     }
 
     #[test]

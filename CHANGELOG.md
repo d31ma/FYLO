@@ -58,6 +58,17 @@
   The website no longer shows Rust, Swift, Kotlin or Flutter samples. The
   other shims (Node, Python, Ruby, PHP, Go, C#, Java, Dart) and the browser
   loader do not change.
+- **A root must sit directly below a mount point (ADR 0033 section 5,
+  slice L1-1).** The root's parent folder must be the mount point of its
+  drive (`/Volumes/<disk>/<root>`, `/mnt/<disk>/<root>`, `D:\<root>`; a bind
+  mount, a Docker volume and an NTFS folder mount point count). A root in a
+  deeper folder is refused with the new code `ENOTVOLUMEROOT` before
+  anything is written; the message names the nearest mount point. FYLO
+  checks the mount point first, then the disk (`ESYSTEMDISK`). The ADR 0032
+  opt-out waives it, and app mode admits the app's own folder. The
+  handshake gains `storage.volume`, the mount point. Network roots stay
+  refused with `EREMOTEROOT` until the lease and the probe of ADR 0033
+  land.
 
 ### Changed
 

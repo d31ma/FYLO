@@ -93,11 +93,14 @@ fn assert_storage_report(frame: &Value, profile: &str, owned: bool, kernel_enfor
     );
     let filesystem = &frame["result"]["storage"]["rootLock"]["filesystem"];
     assert!(filesystem.is_string(), "{frame}");
+    let volume = &frame["result"]["storage"]["volume"];
+    assert!(volume.is_string(), "{frame}");
     assert_eq!(
         frame["result"]["storage"],
         json!({
             "filesystemProfile": profile,
             "namespace": "public",
+            "volume": volume,
             "rootLock": {
                 "owned": owned,
                 "kernelEnforced": kernel_enforced,

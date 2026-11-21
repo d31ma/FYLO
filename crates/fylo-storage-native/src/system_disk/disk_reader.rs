@@ -105,6 +105,34 @@ impl DiskReader {
         Err("FYLO cannot tell disks apart on this operating system".to_owned())
     }
 
+    #[cfg(target_os = "macos")]
+    fn mount_point_of(path: &Path) -> Result<PathBuf, String> {
+        super::apple_disks::AppleDisks::mount_point(path)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn mount_point_of(path: &Path) -> Result<PathBuf, String> {
+        let table = std::fs::read_to_string("/proc/self/mountinfo")
+            .map_err(|error| format!("/proc/self/mountinfo cannot be read ({error})"))?;
+        let table = super::mount_table::MountTable::parse(&table);
+        table.holding(path).map(|mount| mount.location.clone())
+    }
+
+    #[cfg(windows)]
+    fn mount_point_of(path: &Path) -> Result<PathBuf, String> {
+        super::windows_disks::WindowsDisks::mount_point(path)
+    }
+
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "android",
+        windows
+    )))]
+    fn mount_point_of(_path: &Path) -> Result<PathBuf, String> {
+        Err("FYLO cannot read mount points on this operating system".to_owned())
+    }
+
     #[cfg(windows)]
     fn system_disk() -> Result<DiskDescription, String> {
         super::windows_disks::WindowsDisks::system()
@@ -159,5 +187,9 @@ impl DiskSource for DiskReader {
                     path.display()
                 )
             })
+    }
+
+    fn mount_point(&self, path: &Path) -> Result<PathBuf, String> {
+        Self::mount_point_of(&Self::existing(path)?)
     }
 }

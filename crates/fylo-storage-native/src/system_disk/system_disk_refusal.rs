@@ -2,9 +2,13 @@ use std::path::{Path, PathBuf};
 
 use crate::{NativeStorageError, NativeStorageErrorCode};
 
-/// Why a root is refused with `ESYSTEMDISK` (ADR 0032 section 4).
+/// Why a root is refused with `ESYSTEMDISK` (ADR 0032 section 4), or with
+/// `ENOTVOLUMEROOT` when it is not directly below a mount point (ADR 0033
+/// section 5.2).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SystemDiskRefusal {
+    /// The root's parent folder is not a mount point.
+    NotVolumeRoot { parent: PathBuf, mount: PathBuf },
     /// The root is on the system disk.
     SystemDisk { disk: String },
     /// The root is on a memory filesystem (Linux `tmpfs`, `ramfs`).
@@ -32,10 +36,10 @@ impl SystemDiskRefusal {
          An app that keeps its data in its own data folder passes --app-id <id> (FYLO_APP_ID, \
          fylo.appId).";
 
-    /// The `ESYSTEMDISK` error for the root at `path`.
+    /// The `ESYSTEMDISK` or `ENOTVOLUMEROOT` error for the root at `path`.
     pub(crate) fn error(&self, path: &Path) -> NativeStorageError {
         NativeStorageError::new(
-            NativeStorageErrorCode::SystemDisk,
+            self.code(),
             format!(
                 "FYLO root {} {} {}",
                 path.display(),
@@ -45,10 +49,19 @@ impl SystemDiskRefusal {
         )
     }
 
+    fn code(&self) -> NativeStorageErrorCode {
+        match self {
+            Self::NotVolumeRoot { .. } => NativeStorageErrorCode::NotVolumeRoot,
+            Self::OutsideApp { inner, .. } => inner.code(),
+            _ => NativeStorageErrorCode::SystemDisk,
+        }
+    }
+
     /// Whether the root is on the system disk, for the handshake; `None`
-    /// when FYLO could not tell.
+    /// when FYLO did not look or could not tell.
     pub(crate) fn system_disk(&self) -> Option<bool> {
         match self {
+            Self::NotVolumeRoot { .. } => None,
             Self::SystemDisk { .. } => Some(true),
             Self::Memory { .. } | Self::ImageOnSystemDisk { .. } => Some(false),
             Self::CouldNotTell { .. } | Self::Setting { .. } => None,
@@ -58,6 +71,13 @@ impl SystemDiskRefusal {
 
     fn reason(&self) -> String {
         match self {
+            Self::NotVolumeRoot { parent, mount } => format!(
+                "is not directly below a mount point: its parent {} is not a mount point, and \
+                 the nearest mount point above it is {}. Put the root folder directly in the \
+                 top folder of a drive that is not the boot disk.",
+                parent.display(),
+                mount.display()
+            ),
             Self::SystemDisk { disk } => format!("is on the system disk ({disk})."),
             Self::Memory { disk } => format!("is on a memory file system ({disk})."),
             Self::ImageOnSystemDisk { disk, image } => format!(
@@ -131,6 +151,47 @@ mod tests {
         for refusal in [image, unknown, memory, app] {
             names_the_opt_out(&message(&refusal));
         }
+    }
+
+    #[test]
+    fn a_root_below_a_deeper_folder_is_refused_with_its_own_code() {
+        let refusal = SystemDiskRefusal::NotVolumeRoot {
+            parent: PathBuf::from("/Volumes/HANGAR/roots"),
+            mount: PathBuf::from("/Volumes/HANGAR"),
+        };
+        let error = refusal.error(Path::new("/Volumes/HANGAR/roots/mesail"));
+        assert_eq!(error.code(), NativeStorageErrorCode::NotVolumeRoot);
+        assert_eq!(error.code().as_str(), "ENOTVOLUMEROOT");
+        let text = error.to_string();
+        assert!(
+            text.contains("its parent /Volumes/HANGAR/roots is not a mount point"),
+            "{text}"
+        );
+        assert!(
+            text.contains("the nearest mount point above it is /Volumes/HANGAR."),
+            "{text}"
+        );
+        names_the_opt_out(&text);
+        assert_eq!(refusal.system_disk(), None);
+    }
+
+    #[test]
+    fn app_mode_keeps_the_code_of_the_inner_refusal() {
+        let refusal = SystemDiskRefusal::OutsideApp {
+            app: "com.example.app".to_owned(),
+            folders: "/x/com.example.app".to_owned(),
+            inner: Box::new(SystemDiskRefusal::NotVolumeRoot {
+                parent: PathBuf::from("/Volumes/HANGAR/roots"),
+                mount: PathBuf::from("/Volumes/HANGAR"),
+            }),
+        };
+        let error = refusal.error(Path::new("/Volumes/HANGAR/roots/mesail"));
+        assert_eq!(error.code(), NativeStorageErrorCode::NotVolumeRoot);
+        assert!(
+            error
+                .to_string()
+                .contains("and not directly below a mount point")
+        );
     }
 
     #[test]

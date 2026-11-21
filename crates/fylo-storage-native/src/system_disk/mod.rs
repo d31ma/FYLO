@@ -1,5 +1,6 @@
-//! The rule that a server root lives on a local disk that is not the
-//! system disk, with its opt-out and app mode (ADR 0032).
+//! The rule that a server root lives on a disk that is not the system
+//! disk, directly below a mount point, with its opt-out and app mode (ADR
+//! 0032, ADR 0033 section 5).
 
 #[cfg(not(target_family = "wasm"))]
 mod app_folders;
@@ -35,6 +36,8 @@ mod system_disk_refusal;
 mod system_disk_rule;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod tool_runner;
+#[cfg(not(target_family = "wasm"))]
+mod volume_root;
 #[cfg(windows)]
 mod windows_disks;
 
@@ -46,3 +49,5 @@ pub use placement_settings::PlacementSettings;
 pub use root_placement::RootPlacement;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) use system_disk_rule::SystemDiskRule;
+#[cfg(not(target_family = "wasm"))]
+pub(crate) use volume_root::VolumeRoot;

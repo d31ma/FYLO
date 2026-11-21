@@ -1,9 +1,10 @@
+use crate::network_roots::NetworkRoots;
 #[cfg(not(target_family = "wasm"))]
-use crate::system_disk::SystemDiskRule;
+use crate::system_disk::{SystemDiskRule, VolumeRoot};
 use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode, PlacementReport};
 #[cfg(not(target_family = "wasm"))]
 use crate::{PlacementKind, RootPlacement};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The filesystem that holds a root, and the rule that a root never lives on
 /// a network filesystem (ADR 0029).
@@ -14,13 +15,16 @@ use std::path::Path;
 /// explicit EFS profile (ADR 0010) is the one exception: it is admitted as
 /// it always was, and only reported.
 ///
-/// A local root must also be on a disk that is not the system disk, unless
-/// the opt-out or app mode admits it (ADR 0032).
+/// A local root must also be directly below a mount point, on a disk that
+/// is not the system disk, unless the opt-out or app mode admits it (ADR
+/// 0032, ADR 0033 section 5). Once the network switch is on, a network root
+/// is judged by the same rule instead of being refused.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootFilesystem {
     name: String,
     remote: bool,
     placement: PlacementReport,
+    volume: Option<PathBuf>,
 }
 
 impl RootFilesystem {
@@ -44,10 +48,11 @@ impl RootFilesystem {
     /// `ENATIVE_IO` when the path's volume cannot be described.
     pub fn admit(path: &Path, profile: FilesystemProfile) -> Result<Self, NativeStorageError> {
         let filesystem = Self::detect(path)?;
-        filesystem.refuse_remote(path, profile)?;
+        filesystem.refuse_remote(path, profile, NetworkRoots::ADMITTED)?;
         let placement = filesystem.admit_placement(path)?;
         Ok(Self {
             placement,
+            volume: Self::volume_of(path),
             ..filesystem
         })
     }
@@ -64,6 +69,7 @@ impl RootFilesystem {
         let placement = filesystem.report_placement(path);
         Ok(Self {
             placement,
+            volume: Self::volume_of(path),
             ..filesystem
         })
     }
@@ -73,6 +79,14 @@ impl RootFilesystem {
     #[must_use]
     pub const fn placement(&self) -> PlacementReport {
         self.placement
+    }
+
+    /// The mount point the root lives on: its parent folder's (ADR 0033
+    /// section 13, `storage.volume`). `None` for a filesystem described by
+    /// [`Self::of`], in the browser, or when FYLO cannot tell.
+    #[must_use]
+    pub fn volume(&self) -> Option<&Path> {
+        self.volume.as_deref()
     }
 
     /// The name the OS reports, such as `apfs`, `ext4`, `NTFS` or `nfs`.
@@ -92,8 +106,9 @@ impl RootFilesystem {
         &self,
         path: &Path,
         profile: FilesystemProfile,
+        network_admitted: bool,
     ) -> Result<(), NativeStorageError> {
-        if !self.remote || profile == FilesystemProfile::EfsSidecarV1 {
+        if !self.remote || network_admitted || profile == FilesystemProfile::EfsSidecarV1 {
             return Ok(());
         }
         Err(NativeStorageError::new(
@@ -108,11 +123,12 @@ impl RootFilesystem {
         ))
     }
 
-    /// The system-disk rule, for a local root. A remote root that got here
-    /// is admitted by the EFS profile and is never on the system disk.
+    /// The drive rule. While the network switch is off, a remote root that
+    /// got here is admitted by the EFS profile and is never on the system
+    /// disk; once it is on, a remote root is judged like a local one.
     #[cfg(not(target_family = "wasm"))]
     fn admit_placement(&self, path: &Path) -> Result<PlacementReport, NativeStorageError> {
-        if self.remote {
+        if self.remote && !NetworkRoots::ADMITTED {
             return Ok(PlacementReport::admitted(None, PlacementKind::DataDisk));
         }
         let placement = RootPlacement::current()
@@ -122,7 +138,7 @@ impl RootFilesystem {
 
     #[cfg(not(target_family = "wasm"))]
     fn report_placement(&self, path: &Path) -> PlacementReport {
-        if self.remote {
+        if self.remote && !NetworkRoots::ADMITTED {
             return PlacementReport::default();
         }
         RootPlacement::current().map_or_else(
@@ -149,12 +165,23 @@ impl RootFilesystem {
     }
 
     #[cfg(not(target_family = "wasm"))]
+    fn volume_of(path: &Path) -> Option<PathBuf> {
+        VolumeRoot::of(path)
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn volume_of(_path: &Path) -> Option<PathBuf> {
+        None
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     fn detect(path: &Path) -> Result<Self, NativeStorageError> {
         let info = crate::FilesystemInfo::of_path(path).map_err(NativeStorageError::io)?;
         Ok(Self {
             name: info.name,
             remote: info.remote,
             placement: PlacementReport::default(),
+            volume: None,
         })
     }
 
@@ -168,6 +195,7 @@ impl RootFilesystem {
             name: "unknown".to_owned(),
             remote: false,
             placement: PlacementReport::default(),
+            volume: None,
         })
     }
 }
@@ -183,13 +211,18 @@ mod tests {
             name: "nfs".to_owned(),
             remote: true,
             placement: crate::PlacementReport::default(),
+            volume: None,
         }
     }
 
     #[test]
     fn a_native_root_on_a_network_filesystem_is_refused_with_its_name_and_path() {
         let error = remote()
-            .refuse_remote(Path::new("/mnt/share/root"), FilesystemProfile::Native)
+            .refuse_remote(
+                Path::new("/mnt/share/root"),
+                FilesystemProfile::Native,
+                false,
+            )
             .unwrap_err();
         assert_eq!(error.code(), NativeStorageErrorCode::RemoteRoot);
         assert_eq!(error.code().as_str(), "EREMOTEROOT");
@@ -205,8 +238,38 @@ mod tests {
     #[test]
     fn the_efs_profile_is_admitted_on_a_network_filesystem() {
         remote()
-            .refuse_remote(Path::new("/mnt/efs/root"), FilesystemProfile::EfsSidecarV1)
+            .refuse_remote(
+                Path::new("/mnt/efs/root"),
+                FilesystemProfile::EfsSidecarV1,
+                false,
+            )
             .unwrap();
+    }
+
+    #[test]
+    fn the_network_switch_admits_a_native_root_on_a_network_filesystem() {
+        remote()
+            .refuse_remote(
+                Path::new("/mnt/share/root"),
+                FilesystemProfile::Native,
+                true,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn the_network_switch_is_off_until_the_lease_and_the_probe_land() {
+        assert!(!crate::network_roots::NetworkRoots::ADMITTED);
+    }
+
+    #[test]
+    fn a_described_root_reports_its_volume_and_a_bare_one_does_not() {
+        let root = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join("fylo-root-filesystem-volume");
+        let described = RootFilesystem::describe(&root).unwrap();
+        assert!(described.volume().is_some(), "{described:?}");
+        assert_eq!(RootFilesystem::of(&root).unwrap().volume(), None);
     }
 
     #[test]

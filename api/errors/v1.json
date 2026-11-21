@@ -90,6 +90,10 @@
             "retryable": false
         },
         {
+            "code": "ENOTVOLUMEROOT",
+            "retryable": false
+        },
+        {
             "code": "EINVALIDDOCID",
             "retryable": false
         },

@@ -135,6 +135,14 @@ and `placement`, why the root is admitted (`dataDisk`, `systemDiskAllowed`,
 `FYLO_ALLOW_SYSTEM_DISK` value or app id stops the CLI at start with a
 message on stderr and exit code 1.
 
+A root whose parent folder is not a mount point is refused the same way,
+with `ENOTVOLUMEROOT` (not retryable), before its disk is read
+([ADR 0033](../../../docs/adr/0033-primary-layout-on-a-data-drive.md)
+section 5). The message names the nearest mount point above the root. The
+opt-out waives it; app mode admits the app's own folder. `storage.volume`
+reports the mount point of the default root's parent folder, or `null`
+without a default root or when FYLO cannot tell.
+
 Frame limits, schema/encryption configuration, operation names and stable errors
 retain their existing contracts. EFS queue operations currently fail closed at
 the native queue-open seam; its `serverlessQueue` capability is false while the

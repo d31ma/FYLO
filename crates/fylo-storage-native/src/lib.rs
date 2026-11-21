@@ -81,6 +81,7 @@ pub mod layout;
 mod lease;
 mod legacy_access_warning;
 mod log_position;
+mod network_roots;
 mod platform_companion;
 mod profile_manifest;
 mod queue;
@@ -3483,6 +3484,9 @@ pub enum NativeStorageErrorCode {
     /// no longer does what the app folder recorded in `format.json` (ADR
     /// 0033 section 6).
     FilesystemProbe,
+    /// The root's parent folder is not a mount point, and neither the
+    /// opt-out nor app mode admits it (ADR 0033 section 5.2).
+    NotVolumeRoot,
     /// A SQL mutation was malformed or used an unsupported execution shape.
     InvalidQuery,
     /// A record write targeted a collection whose recorded shard width differs
@@ -3549,6 +3553,7 @@ impl NativeStorageErrorCode {
             Self::RemoteRoot => "EREMOTEROOT",
             Self::SystemDisk => "ESYSTEMDISK",
             Self::FilesystemProbe => "EFSPROBE",
+            Self::NotVolumeRoot => "ENOTVOLUMEROOT",
             Self::InvalidQuery => "EQUERY_INVALID",
             Self::ShardWidth => "ESHARDWIDTH",
             Self::Unsupported => "ENATIVE_UNSUPPORTED",

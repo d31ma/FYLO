@@ -137,6 +137,18 @@
                         </td>
                     </tr>
                     <tr>
+                        <td><code>ENOTVOLUMEROOT</code></td>
+                        <td>
+                            The root's parent folder is not a mount point, and neither the opt-out
+                            nor app mode admits it. The message names the nearest mount point above
+                            the root.
+                        </td>
+                        <td>
+                            Do not retry; put the root folder directly in the top folder of a drive
+                            that is not the boot disk, or use the opt-out.
+                        </td>
+                    </tr>
+                    <tr>
                         <td><code>EFRAME_UTF8</code></td>
                         <td>The request frame was not valid UTF-8.</td>
                         <td>Fix the encoder; the loop resumes at the next frame.</td>

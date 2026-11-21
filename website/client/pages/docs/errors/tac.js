@@ -93,6 +93,12 @@ export default class {
             retry: 'Do not retry; move the app folder to a file system that passes the probe, or recreate it there.'
         },
         {
+            code: 'ENOTVOLUMEROOT',
+            meaning:
+                "The root's parent folder is not a mount point, and neither the opt-out nor app mode admits it. The message names the nearest mount point above the root.",
+            retry: 'Do not retry; put the root folder directly in the top folder of a drive that is not the boot disk, or use the opt-out.'
+        },
+        {
             code: 'EFRAME_UTF8',
             meaning: 'The request frame was not valid UTF-8.',
             retry: 'Fix the encoder; the loop resumes at the next frame.'

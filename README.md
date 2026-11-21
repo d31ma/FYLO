@@ -1578,6 +1578,7 @@ text.
 | `EREMOTEROOT`                                                          | The root is on a network filesystem (see Where a root may live)                     | Do not retry; move the root to a disk attached to this machine            |
 | `ESYSTEMDISK`                                                          | The root is on the system disk (see Where a root may live)                          | Do not retry; move the root to another local disk, or use the opt-out     |
 | `EFSPROBE`                                                             | The file system failed the app folder probe, or lost what `format.json` recorded    | Do not retry; move the app folder to a file system that passes the probe  |
+| `ENOTVOLUMEROOT`                                                       | The root's parent folder is not a mount point (see Where a root may live)           | Do not retry; put the root directly below a mount point, or use the opt-out |
 | `EFRAME_*`                                                             | Frame-contract violations, as documented above                                      | Per the framing rules above                                               |
 | `EQUERYLOOPREQUIRED` / `EQUERYITEMTOOLARGE` / `EQUERYSNAPSHOTTOOLARGE` | Pagination contract violations, as documented above                                 | Per the pagination rules above                                            |
 | `ESCHEMA`                                                              | A document does not match the head schema, or a schema is invalid                   | Do not retry; fix the document or schema                                  |
@@ -1696,6 +1697,18 @@ whose file is on the system disk is refused with `ESYSTEMDISK` before
 anything is written. A disk image whose file is on another local disk or on
 a network share is allowed.
 
+The root's parent folder must also be a **mount point**
+([ADR 0033](docs/adr/0033-primary-layout-on-a-data-drive.md) section 5):
+the root folder sits directly in the top folder of its drive, such as
+`/Volumes/<disk>/<root>`, `/mnt/<disk>/<root>` or `D:\<root>`. A bind mount,
+a Docker volume and an NTFS folder mount point count as mount points. A root
+in a deeper folder is refused with `ENOTVOLUMEROOT`, which names the nearest
+mount point above it. FYLO checks the mount point first, then the disk. The
+handshake reports the mount point of the default root in `storage.volume`
+(`null` without a default root, or when FYLO cannot tell). Inside a virtual
+machine or a container FYLO sees only that machine's own disks and mounts:
+the operator of the host decides where a virtual disk's file lives.
+
 Two settings allow more:
 
 | Setting                                    | Flag                  | Environment                | `application.json`        |
@@ -1708,7 +1721,8 @@ admits a root inside the app's own data folder, which FYLO computes from the
 OS: `~/Library/Application Support/<id>` (or the sandbox container) on macOS,
 `%LOCALAPPDATA%\<id>` and `%APPDATA%\<id>` on Windows, `$XDG_DATA_HOME/<id>`
 (default `~/.local/share/<id>`) on Linux. iOS and Android apps need nothing.
-Neither setting admits a network root. The handshake reports
+The opt-out also waives the mount-point rule. Neither setting admits a
+network root. The handshake reports
 `storage.rootLock.systemDisk` and `storage.rootLock.placement` (`dataDisk`,
 `systemDiskAllowed` or `appOwned`).
 

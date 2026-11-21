@@ -247,24 +247,32 @@ fn a_process_stopped_before_renaming_an_entry_leaves_only_a_partial_file() {
     assert_cut_write_is_ignored("temp-entry-before-rename");
 }
 
-/// One root on a data disk, with the temp cache in the OS temp folder, which
-/// is on the system disk on purpose (ADR 0030 section 4.2). The system-disk
-/// rule (ADR 0032) judges only the primary root, so the tier must work.
-struct DataDiskRoot(PathBuf);
+/// One root directly below a data disk's mount point (ADR 0033 section
+/// 5.1), with its configuration and the temp cache in the OS temp folder,
+/// which is on the system disk on purpose (ADR 0030 section 4.2). The drive
+/// rule judges only the primary root, so the tier must work.
+struct DataDiskRoot {
+    folder: PathBuf,
+    root: PathBuf,
+}
 
 impl DataDiskRoot {
     const LIST: &'static str = "FYLO_TEST_DATA_DISK_ROOTS";
 
     fn below(parent: &Path) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let folder = parent.join(format!(
+        let name = format!(
             "fylo-temp-tier-data-disk-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        );
+        let folder = std::env::temp_dir().join(&name);
         fs::create_dir_all(&folder).unwrap();
         fs::write(folder.join("application.json"), br#"{"fylo":{}}"#).unwrap();
-        Self(folder)
+        Self {
+            folder,
+            root: parent.join(name),
+        }
     }
 
     fn command(&self, mode: &[&str]) -> Command {
@@ -273,11 +281,11 @@ impl DataDiskRoot {
             .arg("exec")
             .args(mode)
             .arg("--root")
-            .arg(self.0.join("root"))
+            .arg(&self.root)
             .arg("--config")
-            .arg(self.0.join("application.json"))
+            .arg(self.folder.join("application.json"))
             .args(["--temp-cache", "on"])
-            .current_dir(&self.0)
+            .current_dir(&self.folder)
             .env_remove("FYLO_ROOT")
             .env_remove("FYLO_APP_ID")
             .env_remove("FYLO_ALLOW_SYSTEM_DISK")
@@ -330,7 +338,8 @@ impl DataDiskRoot {
 
 impl Drop for DataDiskRoot {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = fs::remove_dir_all(&self.folder);
+        let _ = fs::remove_dir_all(&self.root);
     }
 }
 

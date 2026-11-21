@@ -105,12 +105,24 @@ impl WindowsDisks {
         description
     }
 
-    /// `\\?\Volume{GUID}\` for the volume that holds `path`.
+    /// The mount point of the volume that holds `path`: a drive root such
+    /// as `D:\`, or an NTFS folder mount point (ADR 0033 section 5.1).
+    pub(crate) fn mount_point(path: &Path) -> Result<PathBuf, String> {
+        let mount_point = Self::volume_path(path).map_err(|error| {
+            format!(
+                "the mount point of {} cannot be read ({error})",
+                path.display()
+            )
+        })?;
+        Ok(PathBuf::from(Self::text(&mount_point)))
+    }
+
+    /// `GetVolumePathNameW` of `path`, NUL-terminated.
     #[allow(
         unsafe_code,
-        reason = "ADR 0032: GetVolumePathNameW and GetVolumeNameForVolumeMountPointW write into caller buffers"
+        reason = "ADR 0032: GetVolumePathNameW writes into a caller buffer"
     )]
-    fn volume(path: &Path) -> std::io::Result<String> {
+    fn volume_path(path: &Path) -> std::io::Result<Vec<u16>> {
         let wide = Self::wide(&Self::plain(path));
         let mut mount_point = vec![0_u16; Self::PATH_UNITS];
         // SAFETY: `wide` is a NUL-terminated UTF-16 path that outlives the
@@ -126,10 +138,20 @@ impl WindowsDisks {
         if found == 0 {
             return Err(std::io::Error::last_os_error());
         }
+        Ok(mount_point)
+    }
+
+    /// `\\?\Volume{GUID}\` for the volume that holds `path`.
+    #[allow(
+        unsafe_code,
+        reason = "ADR 0032: GetVolumeNameForVolumeMountPointW writes into a caller buffer"
+    )]
+    fn volume(path: &Path) -> std::io::Result<String> {
+        let mount_point = Self::volume_path(path)?;
         let mut volume = vec![0_u16; Self::VOLUME_NAME_UNITS];
-        // SAFETY: `mount_point` was NUL-terminated by the call above and
-        // outlives this one; `volume` is an exclusively borrowed buffer of
-        // exactly the length passed.
+        // SAFETY: `mount_point` was NUL-terminated by `GetVolumePathNameW`
+        // and outlives this call; `volume` is an exclusively borrowed buffer
+        // of exactly the length passed.
         let named = unsafe {
             GetVolumeNameForVolumeMountPointW(
                 mount_point.as_ptr(),
@@ -398,6 +420,13 @@ mod tests {
             system.keys.iter().any(|key| key.starts_with("disk:")),
             "{system:?}"
         );
+    }
+
+    #[test]
+    fn the_windows_folder_is_on_a_drive_root() {
+        let folder = WindowsDisks::windows_folder().unwrap();
+        let mount = WindowsDisks::mount_point(&folder).unwrap();
+        assert_eq!(mount.parent(), None, "{}", mount.display());
     }
 
     #[test]
