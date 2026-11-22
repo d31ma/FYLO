@@ -27,14 +27,13 @@ Web builds are reproducible only with the repository-pinned toolchains: Bun is r
 from `rust-toolchain.toml`. `build-browser.mjs` rejects a different Bun version, installs the exact
 Rust toolchain through rustup, and builds the locked Cargo dependency graph.
 
-The marketing/docs site is built with the Rust-native TACHYON `ty`. Until the coordinated
-TACHYON release, the site pins a TACHYON `develop` build by commit and SHA-256 in
-`scripts/tachyon-pin.mjs` (commit `d8332172`, ty 26.46.02). `scripts/run-site.mjs` uses
-`TAC_BIN` when it is set; otherwise it takes the pinned build from
-`~/Developer/AnvilTargets/tachyon-develop/<commit>/ty/<platform>/ty` (or `TACHYON_DEVELOP_ROOT`)
-and refuses a file with another checksum. `scripts/install-vendor-bins.sh` and its PowerShell peer
-still install the released v26.36.01 for GitHub Actions; that release cannot build the current
-site. At the coordinated TACHYON release, move both pins to the released `ty` in one change.
+The marketing/docs site is built with the Rust-native TACHYON `ty` v26.46.02, pinned by version
+and SHA-256 in `scripts/install-vendor-bins.sh` (and its PowerShell peer) and in
+`scripts/tachyon-pin.mjs`. `scripts/run-site.mjs` uses `TAC_BIN` when it is set (for example a
+TACHYON `develop` build); otherwise it runs the `ty` on `PATH` and refuses it unless its SHA-256
+is the pinned one for the platform. Install the pinned `ty` with `bun run vendor:install`
+(`FYLO_VENDOR_BIN_DIR` picks the folder). A test checks that the two pin files list the same
+digests.
 
 The site's configuration is `website/client/manifest.json` (TACHYON ADR 0052). Its bundle step
 fingerprints `/shared/assets/` URLs. Then `scripts/patch-tachyon-runtime.mjs` checks that the
