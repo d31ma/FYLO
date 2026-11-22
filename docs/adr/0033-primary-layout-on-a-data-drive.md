@@ -248,6 +248,17 @@ folder, and an NFS client keeps a name's old file for its folder-cache time
 sees each new beat at its next attribute refresh (measured on this Mac's
 NFS mount: at most 5.0 s without `F_NOCACHE`, 1.6 s with it).
 
+**A torn record.** An in-place write that a crash stops can leave a short or
+broken record. Such a record never means "owner gone": a process that wants
+the namespace treats it as a changed record and waits the whole takeover
+time on its own clock again, and any change during the wait starts the wait
+over. The owner's per-commit fence refuses that commit with
+`EROOTLEASELOST`, but the lease is not lost for good: the owner's heartbeat
+skips a record it cannot read and writes nothing, unless its own last write
+failed (a full disk can leave the record short); then the broken bytes are
+its own and it rewrites them. The owner never reads its own record while it
+writes it (a lock inside the process).
+
 **Taking a namespace.**
 
 1. Take the kernel lock. If another process on this machine holds it, wait

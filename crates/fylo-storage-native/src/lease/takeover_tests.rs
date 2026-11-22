@@ -426,3 +426,91 @@ fn the_record_is_rewritten_in_place_by_heartbeats_and_the_clean_stop() {
         inode
     );
 }
+
+/// Half of a real record, as a crash in the middle of an in-place write
+/// can leave it.
+fn truncated(record: &serde_json::Value) -> Vec<u8> {
+    let bytes = serde_json::to_vec(record).unwrap();
+    bytes[..bytes.len() / 2].to_vec()
+}
+
+#[test]
+fn a_truncated_record_makes_a_taker_wait_the_full_takeover_time() {
+    let fixture = TakeoverFixture::new();
+    let held = TakeoverFixture::held_record(4, Some(TakeoverFixture::OTHER_MACHINE), 1, "x");
+    std::fs::write(fixture.record_path(), truncated(&held)).unwrap();
+    let (lease, waited) = TakeoverFixture::timed(|| fixture.acquire().unwrap());
+    assert!(
+        waited >= TakeoverFixture::TAKEOVER,
+        "waited only {waited:?}"
+    );
+    lease.assert_owned().unwrap();
+}
+
+#[test]
+fn a_truncated_record_that_changes_during_the_wait_is_never_taken() {
+    let fixture = TakeoverFixture::new();
+    let held = TakeoverFixture::held_record(4, Some(TakeoverFixture::OTHER_MACHINE), 1, "x");
+    std::fs::write(fixture.record_path(), truncated(&held)).unwrap();
+    let changer = {
+        let path = fixture.record_path();
+        let mut later = held.clone();
+        later["heartbeat"] = serde_json::json!(8);
+        std::thread::spawn(move || {
+            std::thread::sleep(TakeoverFixture::TAKEOVER / 2);
+            std::fs::write(path, serde_json::to_vec(&later).unwrap()).unwrap();
+        })
+    };
+    let refused = fixture.acquire().unwrap_err();
+    changer.join().unwrap();
+    assert_eq!(refused.code(), NativeStorageErrorCode::RootLocked);
+}
+
+#[test]
+fn an_owner_stops_a_commit_on_a_record_it_did_not_write_but_is_not_lost_for_good() {
+    let fixture = TakeoverFixture::new();
+    let lease = fixture.acquire().unwrap();
+    let whole = std::fs::read(fixture.record_path()).unwrap();
+    std::fs::write(fixture.record_path(), &whole[..whole.len() / 2]).unwrap();
+    assert_eq!(
+        lease.assert_owned().unwrap_err().code(),
+        NativeStorageErrorCode::RootLeaseLost
+    );
+    std::thread::sleep(TakeoverFixture::HEARTBEAT * 5);
+    assert!(!lease.heartbeat_lost(), "a broken record ended the lease");
+    assert!(
+        fixture.heartbeat_now().is_none(),
+        "the owner rewrote a record it had not broken"
+    );
+    std::fs::write(fixture.record_path(), whole).unwrap();
+    lease.assert_owned().unwrap();
+}
+
+#[test]
+fn the_heartbeat_repairs_a_record_only_after_its_own_write_failed() {
+    use super::heartbeat_target::HeartbeatTarget;
+    use super::lease_record::LeaseRecord;
+    let fixture = TakeoverFixture::new();
+    let record = LeaseRecord::claim(
+        "db",
+        TakeoverFixture::OTHER_OWNER,
+        3,
+        TakeoverFixture::timing(),
+    );
+    let target = HeartbeatTarget {
+        path: fixture.record_path(),
+        lost: std::sync::Arc::default(),
+        record_lock: std::sync::Arc::default(),
+        last_write_failed: std::cell::Cell::new(false),
+    };
+    std::fs::write(fixture.record_path(), b"{\"format\": ").unwrap();
+    let kept = target.beat(record.clone()).unwrap();
+    assert!(
+        fixture.heartbeat_now().is_none(),
+        "rewrote someone else's bytes"
+    );
+    target.last_write_failed.set(true);
+    target.beat(kept).unwrap();
+    assert_eq!(fixture.record()["ownerId"], TakeoverFixture::OTHER_OWNER);
+    assert_eq!(fixture.generation(), 3);
+}

@@ -1,5 +1,6 @@
 use super::heartbeat_target::HeartbeatTarget;
 use super::lease_record::LeaseRecord;
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
@@ -43,6 +44,7 @@ impl LeaseHeartbeat {
             path,
             lost: Arc::clone(&lost),
             record_lock,
+            last_write_failed: Cell::new(false),
         };
         let thread = std::thread::Builder::new()
             .name(Self::THREAD_NAME.to_owned())
