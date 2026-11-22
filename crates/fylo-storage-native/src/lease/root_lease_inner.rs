@@ -1,3 +1,4 @@
+use super::heartbeat_target::HeartbeatTarget;
 use super::kernel_file_lock::KernelFileLock;
 use super::lease_backoff::LeaseBackoff;
 use super::lease_failpoint::LeaseFailpoint;
@@ -11,6 +12,7 @@ use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode, RootF
 use fylo_vfs::{File, OpenOptions};
 use std::fs::TryLockError;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// One owner of a folder: the kernel lock on its lock file plus the current
@@ -31,6 +33,7 @@ pub(super) struct RootLeaseInner {
     kernel_enforced: bool,
     filesystem: RootFilesystem,
     heartbeat: LeaseHeartbeat,
+    record_lock: Arc<Mutex<()>>,
 }
 
 impl RootLeaseInner {
@@ -159,8 +162,13 @@ impl RootLeaseInner {
         }
         .claim()?;
         let generation = record.generation();
-        let heartbeat =
-            LeaseHeartbeat::start(target.record_path.clone(), record, timing.heartbeat());
+        let record_lock = Arc::new(Mutex::new(()));
+        let heartbeat = LeaseHeartbeat::start(
+            target.record_path.clone(),
+            record,
+            timing.heartbeat(),
+            Arc::clone(&record_lock),
+        );
         Ok(Self {
             root: target.owned,
             scope_name: format!("{owner}:{generation}"),
@@ -171,6 +179,7 @@ impl RootLeaseInner {
             kernel_enforced,
             filesystem,
             heartbeat,
+            record_lock,
         })
     }
 
@@ -240,7 +249,9 @@ impl RootLeaseInner {
     /// The fencing check (ADR 0033 section 4): the heartbeat has not seen
     /// a takeover, and the record still names this owner and generation.
     pub(super) fn assert_owned(&self) -> Result<(), NativeStorageError> {
+        let turn = HeartbeatTarget::hold(&self.record_lock);
         let recorded = LeaseObservation::read(&self.record_path).record();
+        drop(turn);
         let named = recorded.is_some_and(|record| record.names(&self.owner, self.generation));
         let owned = named && !self.heartbeat.lost();
         owned.then_some(()).ok_or_else(Self::ownership_lost)
@@ -274,6 +285,7 @@ impl RootLeaseInner {
     /// A clean stop marks the record released instead of removing it, so
     /// the generation keeps growing and the next owner claims at once.
     fn mark_released(&self) -> Result<(), NativeStorageError> {
+        let _turn = HeartbeatTarget::hold(&self.record_lock);
         let recorded = LeaseObservation::read(&self.record_path).record();
         let mine = recorded.filter(|record| record.names(&self.owner, self.generation));
         let released = mine.map(|record| record.released());

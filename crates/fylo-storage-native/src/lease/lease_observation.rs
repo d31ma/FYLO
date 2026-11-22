@@ -1,5 +1,5 @@
 use super::lease_record::LeaseRecord;
-use fylo_vfs::Metadata;
+use super::lease_record_file::LeaseRecordFile;
 use std::path::Path;
 
 /// What a process found in a lease record at one moment: the exact bytes,
@@ -62,33 +62,8 @@ impl LeaseObservation {
         version.and_then(serde_json::Value::as_u64) == Some(Self::LEGACY_VERSION)
     }
 
-    /// `None` only when no record exists. A link, a folder, an oversized
-    /// file or a failed read gives empty bytes: an unreadable record, never
-    /// followed and never mistaken for a missing one.
     fn read_bytes(path: &Path) -> Option<Vec<u8>> {
-        let metadata = Self::existing_metadata(path)?;
-        let usable = metadata.is_ok_and(|metadata| Self::plain_small_file(&metadata));
-        Some(Self::contents_when(usable, path))
-    }
-
-    fn existing_metadata(path: &Path) -> Option<std::io::Result<Metadata>> {
-        let metadata = fylo_vfs::symlink_metadata(path);
-        let missing = metadata
-            .as_ref()
-            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
-        (!missing).then_some(metadata)
-    }
-
-    fn contents_when(usable: bool, path: &Path) -> Vec<u8> {
-        if !usable {
-            return Vec::new();
-        }
-        fylo_vfs::read(path).unwrap_or_default()
-    }
-
-    fn plain_small_file(metadata: &Metadata) -> bool {
-        let plain = metadata.is_file() && !metadata.file_type().is_symlink();
-        plain && metadata.len() <= LeaseRecord::MAXIMUM_BYTES
+        LeaseRecordFile::read(path)
     }
 
     fn unknown_owner_message(canonical: &Path) -> String {

@@ -1,9 +1,9 @@
-use super::lease_observation::LeaseObservation;
+use super::heartbeat_target::HeartbeatTarget;
 use super::lease_record::LeaseRecord;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -29,13 +29,24 @@ pub(super) struct LeaseHeartbeat {
 impl LeaseHeartbeat {
     const THREAD_NAME: &str = "fylo-lease-heartbeat";
 
-    pub(super) fn start(path: PathBuf, record: LeaseRecord, interval: Duration) -> Self {
+    /// `record_lock` is held for every read and write of the record, by
+    /// this thread and by the owner.
+    pub(super) fn start(
+        path: PathBuf,
+        record: LeaseRecord,
+        interval: Duration,
+        record_lock: Arc<Mutex<()>>,
+    ) -> Self {
         let lost = Arc::new(AtomicBool::new(false));
         let (stop, stopped) = mpsc::channel::<()>();
-        let flag = Arc::clone(&lost);
+        let target = HeartbeatTarget {
+            path,
+            lost: Arc::clone(&lost),
+            record_lock,
+        };
         let thread = std::thread::Builder::new()
             .name(Self::THREAD_NAME.to_owned())
-            .spawn(move || Self::run(&path, record, interval, &stopped, &flag))
+            .spawn(move || Self::run(&target, record, interval, &stopped))
             .ok();
         Self {
             lost,
@@ -58,34 +69,32 @@ impl LeaseHeartbeat {
     }
 
     fn run(
-        path: &std::path::Path,
+        target: &HeartbeatTarget,
         record: LeaseRecord,
         interval: Duration,
         stopped: &mpsc::Receiver<()>,
-        lost: &AtomicBool,
     ) {
-        let mut current = Self::first_beat(path, record, stopped, lost);
+        let mut current = Self::first_beat(target, record, stopped);
         while let Some(record) = current
             .take()
             .filter(|_| Self::keep_beating(stopped, interval))
         {
-            current = Self::beat(path, record, lost);
+            current = target.beat(record);
         }
     }
 
     /// Add the machine id and process start the claim left out (Windows),
     /// and publish them at once, unless the owner is already stopping.
     fn first_beat(
-        path: &std::path::Path,
+        target: &HeartbeatTarget,
         record: LeaseRecord,
         stopped: &mpsc::Receiver<()>,
-        lost: &AtomicBool,
     ) -> Option<LeaseRecord> {
         let identify = record.needs_identity() && Self::still_running(stopped);
         if !identify {
             return Some(record);
         }
-        Self::beat(path, record.identified(), lost)
+        target.beat(record.identified())
     }
 
     fn still_running(stopped: &mpsc::Receiver<()>) -> bool {
@@ -97,32 +106,5 @@ impl LeaseHeartbeat {
             stopped.recv_timeout(interval),
             Err(RecvTimeoutError::Timeout)
         )
-    }
-
-    /// One heartbeat. `None` when the lease was lost.
-    ///
-    /// Only a readable record that names another owner, or a released one,
-    /// proves the lease lost. A record that cannot be read now (a network
-    /// hiccup) skips this beat without writing, so a beat never replaces a
-    /// record this process could not see.
-    fn beat(path: &std::path::Path, record: LeaseRecord, lost: &AtomicBool) -> Option<LeaseRecord> {
-        let Some(recorded) = LeaseObservation::read(path).record() else {
-            return Some(record);
-        };
-        Self::mark_lost_unless(recorded.same_owner(&record), lost)?;
-        let next = record.beat();
-        // A failed write is retried at the next beat: a short network
-        // hiccup must not end the lease. Fencing keeps writes safe if the
-        // hiccup outlasts the takeover time.
-        let _ = next.publish(path);
-        Some(next)
-    }
-
-    fn mark_lost_unless(owned: bool, lost: &AtomicBool) -> Option<()> {
-        if owned {
-            return Some(());
-        }
-        lost.store(true, Ordering::Release);
-        None
     }
 }
