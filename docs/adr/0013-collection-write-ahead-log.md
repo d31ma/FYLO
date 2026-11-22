@@ -480,3 +480,36 @@ Costs:
 - `fylo inspect` reports the log's LSN range, segment size and checkpoint age.
 - Before a downgrade, close every writer or run `fylo recover` on each
   collection.
+
+## Amendment 1 (2026-11-21): the Windows start time comes from the process handle
+
+- Status: **Accepted** (the user's "Allow it (Rec.)", Q-WIN1, 2026-11-21:
+  one small unsafe Windows function, following ADR 0032's
+  `windows_disks.rs` pattern)
+
+On Windows, `process_identity` asked WMI for a process's start time by
+starting PowerShell (`Get-CimInstance Win32_Process`). On the ARM64 Windows
+test VM one call took 1.0 to 3.3 s, 10 s right after boot, and 47.7 s for a
+process that no longer exists. Section 4 computes the writer's own identity
+once per process, so every `fylo` process paid it on its first lock, which
+comes with its first write: the first `putData` took 1.6 to 5.0 s on
+26.45.07 while later ones took 6 to 60 ms. A host that stops `fylo` one
+second after its last request (TACHYON) could cut that write off. Checking
+another process's lock record paid it again, uncached.
+
+Decision: read the start time with `OpenProcess`
+(`PROCESS_QUERY_LIMITED_INFORMATION` and `PROCESS_SYNCHRONIZE`) and
+`GetProcessTimes`, in one function (`ProcessStartTime::creation` in
+`crates/fylo-storage-native/src/process_start_time.rs`, Windows only). Windows
+still opens a process that has exited while another process holds a handle
+to it, for example the host that killed it, and WMI lists it no longer. So the
+function first asks `WaitForSingleObject` with a zero timeout: a process that
+has exited reads as gone, as with WMI, and its stale lock is reclaimed. The recorded value does not change: WMI's `CreationDate`
+keeps whole microseconds, so the .NET ticks are
+`creation FILETIME / 10 * 10 + 504911232000000000`. On the test VM this
+equalled WMI's value for 12 of 12 processes, including the System process
+and `lsass.exe`, so lock records written by older versions still match. A
+process that does not exist reads as gone, as before. When Windows refuses to
+open a process (for example, access denied), FYLO still asks WMI, so a live
+owner is never read as gone. The two unsafe calls are listed in
+`docs/security/unsafe-inventory.md` (ADR 0004).

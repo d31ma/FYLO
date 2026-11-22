@@ -306,6 +306,17 @@
 
 ### Fixed
 
+- **The first write of a `fylo` process is fast on Windows (ADR 0013
+  amendment 1).** The first collection lock records the process start time,
+  which FYLO asked WMI for by starting PowerShell: the first `putData` of
+  every process took 0.4 to 5 s on Windows, long enough for a host that
+  stops `fylo` one second after its last request to cut it off. Checking a
+  stale lock of another process paid the same again (47.7 s for a process
+  that no longer exists). FYLO now reads the time from the process handle
+  (`GetProcessTimes`) and records the same value, so lock records of older
+  versions still match. A process that has exited reads as gone, as before,
+  also while its host still holds its handle. FYLO asks WMI only when
+  Windows refuses to open the process.
 - **`rustix` 1.1.6 and `xattr` 1.7.0 (RUSTSEC-2026-0486).** FYLO reached
   rustix's unsound zero-length-buffer path through the `xattr` crate; both
   are updated together, because rustix 1.1.6 with xattr 1.6.1 could read an

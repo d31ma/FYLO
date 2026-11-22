@@ -83,6 +83,8 @@ mod legacy_access_warning;
 mod log_position;
 mod network_roots;
 mod platform_companion;
+#[cfg(windows)]
+mod process_start_time;
 mod profile_manifest;
 mod queue;
 mod read_scope;

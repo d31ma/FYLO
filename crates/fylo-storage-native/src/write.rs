@@ -3737,7 +3737,7 @@ fn unreadable_lock_record(path: &Path) -> Result<LockRecord, NativeStorageError>
 }
 
 /// This process's identity never changes while it runs, and finding it
-/// spawns a process on macOS and Windows, so it is found once.
+/// spawns a process on macOS, so it is found once.
 pub(crate) fn own_process_identity() -> Option<String> {
     static IDENTITY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     IDENTITY
@@ -3800,8 +3800,18 @@ pub(crate) fn process_identity(pid: u32) -> Option<String> {
     Some(format!("linux:{}:{started_ticks}", boot.trim()))
 }
 
+/// Read from the process handle; WMI through PowerShell takes seconds, so it
+/// is asked only when Windows will not open the process.
 #[cfg(target_os = "windows")]
 pub(crate) fn process_identity(pid: u32) -> Option<String> {
+    crate::process_start_time::ProcessStartTime::ticks(pid)
+        .map(|found| found.map(|ticks| ticks.to_string()))
+        .unwrap_or_else(|_| wmi_creation_ticks(pid))
+        .map(|value| format!("win32:{value}"))
+}
+
+#[cfg(target_os = "windows")]
+fn wmi_creation_ticks(pid: u32) -> Option<String> {
     let command = format!(
         "(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CreationDate.ToUniversalTime().Ticks"
     );
@@ -3809,7 +3819,6 @@ pub(crate) fn process_identity(pid: u32) -> Option<String> {
         "powershell.exe",
         &["-NoProfile", "-NonInteractive", "-Command", &command],
     )
-    .map(|value| format!("win32:{value}"))
 }
 
 /// Nothing outside the module can be observed from a browser, so the only
