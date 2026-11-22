@@ -88,6 +88,7 @@ mod file_stamp;
 #[cfg(not(target_family = "wasm"))]
 mod filesystem_check;
 mod filesystem_profile;
+mod fresh_read;
 mod index_cache;
 mod index_limit;
 pub mod layout;
