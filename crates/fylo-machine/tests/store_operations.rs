@@ -742,7 +742,10 @@ fn a_sidecar_store_root_holds_transactions_on_unix() {
         .collect();
     let _ = fs::remove_dir_all(&folder);
     assert_eq!(frames[1]["ok"], json!(true), "{frames:?}");
-    assert_eq!(frames[1]["result"], json!([{ "id": FIRST, "title": "alpha" }]));
+    assert_eq!(
+        frames[1]["result"],
+        json!([{ "id": FIRST, "title": "alpha" }])
+    );
     assert_eq!(frames[2]["ok"], json!(true), "{frames:?}");
     assert!(frames[2]["result"]["transaction"].is_string(), "{frames:?}");
 }
