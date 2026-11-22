@@ -50,7 +50,7 @@ impl Bench {
     }
 
     fn seed(&self) {
-        let writer = WriteEngine::open(&self.0).unwrap();
+        let engine = WriteEngine::open(&self.0).unwrap();
         for commit in 0..Self::COMMITS {
             let first = commit * Self::PER_COMMIT;
             let writes: Vec<DocumentWrite> = (first..first + Self::PER_COMMIT)
@@ -59,7 +59,7 @@ impl Bench {
                     fields: Self::fields(number),
                 })
                 .collect();
-            writer
+            engine
                 .commit_document_writes(Self::COLLECTION, &writes)
                 .unwrap();
         }
@@ -89,9 +89,10 @@ impl Bench {
 
     fn point_reads(&self, count: usize) -> usize {
         let reader = self.reader();
-        (0..count)
+        let documents: Vec<_> = (0..count)
             .map(|number| reader.get(Self::COLLECTION, &Self::id(number)).unwrap())
-            .count()
+            .collect();
+        documents.len()
     }
 
     fn full_check(&self) -> usize {
