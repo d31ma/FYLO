@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use fylo_format::{LogRecord, LogRecordKind, LogScan};
+use fylo_vfs as fs;
 
 use super::super::{ensure_directory, failpoint, json_error, remove_dir_durable};
 use super::log_segment::LogSegment;
@@ -28,6 +29,8 @@ pub(crate) struct NamespaceLog {
 impl NamespaceLog {
     const TRANSACTIONS: &'static str = ".fylo-transactions";
     const FOLDER: &'static str = ".namespace";
+    const CHECKPOINT_RECORDS: u64 = 4_096;
+    const CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024;
 
     /// The namespace log of the namespace root at `root`.
     pub(crate) fn shared(root: &Path) -> Arc<Self> {
@@ -50,9 +53,31 @@ impl NamespaceLog {
         root.join(Self::TRANSACTIONS).join(Self::FOLDER).join("log")
     }
 
-    /// Whether a namespace log is on disk under `root`.
+    /// Whether a namespace log is on disk under `root`, decided by opening
+    /// its segment: on a network root a `stat` may answer from cached
+    /// attributes, an open does not.
     pub(crate) fn exists(root: &Path) -> Result<bool, NativeStorageError> {
-        path_exists_no_follow(&Self::directory(root))
+        match fs::File::open(Self::segment_path(root)) {
+            Ok(_) => Ok(true),
+            Err(error) if Self::absent(&error) => Ok(false),
+            Err(error) => Err(NativeStorageError::io(error)),
+        }
+    }
+
+    fn absent(error: &std::io::Error) -> bool {
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        )
+    }
+
+    /// Whether the namespace log has grown enough to settle it, by the
+    /// limits a collection log checkpoints at.
+    pub(crate) fn wants_checkpoint(&self) -> bool {
+        self.lock().as_ref().is_some_and(|segment| {
+            segment.records() >= Self::CHECKPOINT_RECORDS
+                || segment.length() >= Self::CHECKPOINT_BYTES
+        })
     }
 
     /// Every valid record of the namespace log, or `None` without one.
@@ -60,7 +85,8 @@ impl NamespaceLog {
         LogSegment::scan(&Self::segment_path(root))
     }
 
-    /// Append `entry` and flush it. Returns the record's LSN once it is
+    /// Append `entry` and flush it, after a fresh check that this process
+    /// still holds the namespace lease. Returns the record's LSN once it is
     /// durable. A failed append or flush cuts the record back off, and the
     /// handle is never flushed again: the next append reopens the file.
     pub(crate) fn append_durably(
@@ -70,6 +96,7 @@ impl NamespaceLog {
         durability: Durability,
     ) -> Result<u64, NativeStorageError> {
         let mut segment = self.lock();
+        root.check_profile_owned()?;
         let open = Self::open_segment(root, &mut segment)?;
         let before = open.length();
         let lsn = open.next_lsn();

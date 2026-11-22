@@ -43,7 +43,6 @@ mod document_write;
 pub(crate) mod schema_counts;
 pub(crate) mod schema_registry;
 mod word_fields;
-pub(crate) use commit_log::SegmentSchemas;
 pub use commit_log::{
     CollectionAccessReport, CompactionReport, DatabaseCompactionReport, DatabasePackReport,
     DatabaseRekey, DatabaseSalvageReport, LayoutMigrationReport, PackedCollection,
@@ -51,6 +50,7 @@ pub use commit_log::{
 };
 #[cfg(test)]
 pub(crate) use commit_log::{CopiedHook, SegmentCompactor};
+pub(crate) use commit_log::{NamespaceView, SegmentSchemas};
 pub(crate) mod version;
 
 pub use collection_writes::CollectionWrites;

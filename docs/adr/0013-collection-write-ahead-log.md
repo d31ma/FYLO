@@ -567,6 +567,47 @@ that flush; they do not group-commit with each other in this version.
   collection it points into has its new state or is still `writing`, where
   the reader waits. It never finds the pointed-to document missing.
 
+### Fencing
+
+Every append to the namespace log (the commit record in step 4, an abort
+record, a checkpoint mark) first checks the namespace lease with a fresh
+read of its record, as each collection-log append does under L1-3b. A writer
+that lost the lease fails with `EROOTLEASELOST` before the append, so it
+never reaches the commit point, and nothing it planned is applied.
+
+### Network roots: close-to-open reads
+
+On a network root (NFS, SMB) the client may answer a `stat` from cached
+attributes. So every decision of settling and recovery is made from a fresh
+open and read, never from cached attributes: whether the namespace log
+exists (an open of its segment, not a `stat` of its folder), its records and
+marks (read whole after an open), and each collection's `state.json` and log
+segment (read after an open, as today). This is the rule L1-3 follows for the
+lease record.
+
+### Readers after a power cut
+
+A power cut (of the writer, or of the storage server of a network root) can
+leave a part only in the namespace log, with its collection's `state.json`
+showing an older stable generation. Until a writer settles the namespace, a
+reader must not serve that older state. The rule:
+
+- A namespace log names, per collection, the highest generation of its
+  parts. A reader of a collection the log names whose `state.json` is
+  `stable` at a lower generation treats the collection as `writing`: it
+  retries and then answers `EENGINE_CONCURRENT_WRITE`, as for a collection log with an
+  unapplied record. The next writer settles the namespace and the reader then
+  sees the new state.
+- Each reader process reads the namespace log (open and read) at its first
+  read of the namespace, again whenever it sees a collection's generation go
+  backwards (only a lost write on the storage can cause that), and again
+  whenever the log's identity (segment nonce and length) differs from what it
+  cached. While a live writer holds the namespace, the collections it
+  commits are `writing` until their parts are applied and copied, so a
+  reader never needs more than this.
+- Collections the log does not name pay nothing; a collection it names pays
+  one integer comparison per read while the cached log is current.
+
 ### Limits (answers for Mesail and TACHYON)
 
 - **Collections per transaction:** no limit of its own. The transaction's

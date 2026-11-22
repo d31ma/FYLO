@@ -37,6 +37,7 @@ mod namespace_mark;
 mod namespace_member;
 mod namespace_part;
 mod namespace_recovery;
+mod namespace_view;
 mod pack_blockers;
 mod placed_record;
 mod protected_pack;
@@ -89,3 +90,4 @@ pub use segment_verification::SegmentVerification;
 pub(crate) fn modified_ms(metadata: &fylo_vfs::Metadata) -> Result<u64, crate::NativeStorageError> {
     record_image::RecordImage::modified_ms_of(metadata)
 }
+pub(crate) use namespace_view::NamespaceView;

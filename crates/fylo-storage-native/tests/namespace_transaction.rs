@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::thread;
 
 use fylo_storage_native::{
-    CollectionKind, CollectionWrites, DocumentWrite, NativeRoot, NativeStorageErrorCode,
-    NativeWriteRoot, PlainDocumentCodec,
+    CollectionKind, CollectionWrites, DocumentWrite, GenerationStatus, NativeRoot,
+    NativeStorageErrorCode, NativeWriteRoot, PlainDocumentCodec, RootLease, RootOpenOptions,
 };
 use serde_json::{Map, Value, json};
 
@@ -298,6 +298,13 @@ fn recovery_applies_a_part_whose_collection_log_lost_it() {
     )
     .unwrap();
     drop(writer);
+    let generation = NativeRoot::open(&fixture.0)
+        .unwrap()
+        .collection("beta")
+        .unwrap()
+        .generation()
+        .unwrap();
+    assert_eq!(generation.state, GenerationStatus::Writing);
     let reopened = fixture.writer();
     assert!(reopened.recover_namespace().unwrap());
     assert_eq!(fixture.count("beta"), 2);
@@ -547,4 +554,50 @@ fn a_reader_that_follows_the_last_write_never_finds_its_target_missing() {
     }
     done.store(true, std::sync::atomic::Ordering::Release);
     assert!(reader.join().unwrap() > 0);
+}
+
+#[test]
+fn a_writer_that_lost_its_lease_never_commits() {
+    let fixture = Fixture::create("fence");
+    let lease = RootLease::acquire(&fixture.0).unwrap();
+    let writer =
+        NativeWriteRoot::open_profiled(RootOpenOptions::new(&fixture.0).with_lease(lease)).unwrap();
+    commit(&writer, &two_collection_batches(80, "owned"));
+    let name = fixture.0.file_name().unwrap().to_str().unwrap().to_owned();
+    let record_path = fixture
+        .0
+        .parent()
+        .unwrap()
+        .join(format!(".{name}.fylo-root-owner.lock.json"));
+    let mut record: Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+    record["ownerId"] = json!("0123456789abcdef0123456789abcdef");
+    fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+    let error = writer
+        .commit_collection_writes_with(&two_collection_batches(90, "lost"), &PlainDocumentCodec)
+        .unwrap_err();
+    assert_eq!(error.code(), NativeStorageErrorCode::RootLeaseLost);
+    assert!(fixture.body("alpha", &identifier(90)).is_none());
+    assert!(fixture.body("beta", &identifier(91)).is_none());
+}
+
+#[test]
+fn a_long_namespace_log_is_settled_by_the_writer() {
+    let fixture = Fixture::create("settle");
+    let writer = fixture.writer();
+    for step in 0..4_100 {
+        commit(
+            &writer,
+            &[
+                batch("alpha", vec![put(10_000 + step, "many")]),
+                batch("beta", vec![put(10_000 + step, "many")]),
+            ],
+        );
+    }
+    let records = fs::metadata(fixture.namespace_log()).map_or(0, |metadata| metadata.len());
+    assert!(
+        records < 4 * 1024 * 1024,
+        "namespace log was not settled: {records} bytes"
+    );
+    assert_eq!(fixture.count("alpha"), 4_100);
+    fixture.index_matches_rebuild("alpha");
 }

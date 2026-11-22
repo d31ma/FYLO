@@ -159,12 +159,25 @@ impl NativeWriteRoot {
 
     /// `members` arrive in collection-name order, which is the lock order.
     /// Everything after the locks runs in request order, so collections are
-    /// applied and become `stable` in the order of their first write.
+    /// applied and become `stable` in the order of their first write. A
+    /// namespace log past its checkpoint limits is settled afterwards, with
+    /// no lock held.
     fn commit_namespace(
         &self,
         members: Vec<NamespaceMember<'_>>,
     ) -> Result<(), NativeStorageError> {
         self.settle_namespace_once()?;
+        self.commit_namespace_locked(members)?;
+        if NamespaceLog::shared(self.path()).wants_checkpoint() {
+            self.recover_namespace()?;
+        }
+        Ok(())
+    }
+
+    fn commit_namespace_locked(
+        &self,
+        members: Vec<NamespaceMember<'_>>,
+    ) -> Result<(), NativeStorageError> {
         let _guards = self.exclusive_in_order(&members)?;
         let mut periods = Vec::with_capacity(members.len());
         for member in &members {

@@ -2560,6 +2560,33 @@ impl NativeCollection {
         &self,
         state: GenerationState,
     ) -> Result<GenerationState, NativeStorageError> {
+        if self.lags_namespace_log(&state)? {
+            return Ok(GenerationState {
+                state: GenerationStatus::Writing,
+                transaction_id: Some(Self::UNAPPLIED_NAMESPACE_TRANSACTION.into()),
+                ..state
+            });
+        }
+        self.unapplied_collection_log_check(state)
+    }
+
+    /// A stable collection below a part the namespace log committed for it
+    /// lost that part's publication in a power cut; readers wait for a
+    /// writer to settle the namespace (ADR 0013, "Readers after a power
+    /// cut"). A `.vdbx` database and a segment collection keep no
+    /// namespace log.
+    fn lags_namespace_log(&self, state: &GenerationState) -> Result<bool, NativeStorageError> {
+        if state.state == GenerationStatus::Writing || self.block.is_some() || self.uses_segments()
+        {
+            return Ok(false);
+        }
+        write::NamespaceView::lags(&self.root.canonical, &self.name, state.generation)
+    }
+
+    fn unapplied_collection_log_check(
+        &self,
+        state: GenerationState,
+    ) -> Result<GenerationState, NativeStorageError> {
         let Some(position) = state.log.as_ref() else {
             return Ok(state);
         };
@@ -2604,6 +2631,9 @@ impl NativeCollection {
 
     /// Transaction identifier a reader sees for an unapplied log record.
     pub(crate) const UNAPPLIED_LOG_TRANSACTION: &'static str = "log-unapplied";
+    /// Transaction identifier a reader sees for a part only the namespace
+    /// log holds.
+    pub(crate) const UNAPPLIED_NAMESPACE_TRANSACTION: &'static str = "log-namespace-unapplied";
 
     /// Directory of the collection's write-ahead log.
     pub(crate) fn log_directory(&self) -> PathBuf {
