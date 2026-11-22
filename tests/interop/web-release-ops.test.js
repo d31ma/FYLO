@@ -1270,7 +1270,7 @@ describe('web release operations', () => {
             ).toBe(true)
             expect(html).not.toMatch(/\son[a-z]+=/i)
             expect(html).not.toMatch(/\sstyle=/i)
-            for (const match of inlineScripts.filter((script) => !/\btype="/.test(script[1]))) {
+            for (const match of inlineScripts.filter((script) => !renderPlans.includes(script))) {
                 generatedScriptHashes.add(createHash('sha256').update(match[2]).digest('base64'))
             }
             for (const match of html.matchAll(/<style>([\s\S]*?)<\/style>/g)) {
