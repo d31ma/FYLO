@@ -14,6 +14,7 @@ use fylo_storage_native::layout::{
 use fylo_storage_native::{FilesystemProbe, FilesystemProfile, NativeStorageErrorCode};
 
 const NO_ATTRIBUTE_DIRECTORY: &str = "FYLO_TEST_NO_XATTR_DIR";
+const PLAIN_EXT4_DIRECTORY: &str = "FYLO_TEST_PLAIN_EXT4_DIR";
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 struct Directory(PathBuf);
@@ -43,6 +44,10 @@ impl Directory {
         ))
     }
 
+    fn on_plain_ext4() -> Self {
+        Self::new(&PathBuf::from(std::env::var(PLAIN_EXT4_DIRECTORY).unwrap()))
+    }
+
     fn names(&self) -> Vec<String> {
         names_in(&self.0)
     }
@@ -67,6 +72,7 @@ fn record(metadata: MetadataStore, hard_links: bool) -> ProbeRecord {
     ProbeRecord::new(metadata, hard_links)
 }
 
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn a_local_disk_keeps_extended_attributes_and_hard_links() {
     let directory = Directory::temporary();
@@ -77,6 +83,7 @@ fn a_local_disk_keeps_extended_attributes_and_hard_links() {
     assert!(probed.hard_links());
 }
 
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn a_local_disk_records_the_largest_attribute_value_it_holds() {
     let directory = Directory::temporary();
@@ -89,6 +96,7 @@ fn a_local_disk_records_the_largest_attribute_value_it_holds() {
     );
 }
 
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn the_sidecar_override_still_records_the_attribute_limit() {
     let directory = Directory::temporary();
@@ -103,12 +111,8 @@ fn the_sidecar_override_still_records_the_attribute_limit() {
 fn the_probe_leaves_no_file_behind() {
     let directory = Directory::temporary();
 
-    FilesystemProbe::run(&directory.0, None).unwrap();
-    FilesystemProbe::verify(
-        &directory.0,
-        record(MetadataStore::ExtendedAttributes, true),
-    )
-    .unwrap();
+    let probed = FilesystemProbe::run(&directory.0, None).unwrap();
+    FilesystemProbe::verify(&directory.0, probed).unwrap();
 
     assert_eq!(directory.names(), Vec::<String>::new());
 }
@@ -126,6 +130,7 @@ fn the_sidecar_override_chooses_sidecar_files_on_a_local_disk() {
     );
 }
 
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn the_native_override_keeps_extended_attributes_on_a_local_disk() {
     let directory = Directory::temporary();
@@ -238,10 +243,6 @@ fn a_new_app_folder_records_the_probe_in_format_json() {
         .unwrap()
         .unwrap();
 
-    assert_eq!(
-        prepared.probe().metadata(),
-        MetadataStore::ExtendedAttributes
-    );
     assert_eq!(recorded.probe(), prepared.probe());
 }
 
@@ -329,5 +330,61 @@ fn an_app_folder_copied_to_a_share_without_attributes_fails_its_open_check() {
             .contains("extended attributes, recorded in format.json"),
         "{error}"
     );
+    assert_eq!(directory.names(), Vec::<String>::new());
+}
+
+#[test]
+#[ignore = "needs FYLO_TEST_PLAIN_EXT4_DIR on plain ext4 (no ea_inode)"]
+fn plain_ext4_gets_sidecar_files_and_records_its_small_attribute_limit() {
+    let directory = Directory::on_plain_ext4();
+
+    let probed = FilesystemProbe::run(&directory.0, None).unwrap();
+
+    assert_eq!(probed.metadata(), MetadataStore::SidecarFiles);
+    assert!(
+        probed.max_attribute_bytes().unwrap() < 8 * 1024,
+        "{probed:?}"
+    );
+    assert_eq!(directory.names(), Vec::<String>::new());
+}
+
+#[test]
+#[ignore = "needs FYLO_TEST_PLAIN_EXT4_DIR on plain ext4 (no ea_inode)"]
+fn a_new_app_folder_on_plain_ext4_records_sidecar_files() {
+    let drive = Directory::on_plain_ext4();
+    let layout = RootLayout::waived(drive.0.join("app"));
+
+    let prepared = AppFolder::prepare(&layout, "26.50.02", |folder| {
+        FilesystemProbe::run(folder, None)
+    })
+    .unwrap();
+
+    assert_eq!(prepared.probe().metadata(), MetadataStore::SidecarFiles);
+}
+
+#[test]
+#[ignore = "needs FYLO_TEST_PLAIN_EXT4_DIR on plain ext4 (no ea_inode)"]
+fn the_native_override_fails_with_efsprobe_on_plain_ext4() {
+    let directory = Directory::on_plain_ext4();
+
+    let error = FilesystemProbe::run(&directory.0, Some(FilesystemProfile::Native)).unwrap_err();
+
+    assert_eq!(error.code(), NativeStorageErrorCode::FilesystemProbe);
+    assert!(error.message().contains("hold only"), "{error}");
+}
+
+#[test]
+#[ignore = "needs FYLO_TEST_PLAIN_EXT4_DIR on plain ext4 (no ea_inode)"]
+fn an_app_folder_copied_to_plain_ext4_fails_its_open_check() {
+    let directory = Directory::on_plain_ext4();
+
+    let error = FilesystemProbe::verify(
+        &directory.0,
+        record(MetadataStore::ExtendedAttributes, true),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), NativeStorageErrorCode::FilesystemProbe);
+    assert!(error.message().contains("no longer hold"), "{error}");
     assert_eq!(directory.names(), Vec::<String>::new());
 }
