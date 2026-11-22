@@ -156,6 +156,19 @@ impl SidecarAttributes {
         root.assert_profile_owned()
     }
 
+    /// Bind `attributes` to the payload bytes about to be written, without
+    /// reading the payload file.
+    pub(crate) fn bind_payload_bytes(
+        root: &NativeRoot,
+        path: &Path,
+        bytes: &[u8],
+        attributes: &mut BTreeMap<String, Vec<u8>>,
+    ) -> Result<(), NativeStorageError> {
+        let binding = Self::binding_value(root, path, &crate::sha256_hex(bytes))?;
+        attributes.insert(IDENTITY_ATTRIBUTE.into(), binding);
+        Ok(())
+    }
+
     pub(crate) fn verify_file_binding(
         root: &NativeRoot,
         payload: &File,

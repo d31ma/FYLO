@@ -5325,7 +5325,7 @@ fn capture_attributes(path: &Path) -> Result<Vec<CapturedAttribute>, NativeStora
 /// The stream is replaced wholesale, and removed when the before-image had
 /// none, so a rolled-back mutation cannot leave an attribute it added behind.
 #[cfg(windows)]
-fn restore_attributes(
+pub(crate) fn restore_attributes(
     path: &Path,
     attributes: &[CapturedAttribute],
 ) -> Result<(), NativeStorageError> {
@@ -5382,7 +5382,7 @@ fn read_attribute_stream(
 }
 
 #[cfg(unix)]
-fn restore_attributes(
+pub(crate) fn restore_attributes(
     path: &Path,
     attributes: &[CapturedAttribute],
 ) -> Result<(), NativeStorageError> {
@@ -5430,7 +5430,7 @@ fn restore_attributes(
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn restore_attributes(
+pub(crate) fn restore_attributes(
     path: &Path,
     attributes: &[CapturedAttribute],
 ) -> Result<(), NativeStorageError> {
@@ -5448,7 +5448,7 @@ fn restore_attributes(
     not(windows),
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
-fn restore_attributes(
+pub(crate) fn restore_attributes(
     _path: &Path,
     attributes: &[CapturedAttribute],
 ) -> Result<(), NativeStorageError> {
