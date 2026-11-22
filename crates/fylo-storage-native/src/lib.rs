@@ -93,6 +93,7 @@ pub mod layout;
 mod lease;
 mod legacy_access_warning;
 mod log_position;
+mod namespaces;
 mod network_roots;
 mod platform_companion;
 #[cfg(windows)]
@@ -206,6 +207,7 @@ pub use filesystem_profile::FilesystemProfile;
 pub use fylo_vfs::host_now_unix_ms;
 pub use lease::{LeaseTiming, RootLease};
 pub use log_position::LogPosition;
+pub use namespaces::NamespaceAdmin;
 pub use platform_companion::is_platform_companion;
 pub use queue::{
     NativeQueue, QueueAckResult, QueueClaimOptions, QueueDeadLetter, QueueDelivery,
@@ -3703,6 +3705,11 @@ pub enum NativeStorageErrorCode {
     /// A folder that is not empty and has no `.fylo/format.json` would be
     /// used as an app folder (ADR 0033 section 5.4).
     NotFyloRoot,
+    /// A namespace to create already exists (ADR 0033 section 3).
+    NamespaceExists,
+    /// A namespace to drop still holds collections and the drop did not
+    /// ask for `cascade` (ADR 0033 section 3).
+    NamespaceNotEmpty,
 }
 
 impl NativeStorageErrorCode {
@@ -3745,6 +3752,8 @@ impl NativeStorageErrorCode {
             Self::AppName => "EAPPNAME",
             Self::Namespace => "ENAMESPACE",
             Self::NotFyloRoot => "ENOTFYLOROOT",
+            Self::NamespaceExists => "ENAMESPACEEXISTS",
+            Self::NamespaceNotEmpty => "ENAMESPACENOTEMPTY",
         }
     }
 }

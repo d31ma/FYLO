@@ -50,6 +50,8 @@ impl CommandFlags {
     const VERSION_VALUES: [&'static str; 1] = ["--output"];
     const CACHE_VALUES: [&'static str; 2] = ["--config", "--temp-cache-dir"];
     const CACHE_SWITCHES: [&'static str; 3] = ["--json", "--help", "-h"];
+    const NAMESPACE_VALUES: [&'static str; 3] = ["--config", "--root", "--filesystem-profile"];
+    const NAMESPACE_SWITCHES: [&'static str; 4] = ["--cascade", "--json", "--help", "-h"];
     const ACCESS_VALUES: [&'static str; 6] = [
         "--grantee",
         "--key",
@@ -142,6 +144,10 @@ impl CommandFlags {
             "exec" => Some(Self::host_options(&Self::EXEC_VALUES, &Self::EXEC_SWITCHES)),
             "version" => Some(Self::output_options(&Self::VERSION_VALUES, &[])),
             "cache" => Some((Self::CACHE_VALUES.to_vec(), Self::CACHE_SWITCHES.to_vec())),
+            "namespace" => Some((
+                Self::NAMESPACE_VALUES.to_vec(),
+                Self::NAMESPACE_SWITCHES.to_vec(),
+            )),
             "access" => Some(Self::output_options(
                 &Self::ACCESS_VALUES,
                 &Self::ACCESS_SWITCHES,

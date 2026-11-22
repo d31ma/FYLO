@@ -300,6 +300,18 @@ Two details of the build (slice L1-3):
   Measured costs on that mount (EFS profile, 40 samples): open 5.6 ms p50,
   read 5.4 ms, commit 52 ms, fencing check 0.2 ms; on the internal disk 0.7,
   0.15, 1.6 and 0.02 ms.
+- Slice L1-3b: `RootLease::acquire_namespace` owns one namespace with the
+  files `RootLayout` names; the drive rule is judged on the app folder, and
+  the namespace folder must exist (`ENATIVE_NOT_FOUND` otherwise).
+  `NamespaceAdmin` creates, lists and drops namespaces (section 3). Two new
+  stable codes: `ENAMESPACEEXISTS` (create of an existing namespace) and
+  `ENAMESPACENOTEMPTY` (drop without `cascade` of a namespace that holds
+  collections). A folder without its marker is a create a crash stopped; the
+  next create finishes it, and list ignores it. The lease files of a dropped
+  namespace stay in the app folder (a few small files); a namespace created
+  again with the same name reuses them and continues their generation.
+  Until slice L1-5 the engine still opens roots in the older layout, so
+  machine requests do not yet take namespace leases.
 
 **One process, several namespaces.** An `exec --loop` takes a namespace's
 lease when its first request for that namespace arrives, as it takes the

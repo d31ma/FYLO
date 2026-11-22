@@ -7,12 +7,14 @@ mod lease_observation;
 mod lease_record;
 mod lease_state;
 mod lease_takeover;
+mod lease_target;
 mod lease_timing;
 mod machine_identity;
 mod root_lease;
 mod root_lease_inner;
 mod root_turn;
 
+pub(crate) use kernel_file_lock::KernelFileLock;
 pub use lease_timing::LeaseTiming;
 pub use root_lease::RootLease;
 

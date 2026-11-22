@@ -1,6 +1,7 @@
 use super::lease_timing::LeaseTiming;
 use super::root_lease_inner::RootLeaseInner;
 use super::root_turn::RootTurn;
+use crate::layout::{NamespaceName, RootLayout};
 use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode, RootFilesystem};
 use std::path::Path;
 use std::sync::Arc;
@@ -92,6 +93,56 @@ impl RootLease {
         let turn = RootTurn::wait(root.as_ref(), profile, wait_until)?;
         let inner =
             RootLeaseInner::acquire_waiting_timed(root.as_ref(), profile, timing, wait_until);
+        drop(turn);
+        Ok(Self {
+            inner: Arc::new(inner?),
+        })
+    }
+
+    /// Own namespace `namespace` of the app folder `layout` names (ADR 0033
+    /// section 4): one lease per namespace, so two processes can work on two
+    /// namespaces of one app at the same time. The lease files sit in the app
+    /// folder (`RootLayout::lease_lock_path` and the others), and the drive
+    /// rule is judged on the app folder. `layout` must name the canonical app
+    /// folder. [`RootLease::root`] is then the namespace folder.
+    ///
+    /// # Errors
+    /// `ENATIVE_NOT_FOUND` when the namespace does not exist,
+    /// `EROOTLOCKED` while another process owns it, and the errors of
+    /// [`RootLease::acquire_with_timing`].
+    pub fn acquire_namespace(
+        layout: &RootLayout,
+        namespace: &NamespaceName,
+        profile: FilesystemProfile,
+        timing: LeaseTiming,
+    ) -> Result<Self, NativeStorageError> {
+        let inner =
+            RootLeaseInner::acquire_namespace_timed(layout, namespace, (profile, timing), None)?;
+        Ok(Self {
+            inner: Arc::new(inner),
+        })
+    }
+
+    /// [`RootLease::acquire_namespace`], waiting until `wait_until` while
+    /// another process owns the namespace, taking turns with other waiters
+    /// as [`RootLease::acquire_waiting`] does.
+    ///
+    /// # Errors
+    /// `EROOTLOCKED` when the namespace was still owned at `wait_until`, and
+    /// the errors of [`RootLease::acquire_namespace`] at once.
+    pub fn acquire_namespace_waiting(
+        layout: &RootLayout,
+        namespace: &NamespaceName,
+        (profile, timing): (FilesystemProfile, LeaseTiming),
+        wait_until: Instant,
+    ) -> Result<Self, NativeStorageError> {
+        let turn = RootTurn::wait_at(&layout.turn_lock_path(namespace), wait_until)?;
+        let inner = RootLeaseInner::acquire_namespace_waiting(
+            layout,
+            namespace,
+            (profile, timing),
+            wait_until,
+        );
         drop(turn);
         Ok(Self {
             inner: Arc::new(inner?),

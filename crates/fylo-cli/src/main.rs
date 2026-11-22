@@ -87,6 +87,12 @@ fn main() -> ExitCode {
     if let Some(path) = root_verify_command(&arguments) {
         return run_database(&arguments, "verifyRoot", &path);
     }
+    if arguments
+        .first()
+        .is_some_and(|command| command == "namespace")
+    {
+        return print_outcome(run_namespace(&arguments));
+    }
     print_outcome(run(&arguments))
 }
 
@@ -479,6 +485,38 @@ fn root_verify_command(arguments: &[String]) -> Option<PathBuf> {
     let alone = positionals(arguments).len() == 1;
     let root = option(arguments, "--root").map(PathBuf::from);
     root.filter(|_| verify && alone)
+}
+
+/// `fylo namespace create|drop|list [<name>] --root <drive>/<app>
+/// [--cascade]` (ADR 0033 section 3): one machine request against the app
+/// folder, never opened as a folder root of the layout before ADR 0033.
+fn run_namespace(arguments: &[String]) -> Result<String, String> {
+    let request = namespace_request(arguments)?;
+    let application = machine_config(arguments)?;
+    let result = machine_result(&request, None, &application)?;
+    pretty(&result)
+}
+
+fn namespace_request(arguments: &[String]) -> Result<Value, String> {
+    let usage = "usage: fylo namespace create|drop|list [<name>] --root <drive>/<app> [--cascade]";
+    let values = positionals(arguments);
+    let root = option(arguments, "--root").ok_or(usage)?;
+    let cascade = arguments.iter().any(|argument| argument == "--cascade");
+    match values
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["namespace", "create", name] => {
+            Ok(json!({ "op": "createNamespace", "root": root, "namespace": name }))
+        }
+        ["namespace", "drop", name] => Ok(
+            json!({ "op": "dropNamespace", "root": root, "namespace": name, "cascade": cascade }),
+        ),
+        ["namespace", "list"] => Ok(json!({ "op": "listNamespaces", "root": root })),
+        _ => Err(usage.to_owned()),
+    }
 }
 
 /// Print a `.vdbx` file's inspect or verify report as JSON. A verify report
@@ -2009,7 +2047,7 @@ fn retired_command(command: &str) -> String {
 }
 
 fn usage() -> String {
-    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--namespace <ns>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo exec --invocation --request <json|@path|-> --deadline-ms <n> --cleanup-reserve-ms <n> [--root <path>] [--max-request-bytes <n>] [--max-response-bytes <n>]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo inspect <db.vdbx>\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo index words <collection> [<field>...] [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo verify --root <path>\n  fylo layout <collection> --to <files|segments> [--root <path>]\n  fylo compact <collection> [--root <path>]\n  fylo compact <db.vdbx> [--shrink]\n  fylo export <collection> --out <directory> [--root <path>]\n  fylo verify-segments <collection> [--root <path>]\n  fylo salvage <collection> --out <directory> [--root <path>]\n  fylo salvage <db.vdbx> --out <directory>\n  fylo verify <db.vdbx>\n  fylo create <db.vdbx> --admin <reference>\n  fylo create <db.vdbx> --unprotected [--encrypt]\n  fylo access report <root|db.vdbx>\n  fylo access list <db.vdbx> --identity <reference> [--trust-anchor <fid1:...> | --trust-on-first-use]\n  fylo access audit <db.vdbx> --identity <reference> [--trust-anchor <fid1:...> | --trust-on-first-use]\n  fylo access grant <db.vdbx> --grantee <name> --key <fpk1:...> --actions <read,write,admin> (--collection <name> | --all-collections | --database) [--rule <id>] [--label <text>]\n  fylo access revoke <db.vdbx> --rule <id>\n  fylo access settle <db.vdbx>\n  fylo pack [<root>] --out <db.vdbx> [--encrypt]\n  fylo pack <root|db.vdbx> --out <db.vdbx> --sealed [--encrypt]\n  fylo pack [<root>|<db.vdbx>] --out <db.vdbx> --protect --admin <reference> [--drop-record-access | --keep-record-access-as-metadata] [--grants <file.json>]\n  fylo unpack <db.vdbx> --out <directory>\n  fylo rekey <db.vdbx> --new-key '${NAME}' [--encrypt]\n  fylo rekey <db.vdbx> --decrypt\n  fylo rekey <db.vdbx> [--collection <name>] --identity <reference> (protected: as an admin)\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema migrate <collection> [--include-unversioned] [--schema-dir <path>] [--json]\n  fylo schema mode <collection> [off|warn|strict] [--json]\n  fylo schema check <collection> [--limit <n>] [--schema-dir <path>] [--json]\n  fylo schema push <collection> [--schema-dir <path>] [--json]\n  fylo schema pull <collection> --out <path> [--json]\n  fylo cache status [--temp-cache-dir <path>] [--json]\n  fylo cache clear [--temp-cache-dir <path>] [--json]\n  fylo identity create --store <reference> [--json]\n  fylo identity show <reference> [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --allow-system-disk Allow a root on the system disk, for tests, CI and laptops (fylo.allowSystemDisk, FYLO_ALLOW_SYSTEM_DISK=1; ADR 0032)\n  --app-id <id>   Allow a root in this app's own data folder (fylo.appId, FYLO_APP_ID; ADR 0032)\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --include-unversioned Also migrate documents with no _v, as the oldest version\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --namespace <ns> Namespace of exec requests that name none (default public; ADR 0033)\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --invocation    Answer one exec request under a bounded root lease, waiting while another process holds the root (ADR 0011; not qualified for deployment)\n  --deadline-ms <n> Milliseconds an exec --invocation may use, counted from process start\n  --cleanup-reserve-ms <n> Milliseconds of --deadline-ms kept for releasing the root; must be nonzero and smaller than --deadline-ms\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --temp-cache <mode> Temp-disk read tier: off, auto (default; only for an EFS-profile root) or on (fylo.tempCache.mode)\n  --temp-cache-bytes <n> Temp-disk read tier budget, capped at half the free space (default 268435456; fylo.tempCache.bytes)\n  --temp-cache-dir <path> Folder that holds the temp cache folder instead of the OS temp folder (fylo.tempCache.dir)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --to <layout>   Destination layout for layout: files or segments\n  --shrink        Give the space compact frees in a .vdbx database back to the disk\n  --out <directory> Empty directory export and salvage write the per-document tree to, and unpack the root to\n  --out <db.vdbx> New .vdbx database pack writes; it must not exist\n  --encrypt       Encrypt the database create or pack writes with fylo.encryption.key, or with rekey a plain one with --new-key\n  --sealed        Pack a read-only database recompressed in 64 KiB blocks; it also copies a live .vdbx database\n  --new-key '${NAME}' Secret reference (environment or .env, as fylo.encryption.key) rekey encrypts the database with; with --encrypt it encrypts a plain one\n  --decrypt       Rewrite an encrypted database plain with rekey\n  --limit <n>     Failing documents schema check lists (default 100)\n  --out <path>    Folder schema pull writes the fylo.schema layout to\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --admin <reference> Admin and trust anchor of the protected database create makes (ADR 0021)\n  --protect       Pack into a protected database whose admin and trust anchor --admin names (ADR 0021)\n  --drop-record-access Let pack --protect drop records' POSTIX access descriptors\n  --keep-record-access-as-metadata Let pack --protect keep each descriptor as the metadata field legacyAccess, unenforced\n  --grants <file.json> Grants pack --protect adds: {\"grants\": [{\"grantee\", \"key\", \"actions\", \"collection\" | \"allCollections\" | \"database\"}]}\n  --unprotected   Let create make a database with no identities; new databases are protected by default\n  --identity <reference> Application identity a protected database opens with (fylo.identity, FYLO_IDENTITY)\n  --trust-anchor <fid1:...> Admin a protected database must have been created by (fylo.trustAnchor, FYLO_TRUST_ANCHOR)\n  --trust-on-first-use Trust a protected database's creator, whoever it is, with a warning\n  --store <reference> Key store fylo identity create writes a new key to: file:<path>, keychain:<label>, enclave:<label>, cng:<name>, tpm:<name>, creds:<name> or webcrypto:<name>\n  --version       Print the FYLO runtime version\n  --help          Show this message"
+    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--namespace <ns>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo exec --invocation --request <json|@path|-> --deadline-ms <n> --cleanup-reserve-ms <n> [--root <path>] [--max-request-bytes <n>] [--max-response-bytes <n>]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo inspect <db.vdbx>\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo index words <collection> [<field>...] [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo verify --root <path>\n  fylo namespace create|drop|list [<name>] --root <drive>/<app> [--cascade]\n  fylo layout <collection> --to <files|segments> [--root <path>]\n  fylo compact <collection> [--root <path>]\n  fylo compact <db.vdbx> [--shrink]\n  fylo export <collection> --out <directory> [--root <path>]\n  fylo verify-segments <collection> [--root <path>]\n  fylo salvage <collection> --out <directory> [--root <path>]\n  fylo salvage <db.vdbx> --out <directory>\n  fylo verify <db.vdbx>\n  fylo create <db.vdbx> --admin <reference>\n  fylo create <db.vdbx> --unprotected [--encrypt]\n  fylo access report <root|db.vdbx>\n  fylo access list <db.vdbx> --identity <reference> [--trust-anchor <fid1:...> | --trust-on-first-use]\n  fylo access audit <db.vdbx> --identity <reference> [--trust-anchor <fid1:...> | --trust-on-first-use]\n  fylo access grant <db.vdbx> --grantee <name> --key <fpk1:...> --actions <read,write,admin> (--collection <name> | --all-collections | --database) [--rule <id>] [--label <text>]\n  fylo access revoke <db.vdbx> --rule <id>\n  fylo access settle <db.vdbx>\n  fylo pack [<root>] --out <db.vdbx> [--encrypt]\n  fylo pack <root|db.vdbx> --out <db.vdbx> --sealed [--encrypt]\n  fylo pack [<root>|<db.vdbx>] --out <db.vdbx> --protect --admin <reference> [--drop-record-access | --keep-record-access-as-metadata] [--grants <file.json>]\n  fylo unpack <db.vdbx> --out <directory>\n  fylo rekey <db.vdbx> --new-key '${NAME}' [--encrypt]\n  fylo rekey <db.vdbx> --decrypt\n  fylo rekey <db.vdbx> [--collection <name>] --identity <reference> (protected: as an admin)\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema migrate <collection> [--include-unversioned] [--schema-dir <path>] [--json]\n  fylo schema mode <collection> [off|warn|strict] [--json]\n  fylo schema check <collection> [--limit <n>] [--schema-dir <path>] [--json]\n  fylo schema push <collection> [--schema-dir <path>] [--json]\n  fylo schema pull <collection> --out <path> [--json]\n  fylo cache status [--temp-cache-dir <path>] [--json]\n  fylo cache clear [--temp-cache-dir <path>] [--json]\n  fylo identity create --store <reference> [--json]\n  fylo identity show <reference> [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --allow-system-disk Allow a root on the system disk, for tests, CI and laptops (fylo.allowSystemDisk, FYLO_ALLOW_SYSTEM_DISK=1; ADR 0032)\n  --app-id <id>   Allow a root in this app's own data folder (fylo.appId, FYLO_APP_ID; ADR 0032)\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --cascade       Let namespace drop delete the namespace's collections too\n  --include-unversioned Also migrate documents with no _v, as the oldest version\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --namespace <ns> Namespace of exec requests that name none (default public; ADR 0033)\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --invocation    Answer one exec request under a bounded root lease, waiting while another process holds the root (ADR 0011; not qualified for deployment)\n  --deadline-ms <n> Milliseconds an exec --invocation may use, counted from process start\n  --cleanup-reserve-ms <n> Milliseconds of --deadline-ms kept for releasing the root; must be nonzero and smaller than --deadline-ms\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --temp-cache <mode> Temp-disk read tier: off, auto (default; only for an EFS-profile root) or on (fylo.tempCache.mode)\n  --temp-cache-bytes <n> Temp-disk read tier budget, capped at half the free space (default 268435456; fylo.tempCache.bytes)\n  --temp-cache-dir <path> Folder that holds the temp cache folder instead of the OS temp folder (fylo.tempCache.dir)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --to <layout>   Destination layout for layout: files or segments\n  --shrink        Give the space compact frees in a .vdbx database back to the disk\n  --out <directory> Empty directory export and salvage write the per-document tree to, and unpack the root to\n  --out <db.vdbx> New .vdbx database pack writes; it must not exist\n  --encrypt       Encrypt the database create or pack writes with fylo.encryption.key, or with rekey a plain one with --new-key\n  --sealed        Pack a read-only database recompressed in 64 KiB blocks; it also copies a live .vdbx database\n  --new-key '${NAME}' Secret reference (environment or .env, as fylo.encryption.key) rekey encrypts the database with; with --encrypt it encrypts a plain one\n  --decrypt       Rewrite an encrypted database plain with rekey\n  --limit <n>     Failing documents schema check lists (default 100)\n  --out <path>    Folder schema pull writes the fylo.schema layout to\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --admin <reference> Admin and trust anchor of the protected database create makes (ADR 0021)\n  --protect       Pack into a protected database whose admin and trust anchor --admin names (ADR 0021)\n  --drop-record-access Let pack --protect drop records' POSTIX access descriptors\n  --keep-record-access-as-metadata Let pack --protect keep each descriptor as the metadata field legacyAccess, unenforced\n  --grants <file.json> Grants pack --protect adds: {\"grants\": [{\"grantee\", \"key\", \"actions\", \"collection\" | \"allCollections\" | \"database\"}]}\n  --unprotected   Let create make a database with no identities; new databases are protected by default\n  --identity <reference> Application identity a protected database opens with (fylo.identity, FYLO_IDENTITY)\n  --trust-anchor <fid1:...> Admin a protected database must have been created by (fylo.trustAnchor, FYLO_TRUST_ANCHOR)\n  --trust-on-first-use Trust a protected database's creator, whoever it is, with a warning\n  --store <reference> Key store fylo identity create writes a new key to: file:<path>, keychain:<label>, enclave:<label>, cng:<name>, tpm:<name>, creds:<name> or webcrypto:<name>\n  --version       Print the FYLO runtime version\n  --help          Show this message"
         .replace(
             "  --root <path>   Override fylo.root for this command",
             "  --root <path>   Override fylo.root for this command\n  --filesystem-profile <native|efs-sidecar-v1> Select metadata profile explicitly",
@@ -2062,6 +2100,44 @@ mod tests {
         assert!(output.starts_with("Usage:\n  fylo checkout"));
         assert!(output.contains("fylo exec --loop"));
         assert!(!output.contains("fylo-rust"));
+    }
+
+    #[test]
+    fn namespace_commands_become_namespace_requests() {
+        let arguments = |values: &[&str]| -> Vec<String> {
+            values.iter().map(|value| (*value).to_owned()).collect()
+        };
+        assert_eq!(
+            namespace_request(&arguments(&[
+                "namespace",
+                "create",
+                "billing",
+                "--root",
+                "/d/app"
+            ])),
+            Ok(json!({"op": "createNamespace", "root": "/d/app", "namespace": "billing"}))
+        );
+        assert_eq!(
+            namespace_request(&arguments(&[
+                "namespace",
+                "drop",
+                "billing",
+                "--root",
+                "/d/app",
+                "--cascade"
+            ])),
+            Ok(
+                json!({"op": "dropNamespace", "root": "/d/app", "namespace": "billing", "cascade": true})
+            )
+        );
+        assert_eq!(
+            namespace_request(&arguments(&["namespace", "list", "--root", "/d/app"])),
+            Ok(json!({"op": "listNamespaces", "root": "/d/app"}))
+        );
+        assert!(namespace_request(&arguments(&["namespace", "list"])).is_err());
+        assert!(
+            namespace_request(&arguments(&["namespace", "rename", "a", "--root", "/d"])).is_err()
+        );
     }
 
     #[test]

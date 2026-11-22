@@ -1,11 +1,12 @@
 use super::kernel_file_lock::KernelFileLock;
 use super::lease_backoff::LeaseBackoff;
-use super::lease_claims::LeaseClaims;
 use super::lease_failpoint::LeaseFailpoint;
 use super::lease_heartbeat::LeaseHeartbeat;
 use super::lease_observation::LeaseObservation;
 use super::lease_takeover::LeaseTakeover;
+use super::lease_target::LeaseTarget;
 use super::lease_timing::LeaseTiming;
+use crate::layout::{NamespaceName, RootLayout};
 use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode, RootFilesystem};
 use fylo_vfs::{File, OpenOptions};
 use std::fs::TryLockError;
@@ -33,8 +34,6 @@ pub(super) struct RootLeaseInner {
 }
 
 impl RootLeaseInner {
-    const LOCK_SUFFIX: &str = "fylo-root-owner.lock";
-    const RECORD_SUFFIX: &str = "fylo-root-owner.lock.json";
     const OWNER_ID_BYTES: usize = 16;
 
     pub(super) fn acquire(root: impl AsRef<Path>) -> Result<Self, NativeStorageError> {
@@ -66,12 +65,9 @@ impl RootLeaseInner {
         timing: LeaseTiming,
         wait_until: Instant,
     ) -> Result<Self, NativeStorageError> {
-        let mut backoff = LeaseBackoff::until(wait_until);
-        let mut attempt = Self::acquire_timed(root, profile, timing, Some(wait_until));
-        while Self::held_by_another(&attempt) && backoff.wait() {
-            attempt = Self::acquire_timed(root, profile, timing, Some(wait_until));
-        }
-        attempt
+        Self::retry_until(wait_until, || {
+            Self::acquire_timed(root, profile, timing, Some(wait_until))
+        })
     }
 
     fn held_by_another(attempt: &Result<Self, NativeStorageError>) -> bool {
@@ -95,37 +91,83 @@ impl RootLeaseInner {
         Self::prepare_root(root, profile)?;
         let canonical = fylo_vfs::canonicalize(root).map_err(NativeStorageError::io)?;
         crate::profile_manifest::ProfileManifest::admit_selection(&canonical, profile)?;
-        let lock_path = Self::sibling_path(&canonical, Self::LOCK_SUFFIX)?;
-        let record_path = Self::sibling_path(&canonical, Self::RECORD_SUFFIX)?;
-        let lock_file = Self::open_lock_file(&lock_path)?;
+        let target = LeaseTarget::root(&canonical)?;
+        Self::acquire_target(target, filesystem, (profile, timing), deadline)
+    }
+
+    /// Take namespace `namespace` of the app folder `layout` names (ADR 0033
+    /// section 4): the drive rule is judged on the app folder, and the
+    /// namespace folder must exist.
+    pub(super) fn acquire_namespace_timed(
+        layout: &RootLayout,
+        namespace: &NamespaceName,
+        (profile, timing): (FilesystemProfile, LeaseTiming),
+        deadline: Option<Instant>,
+    ) -> Result<Self, NativeStorageError> {
+        let filesystem = RootFilesystem::admit(layout.app_folder(), profile)?;
+        let target = LeaseTarget::namespace(layout, namespace)?;
+        Self::acquire_target(target, filesystem, (profile, timing), deadline)
+    }
+
+    /// [`Self::acquire_namespace_timed`], trying again after growing pauses
+    /// while another process owns the namespace, until `wait_until`.
+    pub(super) fn acquire_namespace_waiting(
+        layout: &RootLayout,
+        namespace: &NamespaceName,
+        settings: (FilesystemProfile, LeaseTiming),
+        wait_until: Instant,
+    ) -> Result<Self, NativeStorageError> {
+        Self::retry_until(wait_until, || {
+            Self::acquire_namespace_timed(layout, namespace, settings, Some(wait_until))
+        })
+    }
+
+    fn retry_until(
+        wait_until: Instant,
+        attempt: impl Fn() -> Result<Self, NativeStorageError>,
+    ) -> Result<Self, NativeStorageError> {
+        let mut backoff = LeaseBackoff::until(wait_until);
+        let mut result = attempt();
+        while Self::held_by_another(&result) && backoff.wait() {
+            result = attempt();
+        }
+        result
+    }
+
+    fn acquire_target(
+        target: LeaseTarget,
+        filesystem: RootFilesystem,
+        (profile, timing): (FilesystemProfile, LeaseTiming),
+        deadline: Option<Instant>,
+    ) -> Result<Self, NativeStorageError> {
+        let lock_file = Self::open_lock_file(&target.lock_path)?;
         let kernel_enforced = Self::lock_root(
             KernelFileLock::try_lock(&lock_file),
-            &record_path,
-            &canonical,
+            &target.record_path,
+            &target.owned,
             profile,
         )?;
         let owner = Self::new_owner_id()?;
-        let owned_name = Self::owned_name(&canonical);
-        let claims = LeaseClaims::beside(Self::parent(&canonical)?, &owned_name);
         let record = LeaseTakeover {
-            record_path: &record_path,
-            claims: &claims,
-            canonical: &canonical,
-            owned_name: &owned_name,
+            record_path: &target.record_path,
+            claims: &target.claims,
+            canonical: &target.owned,
+            owned_name: &target.owned_name,
             owner_id: &owner,
             timing,
             deadline,
         }
         .claim()?;
         let generation = record.generation();
-        let heartbeat = LeaseHeartbeat::start(record_path.clone(), record, timing.heartbeat());
+        let heartbeat =
+            LeaseHeartbeat::start(target.record_path.clone(), record, timing.heartbeat());
         Ok(Self {
-            root: canonical,
+            root: target.owned,
             scope_name: format!("{owner}:{generation}"),
             owner,
             generation,
             lock_file,
-            record_path,
+            record_path: target.record_path,
             kernel_enforced,
             filesystem,
             heartbeat,
@@ -249,32 +291,6 @@ impl RootLeaseInner {
             NativeStorageErrorCode::RootLeaseLost,
             "exclusive ownership of this FYLO root was lost",
         )
-    }
-
-    fn owned_name(canonical: &Path) -> String {
-        canonical.file_name().map_or_else(
-            || "root".to_owned(),
-            |name| name.to_string_lossy().into_owned(),
-        )
-    }
-
-    fn parent(canonical: &Path) -> Result<&Path, NativeStorageError> {
-        canonical.parent().ok_or_else(|| {
-            NativeStorageError::new(
-                NativeStorageErrorCode::UnsafePath,
-                "FYLO root has no parent directory",
-            )
-        })
-    }
-
-    /// The file `.<root name>.<suffix>` in the root's parent directory, where
-    /// the files that coordinate the root's owners live.
-    pub(super) fn sibling_path(
-        canonical: &Path,
-        suffix: &str,
-    ) -> Result<PathBuf, NativeStorageError> {
-        let parent = Self::parent(canonical)?;
-        Ok(parent.join(format!(".{}.{suffix}", Self::owned_name(canonical))))
     }
 
     fn open_lock_file(path: &Path) -> Result<File, NativeStorageError> {

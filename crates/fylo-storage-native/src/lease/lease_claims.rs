@@ -24,6 +24,15 @@ impl LeaseClaims {
         }
     }
 
+    /// Claim files in `folder` whose names start with `prefix` (a
+    /// namespace's, from `RootLayout::lease_claim_prefix`).
+    pub(super) fn with_prefix(folder: &Path, prefix: String) -> Self {
+        Self {
+            folder: folder.to_path_buf(),
+            prefix,
+        }
+    }
+
     /// The generations with a claim file now.
     pub(super) fn present(&self) -> BTreeSet<u64> {
         let Ok(entries) = fylo_vfs::read_dir(&self.folder) else {
