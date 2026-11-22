@@ -45,6 +45,20 @@ impl NativeWriteRoot {
             && (cfg!(any(unix, windows)) || collection.uses_segments())
     }
 
+    /// Whether `collection` commits through the write-ahead log, so a batch
+    /// of its document writes (a transaction) commits as one log record:
+    /// document collections on the native profile, and on the sidecar
+    /// store on Unix. Raw-file collections and the sidecar store on Windows
+    /// do not.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the collection cannot be opened.
+    pub fn collection_uses_log(&self, collection_name: &str) -> Result<bool, NativeStorageError> {
+        let collection = self.writable_collection(collection_name)?;
+        Ok(self.uses_log(&collection))
+    }
+
     /// The native profile, and the EFS profile on Unix, whose documents
     /// keep their attributes in sidecar files the log writes as files.
     pub(crate) fn profile_uses_log(&self) -> bool {

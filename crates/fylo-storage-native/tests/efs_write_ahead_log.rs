@@ -224,6 +224,17 @@ fn an_efs_batch_of_25_is_one_log_record() {
 }
 
 #[test]
+fn a_sidecar_document_collection_uses_the_log_and_a_raw_file_collection_does_not() {
+    let fixture = Fixture::create();
+    let writer = fixture.writer();
+    writer
+        .create_collection("assets", CollectionKind::File, None)
+        .unwrap();
+    assert!(writer.collection_uses_log("items").unwrap());
+    assert!(!writer.collection_uses_log("assets").unwrap());
+}
+
+#[test]
 fn efs_patch_metadata_delete_and_restore_round_trip_through_the_log() {
     let fixture = Fixture::create();
     let writer = fixture.writer();
