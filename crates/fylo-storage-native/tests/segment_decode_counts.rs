@@ -17,6 +17,7 @@ struct Fixture(PathBuf);
 impl Fixture {
     const COLLECTION: &str = "items";
     const PER_COMMIT: usize = 200;
+    const LARGE_NOTE_BYTES: usize = 6_000;
 
     fn new(label: &str) -> Self {
         let root = Self::folder(label);
@@ -58,8 +59,9 @@ impl Fixture {
         format!("4VRNF5{number:05}")
     }
 
-    fn body(number: usize) -> serde_json::Map<String, serde_json::Value> {
-        json!({ "number": number, "name": format!("user{number}") })
+    fn body(number: usize, note_bytes: usize) -> serde_json::Map<String, serde_json::Value> {
+        let note = "n".repeat(note_bytes);
+        json!({ "number": number, "name": format!("user{number}"), "note": note })
             .as_object()
             .unwrap()
             .clone()
@@ -67,10 +69,15 @@ impl Fixture {
 
     /// One commit holding `PER_COMMIT` new documents, numbered from `first`.
     fn commit(&self, first: usize) {
+        self.commit_with_notes(first, 0);
+    }
+
+    /// One commit whose documents each carry a note of `note_bytes` bytes.
+    fn commit_with_notes(&self, first: usize, note_bytes: usize) {
         let writes: Vec<DocumentWrite> = (first..first + Self::PER_COMMIT)
             .map(|number| DocumentWrite::Put {
                 identifier: Self::id(number),
-                fields: Self::body(number),
+                fields: Self::body(number, note_bytes),
             })
             .collect();
         self.writer()
@@ -127,6 +134,20 @@ fn a_batch_read_decodes_each_commit_once() {
     assert_eq!(stored.len(), 2 * Fixture::PER_COMMIT);
     assert_eq!(log.entries_decoded(), 2 * Fixture::PER_COMMIT, "{log:?}");
     assert_eq!(log.frames_decoded(), 2, "{log:?}");
+}
+
+#[test]
+fn a_batch_read_decodes_a_commit_larger_than_one_read_span_once() {
+    let fixture = Fixture::new("large");
+    fixture.commit_with_notes(0, Fixture::LARGE_NOTE_BYTES);
+    let collection = fixture.collection();
+    collection.read_document(&Fixture::id(0)).unwrap();
+    let ids = Fixture::ids(Fixture::PER_COMMIT);
+    let (stored, log) = counted(|| collection.read_documents(&ids).unwrap());
+    let bytes: usize = stored.iter().map(|document| document.bytes.len()).sum();
+    assert!(bytes > 1024 * 1024, "the commit is only {bytes} bytes");
+    assert_eq!(log.entries_decoded(), Fixture::PER_COMMIT, "{log:?}");
+    assert_eq!(log.frames_decoded(), 1, "{log:?}");
 }
 
 #[test]

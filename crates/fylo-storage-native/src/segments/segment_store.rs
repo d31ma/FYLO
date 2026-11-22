@@ -164,14 +164,19 @@ impl SegmentStore {
         groups
     }
 
+    /// Whether `location` joins the open group: it is in the same segment
+    /// and either lies inside the bytes the group already reads, as every
+    /// other document of the same record does however large the record is,
+    /// or extends the group across a small gap within the span limit.
     fn joins(
         location: &SegmentLocation,
         (segment, start, span_end): (u64, u64, u64),
         end: u64,
     ) -> bool {
-        location.segment == segment
-            && location.offset <= span_end + Self::MAX_GAP_BYTES
-            && end - start <= Self::MAX_SPAN_BYTES
+        let covered = end <= span_end;
+        let extends = location.offset <= span_end + Self::MAX_GAP_BYTES
+            && end - start <= Self::MAX_SPAN_BYTES;
+        location.segment == segment && (covered || extends)
     }
 
     fn read_group(
