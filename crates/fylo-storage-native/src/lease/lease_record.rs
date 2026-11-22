@@ -70,11 +70,12 @@ impl LeaseRecord {
         next
     }
 
-    /// Reading the process start takes a PowerShell call on Windows, which
-    /// can take seconds on a busy machine. A claim must stay fast, so there
-    /// the heartbeat thread adds both values right after the claim
-    /// ([`LeaseRecord::identified`]). Until it has, a crash waits the
-    /// takeover time.
+    /// The machine id on Windows starts `reg.exe`, which can take a
+    /// second on a busy machine. A claim must stay fast, so there the
+    /// heartbeat thread adds it right after the claim
+    /// ([`LeaseRecord::identified`]); until it has, a crash waits the
+    /// takeover time. The process start is read from the process handle on
+    /// every platform, in milliseconds, so the claim records it at once.
     #[cfg(not(windows))]
     fn eager_machine() -> Option<String> {
         MachineIdentity::current()
@@ -85,14 +86,8 @@ impl LeaseRecord {
         None
     }
 
-    #[cfg(not(windows))]
     fn eager_process_start() -> Option<String> {
         crate::write::own_process_identity()
-    }
-
-    #[cfg(windows)]
-    fn eager_process_start() -> Option<String> {
-        None
     }
 
     pub(super) fn generation(&self) -> u64 {
