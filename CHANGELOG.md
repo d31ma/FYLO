@@ -91,7 +91,7 @@
   once instead of three times.
 
 - **Fewer network round trips per commit (FYLO-PERF1, ADR 0013
-  Amendment 1).** Document collections whose metadata lives in sidecar
+  Amendment 2).** Document collections whose metadata lives in sidecar
   files (`efs-sidecar-v1`, the store a network share gets) now commit
   through the write-ahead log like every other document collection: one
   log append and one flush per commit, with each record's `.fylo-attrs`
