@@ -8,6 +8,13 @@ not yet built) when its layout release ships: the sidecar format is chosen by
 a probe when an app folder is created, on every OS, and sidecar files get a
 leading dot. Until then this ADR is in force.
 
+Amended by [ADR 0013 Amendment 1](0013-collection-write-ahead-log.md)
+(review pending): `efs-sidecar-v1` is the sidecar metadata store under the
+native engine. Its document collections commit through the write-ahead log,
+which writes each sidecar in its apply step; the undo journal stays only for
+what ADR 0013 keeps on it (raw files, the operations outside its scope) and
+for roots opened with the explicit legacy override, until that is removed.
+
 ## Context
 
 FYLO's native Unix profile uses xattrs. EFS lacks xattrs and provides advisory

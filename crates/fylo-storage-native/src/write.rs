@@ -649,16 +649,17 @@ impl NativeWriteRoot {
     /// none. Each body is built through `codec` under the collection's
     /// validation mode, exactly as a single put or replace builds it.
     ///
-    /// Each identifier may appear once. A batch needs the native profile,
-    /// where every document mutation is logged; a segment collection (every
-    /// collection of a `.vdbx` database) commits it as one segment plan.
+    /// Each identifier may appear once. A batch needs a profile whose
+    /// document mutations are logged (native, and EFS on Unix); a segment
+    /// collection (every collection of a `.vdbx` database) commits it as
+    /// one segment plan.
     ///
     /// # Errors
     ///
     /// Returns an error for an invalid identifier or document, a repeated
     /// identifier, a put over a live document, a replace or delete of a
     /// missing one, a body the schema rejects in `strict` mode, a batch too
-    /// large for one log record, a non-native profile (`Unsupported`), or any
+    /// large for one log record, a collection without a log (`Unsupported`), or any
     /// durable write failure. Nothing is written when
     /// it fails.
     pub fn commit_document_writes_with(
@@ -690,7 +691,7 @@ impl NativeWriteRoot {
         if !self.uses_log(&collection) {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,
-                "a batch of document writes needs the native profile's commit log",
+                "a batch of document writes needs the collection's commit log",
             ));
         }
         if writes.is_empty() {

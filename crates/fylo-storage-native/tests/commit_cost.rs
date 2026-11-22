@@ -90,10 +90,6 @@ fn put_one(writer: &NativeWriteRoot, number: usize) {
 }
 
 fn send(writer: &NativeWriteRoot, first: usize) {
-    if profile() == FilesystemProfile::EfsSidecarV1 && !batches_on_efs() {
-        (first..first + SEND_SIZE).for_each(|number| put_one(writer, number));
-        return;
-    }
     let batch: Vec<DocumentWrite> = (first..first + SEND_SIZE)
         .map(|number| DocumentWrite::Put {
             identifier: identifier(number),
@@ -103,10 +99,6 @@ fn send(writer: &NativeWriteRoot, first: usize) {
     writer
         .commit_document_writes_with(ITEMS, &batch, &PlainDocumentCodec)
         .unwrap();
-}
-
-fn batches_on_efs() -> bool {
-    std::env::var("FYLO_COMMIT_COST_EFS_BATCH").as_deref() == Ok("1")
 }
 
 #[test]

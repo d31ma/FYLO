@@ -89,6 +89,19 @@
   request, a collection's catalog descriptor is now read once (it was read
   twice per document by the full check), and the full check reads the index
   once instead of three times.
+
+- **Fewer network round trips per commit (FYLO-PERF1, ADR 0013
+  Amendment 1).** Document collections whose metadata lives in sidecar
+  files (`efs-sidecar-v1`, the store a network share gets) now commit
+  through the write-ahead log like every other document collection: one
+  log append and one flush per commit, with each record's `.fylo-attrs`
+  sidecar written by the log's apply step and redone by recovery.
+  `commit_document_writes` (a batch of writes in one record) now works
+  there too. A writer reads the root owner record once per commit
+  instead of before almost every step. Measured on an NFS share, one EFS
+  put went from 1,053 file calls to about 130, and a send of 25 documents
+  from about 26,400 calls to about 870.
+
 - **An unknown `fylo` option is an error.** `fylo exec` and the other
   subcommands refuse an option they do not read, and a value option with no
   value after it, with a message on stderr and exit code 1 (no answer

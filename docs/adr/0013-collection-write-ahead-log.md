@@ -88,7 +88,8 @@ commit, checkout, restore and merge, and the queue. Each of these first takes
 the collection lock and checkpoints the log, so the two mechanisms never
 overlap on one collection. The `EfsSidecarV1` profile also stays on the
 journal: its close-to-open, sidecar-pair and owner checks need their own
-review, and moving it is a later ADR.
+review, and moving it is a later ADR. (Amendment 1 puts sidecar-store
+document collections on the log.)
 
 ### 2. Files
 
@@ -413,6 +414,65 @@ source of truth, and the durability promise above.
   access and move failpoints covered.
 - **Setting.** The setting is `fylo.durability` in `application.json`:
   `"process"` (the default) or `"power-loss"`.
+
+## Amendment 1 (2026-11-21): one engine, two metadata stores
+
+Review: pending (FYLO Build Coordinator). FYLO-PERF1.
+
+**Context.** ADR 0033 decided that the write-ahead log is FYLO's one engine,
+and that a record's metadata is stored where the file-system probe (L1-4)
+records it: in extended attributes, or in a `<payload>.fylo-attrs` sidecar
+file (ADR 0010's format). Section 1 above still kept the
+`EfsSidecarV1` profile, today's sidecar store, on the undo journal. A network
+share has no usable extended attributes (on macOS NFS a `setxattr` writes an
+AppleDouble `._` file that other machines do not see), so a share gets
+sidecars, and Mesail's production root on ATLAS is such a share. Measured on
+ANVIL's NFS mount, one sidecar-store put on the journal made 1,053 file
+calls (180 opens, 27 flushes, 11 renames, 11 removals); a put on the log
+makes about 110 calls with one flush. A send of 25 documents took 25 such
+puts, because a batch needs the log.
+
+**Decision.** Section 1's scope covers both metadata stores. On Unix the
+native engine commits sidecar-store document collections through the log;
+the sidecar is written by the log's apply step, and recovery redoes it from
+the log exactly as it redoes document files.
+
+- The plan writes a record's sidecar as a step of its own in the same log
+  record: a created record gets a `create` step for its sidecar; a rewritten
+  payload gets a sidecar rewrite with the new binding; a metadata change
+  rewrites only the sidecar (the payload too only when its ownership
+  changes); a move moves both files.
+- The plan builds the sidecar bytes from the bytes it writes: the binding is
+  the SHA-256 of the planned payload, so no step reads a file back.
+  Metadata is never read from or written to extended attributes in the
+  sidecar store; pre-images of payload and sidecar are plain files.
+- A create refuses an orphan sidecar at the target, and a move refuses a
+  sidecar at the destination or a missing one at the source, with the
+  journal's `CorruptMetadata` errors.
+- A new payload and every sidecar get mode `0600`, as the journal gives them.
+- `commit_document_writes` (a batch in one record) works in both stores.
+- Raw-file collections stay on the journal in both stores (section 1's
+  implementation note), and so does every operation section 1 lists as out
+  of scope.
+
+Recovery, checkpoints, group commit and the durability promise are those of
+sections 4 to 9: the log record is flushed before any file changes, apply is
+redo-only, and a checkpoint flushes every file the steps name, sidecars
+included. A crash between a document's rename and its sidecar's leaves a
+record the log replays. The journal's sidecar failpoints
+(`after-record-payload-rename`, `after-record-sidecar-rename`) stay on the
+journal paths that still use them.
+
+**Fencing.** A writer reads the owner record once at the start of a commit
+under the collection lock, reuses that check until a commit point, and reads
+it again right before the log append (ADR 0033: one small read per commit).
+The undo journal reads it again at its start, at its commit marker and at a
+rollback. Before this amendment a sidecar-store put read it about 55 times.
+
+**Apply.** The applier sets a file's time and mode through the handle that
+wrote it. An NFS client flushes written data before it sets times, so the
+time the server keeps is the one the step names (checked on ANVIL from the
+server side for 100 B to 3 MB files).
 
 ## Consequences
 
