@@ -513,6 +513,7 @@ dependencies = [
  "fylo-engine",
  "fylo-format",
  "fylo-identity",
+ "fylo-machine",
  "fylo-query",
  "fylo-storage-native",
  "fylo-test-support",
