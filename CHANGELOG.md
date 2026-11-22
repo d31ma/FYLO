@@ -97,7 +97,11 @@
   log append and one flush per commit, with each record's `.fylo-attrs`
   sidecar written by the log's apply step and redone by recovery.
   `commit_document_writes` (a batch of writes in one record) now works
-  there too. A writer reads the root owner record once per commit
+  there too. With this, recovery replays the log of a sidecar-store
+  collection (it replayed only native ones), and a closing process or
+  invocation checkpoints a sidecar root's log through that root's profile
+  and lease (it reopened every root as native, which a sidecar root
+  refuses). A writer reads the root owner record once per commit
   instead of before almost every step. Measured on an NFS share, one EFS
   put went from 1,053 file calls to about 130, and a send of 25 documents
   from about 26,400 calls to about 870.

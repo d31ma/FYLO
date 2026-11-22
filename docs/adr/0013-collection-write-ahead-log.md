@@ -454,6 +454,19 @@ the log exactly as it redoes document files.
 - Raw-file collections stay on the journal in both stores (section 1's
   implementation note), and so does every operation section 1 lists as out
   of scope.
+- Windows: the sidecar store does not run there today. Binding a payload
+  and checking file owners need POSIX calls, so every sidecar-store write on
+  Windows is refused with `ENATIVE_UNSUPPORTED`, on the log or on the
+  journal. Until that changes, only Unix sidecar roots use the log; when the
+  store runs on Windows it uses the log too.
+- Transactions: the storage engine's one-collection batch
+  (`commit_document_writes`, the commit of a `storeTransaction`) works on a
+  sidecar root and commits as one log record, as on an xattr root. A sidecar
+  root therefore no longer needs to refuse a one-collection transaction with
+  `ETXNLAYOUT`; the machine layer's check (FYLO-SDK-3) changes from "native
+  profile only" to "a profile whose documents use the log" (native, and the
+  sidecar store on Unix). A transaction over a raw-file collection, or on
+  Windows with the sidecar store, is still refused.
 
 Recovery, checkpoints, group commit and the durability promise are those of
 sections 4 to 9: the log record is flushed before any file changes, apply is
