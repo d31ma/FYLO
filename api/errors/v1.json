@@ -46,6 +46,18 @@
             "retryable": false
         },
         {
+            "code": "EQUERYLIMIT",
+            "retryable": false
+        },
+        {
+            "code": "EPAGESIZE",
+            "retryable": false
+        },
+        {
+            "code": "ECURSOR",
+            "retryable": false
+        },
+        {
             "code": "EQUERYITEMTOOLARGE",
             "retryable": false
         },

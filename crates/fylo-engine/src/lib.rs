@@ -15,6 +15,7 @@ mod schema;
 mod schema_admin;
 mod sorted_find;
 mod sorted_page;
+mod store;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod stored_validation;
 
@@ -47,6 +48,7 @@ use schema::{SchemaRegistry, SchemaTools, VersionChain};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 pub use sorted_page::SortedPage;
+pub use store::StoreScroll;
 
 const MAX_STABLE_READ_ATTEMPTS: usize = 3;
 /// Drifted index keys reported by one verification.
