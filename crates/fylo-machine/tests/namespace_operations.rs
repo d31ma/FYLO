@@ -33,14 +33,13 @@ impl Drive {
 
     /// Answer one request per value, in order, with `root` set to the app.
     fn frames(&self, requests: &[Value]) -> Vec<Value> {
-        let input = requests
-            .iter()
-            .map(|request| {
-                let mut request = request.clone();
-                request["root"] = json!(self.app());
-                format!("{request}\n")
-            })
-            .collect::<String>();
+        let mut input = String::new();
+        for request in requests {
+            let mut request = request.clone();
+            request["root"] = json!(self.app());
+            input.push_str(&request.to_string());
+            input.push('\n');
+        }
         let mut reader = Cursor::new(input.into_bytes());
         let mut output = Vec::new();
         serve_application(
