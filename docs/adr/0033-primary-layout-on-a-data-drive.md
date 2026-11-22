@@ -238,8 +238,15 @@ creates.
    **heartbeat counter**.
 
 **Heartbeat.** The owner adds one to the counter every **5 s** (a setting).
-It writes the record to a temporary file in the app folder and renames it
-over the record.
+It rewrites the record in place: open, write, set the length, fsync, close
+(amended in slice L1-3b; the first build renamed a temporary file over the
+record). Every reader, the per-commit fence included, opens and reads the
+file again each time, never trusting a cached `stat`; on macOS the read also
+turns off the client's data cache (`F_NOCACHE`). A rename would change the
+folder, and an NFS client keeps a name's old file for its folder-cache time
+(30 s by default on Linux, longer than the takeover time); in place, a reader
+sees each new beat at its next attribute refresh (measured on this Mac's
+NFS mount: at most 5.0 s without `F_NOCACHE`, 1.6 s with it).
 
 **Taking a namespace.**
 

@@ -24,6 +24,7 @@ const TEST_DIR: &str = "FYLO_LEASE_TEST_DIR";
 const TEST_PROFILE: &str = "FYLO_LEASE_TEST_PROFILE";
 const MACHINE: &str = "FYLO_TEST_LEASE_MACHINE";
 const NAMESPACE: &str = "FYLO_LEASE_TEST_NAMESPACE";
+const GO_WAIT: &str = "FYLO_LEASE_TEST_GO_WAIT_SECONDS";
 const ITEMS: &str = "items";
 const HEARTBEAT_SECONDS: &str = "0.05";
 // On Windows a taker reads the owner's start time through PowerShell, which
@@ -163,15 +164,48 @@ fn start_child(
 }
 
 fn wait_for(path: &Path) {
+    wait_for_within(path, READY_WAIT);
+}
+
+fn wait_for_within(path: &Path, limit: Duration) {
     let started = Instant::now();
     while !path.exists() {
         assert!(
-            started.elapsed() < READY_WAIT,
+            started.elapsed() < limit,
             "{} never appeared",
             path.display()
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Wait until the file `path`, made empty beforehand, holds something. Over
+/// NFS a file that another machine creates can stay hidden behind this
+/// machine's negative name cache for up to a minute; a file that exists
+/// and changes in place is seen at the next attribute refresh.
+fn wait_for_content(path: &Path) -> String {
+    let started = Instant::now();
+    loop {
+        let text = fs::read_to_string(path).unwrap_or_default();
+        if !text.is_empty() {
+            return text;
+        }
+        assert!(
+            started.elapsed() < READY_WAIT,
+            "{} stayed empty",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// How long a holding child waits for `go`: `FYLO_LEASE_TEST_GO_WAIT_SECONDS`,
+/// else [`READY_WAIT`].
+fn go_wait() -> Duration {
+    std::env::var(GO_WAIT)
+        .ok()
+        .and_then(|seconds| seconds.parse::<u64>().ok())
+        .map_or(READY_WAIT, Duration::from_secs)
 }
 
 /// Wait until the lease record carries this process's start time. On
@@ -253,7 +287,7 @@ fn lease_child() {
     let writer = writer(&root, lease);
     wait_for_identity(&folder.join(".db.fylo-root-owner.lock.json"));
     fs::write(folder.join("ready"), std::process::id().to_string()).unwrap();
-    wait_for(&folder.join("go"));
+    wait_for_within(&folder.join("go"), go_wait());
     let outcome = put(&writer, 1).map_or_else(
         |error| error.code().as_str().to_owned(),
         |()| "ok".to_owned(),
@@ -435,13 +469,24 @@ impl RemoteMachine {
     }
 
     fn start_child(&self, scratch: &Scratch) -> Child {
+        let timing = format!(
+            "FYLO_LEASE_HEARTBEAT_SECONDS={} FYLO_LEASE_TAKEOVER_SECONDS={}",
+            Self::HEARTBEAT_SECONDS,
+            Self::TAKEOVER_SECONDS
+        );
+        self.start_child_with(scratch, &timing)
+    }
+
+    /// A holding child on the remote machine with the environment `timing`
+    /// (empty for FYLO's default 5 s heartbeat and 20 s takeover).
+    fn start_child_with(&self, scratch: &Scratch, timing: &str) -> Child {
+        fs::write(scratch.marker("ready"), b"").unwrap();
+        fs::write(scratch.marker("result"), b"").unwrap();
         let binary = self.remote(&fs::canonicalize(std::env::current_exe().unwrap()).unwrap());
         let command = format!(
-            "cd /tmp && env {CHILD}=hold {ROOT}={} {TEST_PROFILE}={} FYLO_LEASE_HEARTBEAT_SECONDS={} FYLO_LEASE_TAKEOVER_SECONDS={} {} --exact lease_child --nocapture --test-threads=1",
+            "cd /tmp && env {CHILD}=hold {ROOT}={} {TEST_PROFILE}={} {timing} {} --exact lease_child --nocapture --test-threads=1",
             self.remote(&scratch.root).display(),
             std::env::var(TEST_PROFILE).unwrap_or_default(),
-            Self::HEARTBEAT_SECONDS,
-            Self::TAKEOVER_SECONDS,
             binary.display()
         );
         Command::new("ssh")
@@ -485,8 +530,7 @@ fn a_root_shared_with_another_machine_has_one_owner_at_a_time() {
     let scratch = Scratch::new("cross-machine");
     create_items(&scratch.root);
     let mut child = remote.start_child(&scratch);
-    wait_for(&scratch.marker("ready"));
-    let pid = fs::read_to_string(scratch.marker("ready")).unwrap();
+    let pid = wait_for_content(&scratch.marker("ready"));
     let generation = scratch.generation();
     let (refused, waited) = timed(|| RemoteMachine::acquire(&scratch.root));
     println!("live remote owner: refused after {waited:?}");
@@ -501,17 +545,13 @@ fn a_root_shared_with_another_machine_has_one_owner_at_a_time() {
     assert!(waited >= RemoteMachine::TAKEOVER, "waited only {waited:?}");
     fs::write(scratch.marker("go"), b"").unwrap();
     remote.signal(&pid, "CONT");
-    wait_for(&scratch.marker("result"));
+    let result = wait_for_content(&scratch.marker("result"));
     child.wait().unwrap();
-    assert_eq!(
-        fs::read_to_string(scratch.marker("result")).unwrap(),
-        "EROOTLEASELOST"
-    );
+    assert_eq!(result, "EROOTLEASELOST");
     drop(successor);
     RemoteMachine::clear_markers(&scratch);
     let mut second = remote.start_child(&scratch);
-    wait_for(&scratch.marker("ready"));
-    let pid = fs::read_to_string(scratch.marker("ready")).unwrap();
+    let pid = wait_for_content(&scratch.marker("ready"));
     remote.signal(&pid, "KILL");
     second.wait().unwrap();
     let (taken, waited) = timed(|| RemoteMachine::acquire(&scratch.root).unwrap());
@@ -606,4 +646,49 @@ fn a_taken_over_writer_appends_nothing_to_a_commit_log_collection() {
         .document_ids()
         .unwrap();
     assert_eq!(ids, [identifier(1)]);
+}
+
+/// The bench of the FYLO Build Coordinator (2026-11-21): with FYLO's default
+/// timing (5 s heartbeat, 20 s takeover) and the NFS mount's default
+/// attribute caches, a process on this machine that reads the record over
+/// NFS never takes over from a live owner on the other machine during 60 s,
+/// and takes over about 20 s after that owner is killed. Same environment as
+/// [`a_root_shared_with_another_machine_has_one_owner_at_a_time`].
+#[test]
+#[ignore = "needs a second machine that shares a folder; see the doc comment"]
+fn a_live_remote_owner_with_default_timing_is_never_taken_over_in_sixty_seconds() {
+    let remote = RemoteMachine::from_environment();
+    let scratch = Scratch::new("bench-60s");
+    create_items(&scratch.root);
+    let mut child = remote.start_child_with(&scratch, &format!("{GO_WAIT}=600"));
+    let pid = wait_for_content(&scratch.marker("ready"));
+    let generation = scratch.generation();
+    let started = Instant::now();
+    let mut tries = 0;
+    while started.elapsed() < Duration::from_mins(1) {
+        let (attempt, waited) = timed(|| {
+            RootLease::acquire_with_timing(&scratch.root, profile(), LeaseTiming::default())
+        });
+        tries += 1;
+        println!("try {tries}: refused after {waited:?}");
+        assert_eq!(
+            attempt.unwrap_err().code(),
+            NativeStorageErrorCode::RootLocked,
+            "a live owner was taken over"
+        );
+    }
+    assert_eq!(scratch.generation(), generation);
+    println!(
+        "live remote owner kept the root for {:?} over {tries} tries",
+        started.elapsed()
+    );
+    remote.signal(&pid, "KILL");
+    let (taken, waited) = timed(|| {
+        RootLease::acquire_with_timing(&scratch.root, profile(), LeaseTiming::default()).unwrap()
+    });
+    println!("killed remote owner: taken over after {waited:?}");
+    assert!(waited >= Duration::from_secs(20), "waited only {waited:?}");
+    assert!(waited < Duration::from_secs(40), "waited {waited:?}");
+    taken.assert_owned().unwrap();
+    child.wait().unwrap();
 }

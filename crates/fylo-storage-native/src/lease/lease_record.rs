@@ -1,10 +1,9 @@
+use super::lease_record_file::LeaseRecordFile;
 use super::lease_state::LeaseState;
 use super::lease_timing::LeaseTiming;
 use super::machine_identity::MachineIdentity;
 use crate::{NativeStorageError, NativeStorageErrorCode};
-use fylo_vfs::OpenOptions;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::Path;
 
 /// The lease record `.<name>.fylo-root-owner.lock.json` beside an owned
@@ -156,20 +155,16 @@ impl LeaseRecord {
         (record.format == Self::FORMAT).then_some(record)
     }
 
-    /// Write the record for other processes to see. Used by heartbeats,
-    /// which need to be seen but not to survive a power cut.
+    /// Rewrite the record in place and flush it (see `LeaseRecordFile`).
+    /// Used by heartbeats.
     pub(super) fn publish(&self, path: &Path) -> Result<(), NativeStorageError> {
-        let scratch = crate::write::sibling_scratch(path);
-        let written = self.write_file(&scratch, false);
-        Self::rename_or_clean(written, &scratch, path)
+        LeaseRecordFile::write(path, &self.encode()?)
     }
 
-    /// Write the record and flush it and its folder. Used for claims and
-    /// clean stops, which change the generation or the state.
+    /// [`Self::publish`], then flush the folder too, so a record created by
+    /// a claim survives a power cut. Used for claims and clean stops.
     pub(super) fn persist(&self, path: &Path) -> Result<(), NativeStorageError> {
-        let scratch = crate::write::sibling_scratch(path);
-        let written = self.write_file(&scratch, true);
-        Self::rename_or_clean(written, &scratch, path)?;
+        self.publish(path)?;
         crate::write::sync_directory(Self::parent(path)?)
     }
 
@@ -178,37 +173,6 @@ impl LeaseRecord {
             return false;
         };
         crate::write::process_identity(self.pid).as_ref() != Some(expected)
-    }
-
-    fn write_file(&self, path: &Path, flush: bool) -> Result<(), NativeStorageError> {
-        let encoded = self.encode()?;
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(path)
-            .map_err(NativeStorageError::io)?;
-        file.write_all(&encoded).map_err(NativeStorageError::io)?;
-        Self::flush_when(flush, &file)
-    }
-
-    fn flush_when(flush: bool, file: &fylo_vfs::File) -> Result<(), NativeStorageError> {
-        if !flush {
-            return Ok(());
-        }
-        crate::sync_handle(file).map_err(NativeStorageError::io)
-    }
-
-    fn rename_or_clean(
-        written: Result<(), NativeStorageError>,
-        scratch: &Path,
-        path: &Path,
-    ) -> Result<(), NativeStorageError> {
-        let renamed =
-            written.and_then(|()| fylo_vfs::rename(scratch, path).map_err(NativeStorageError::io));
-        if renamed.is_err() {
-            let _ = fylo_vfs::remove_file(scratch);
-        }
-        renamed
     }
 
     fn parent(path: &Path) -> Result<&Path, NativeStorageError> {

@@ -395,3 +395,34 @@ fn a_claim_made_by_another_taker_during_the_wait_is_reported_as_root_locked() {
     assert_eq!(refused.code(), NativeStorageErrorCode::RootLocked);
     assert_eq!(fixture.generation(), 4);
 }
+
+/// Records are rewritten in place, never replaced by a renamed file: an NFS
+/// client keeps a name's old file for its directory-cache time, and would
+/// then serve a stale heartbeat (see `LeaseRecordFile`).
+#[cfg(unix)]
+#[test]
+fn the_record_is_rewritten_in_place_by_heartbeats_and_the_clean_stop() {
+    use std::os::unix::fs::MetadataExt;
+    let fixture = TakeoverFixture::new();
+    let lease = fixture.acquire().unwrap();
+    let inode = std::fs::metadata(fixture.record_path()).unwrap().ino();
+    let first = fixture.record()["heartbeat"].as_u64().unwrap();
+    let started = Instant::now();
+    while fixture.heartbeat_now().is_none_or(|beat| beat <= first + 2) {
+        assert!(
+            started.elapsed() < TakeoverFixture::LOST_WAIT,
+            "heartbeat stayed at {first}"
+        );
+        std::thread::sleep(TakeoverFixture::HEARTBEAT);
+    }
+    assert_eq!(
+        std::fs::metadata(fixture.record_path()).unwrap().ino(),
+        inode
+    );
+    drop(lease);
+    assert_eq!(fixture.record()["state"], "released");
+    assert_eq!(
+        std::fs::metadata(fixture.record_path()).unwrap().ino(),
+        inode
+    );
+}
