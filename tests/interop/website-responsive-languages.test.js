@@ -68,10 +68,13 @@ describe('website template companion state', () => {
 
 describe('website application identity guidance', () => {
     test('explains identities, grants, and trust anchors instead of per-record access', async () => {
-        const [features, security] = await Promise.all([
+        const [features, security, securityPage] = await Promise.all([
             Bun.file(path.join(root, 'website/client/components/features/grid/tac.html')).text(),
             Bun.file(
                 path.join(root, 'website/client/services/DocumentationSecurityService.js')
+            ).text(),
+            Bun.file(
+                path.join(root, 'website/client/components/page/docs-security/tac.html')
             ).text()
         ])
 
@@ -83,6 +86,11 @@ describe('website application identity guidance', () => {
         expect(security).toContain('--trust-anchor fid1:')
         expect(security).not.toContain('.as(')
         expect(security).not.toContain('POSTIX')
+        expect(securityPage).toContain('Per-record UID, GID, and mode access was removed.')
+        // ADR 0016 section 9: wherever .vdbx is introduced, say encryption is off by default.
+        expect(securityPage).toMatch(
+            /<code>\.vdbx<\/code> file is not encrypted by default: encryption is opt-in/
+        )
     })
 })
 

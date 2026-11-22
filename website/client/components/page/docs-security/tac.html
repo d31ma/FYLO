@@ -61,7 +61,9 @@
             An application identity is a P-256 key pair. Its private key stays in a key store, and
             a process names it with a key reference such as <code>file:app.pem</code> or
             <code>keychain:com.example.app</code>. A protected <code>.vdbx</code> database is
-            created by an admin identity, and that admin becomes the database's trust anchor.
+            created by an admin identity, and that admin becomes the database's trust anchor. A
+            <code>.vdbx</code> file is not encrypted by default: encryption is opt-in, through the
+            field encryption above.
         </p>
         <pre class="code-block"><code>{documentationSecurity.identityCode}</code></pre>
         <p>

@@ -5,30 +5,30 @@
 # TTID and CHEX are built into FYLO, so there is nothing to install for them.
 set -eu
 
-TACHYON_VERSION='v26.36.01'
+TACHYON_VERSION='v26.46.02'
 DESTINATION=${FYLO_VENDOR_BIN_DIR:-"$HOME/.local/bin"}
 SCRIPTS=$(dirname "$0")
 
 case "$(uname -s)-$(uname -m)" in
     Linux-x86_64)
         TACHYON_ASSET='ty-linux-x64'
-        TACHYON_SHA256='7eceb7d95340abeea49d8a3c709ca0b2ab3767a46869fdd349b1c0901e19a3e9'
+        TACHYON_SHA256='125423c88dac3e888cc442c807f1beffc10ff8e5db2ac4cd70b331ecda5ea1fd'
         ;;
     Linux-aarch64|Linux-arm64)
         TACHYON_ASSET='ty-linux-arm64'
-        TACHYON_SHA256='8bc5badcfd55bb194ab2d4c07fa321283207618612f61c9767b5bebef26db319'
+        TACHYON_SHA256='3006c7bcd1bd7e879055d60492b307c2903dde61ec72bb36950ace7ff3031b2e'
         ;;
     Darwin-arm64)
         TACHYON_ASSET='ty-macos-arm64'
-        TACHYON_SHA256='1bf8d005bc2552dec0b8b1fbfeefde1b01ef6c4342f98b8d958d76d75c8d9f80'
+        TACHYON_SHA256='a062ed5e7523739515b25117dc3426bd1b9f7e82a6eac110611df06adff462a6'
         ;;
     Darwin-x86_64)
         TACHYON_ASSET='ty-macos-x64'
-        TACHYON_SHA256='4b3948797942de117177ce8f466a1f1356b5223427abff1d6485d141f5d29bf5'
+        TACHYON_SHA256='28268aa54999298eb9663e1bd7ed8b52467804e9157e0771fe00f18d879d3ed8'
         ;;
     MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64)
         TACHYON_ASSET='ty-windows-x64.exe'
-        TACHYON_SHA256='8b8cc73a8407e5397e66d7fab6f3946162847c4b5639d089d0f16af57f3631f8'
+        TACHYON_SHA256='5950bc91fd7eef88e7cd03b9ef4d26ecbdb248eca9a068cb2f45576e91fb6bab'
         EXECUTABLE_SUFFIX='.exe'
         ;;
     *)
@@ -74,5 +74,5 @@ install_binary() {
 mkdir -p "$DESTINATION"
 install_binary 'd31ma/Tachyon' "$TACHYON_VERSION" "$TACHYON_ASSET" "$TACHYON_SHA256" "ty$EXECUTABLE_SUFFIX"
 
-test "$("$DESTINATION/ty$EXECUTABLE_SUFFIX" --version)" = "26.36.01"
+test "$("$DESTINATION/ty$EXECUTABLE_SUFFIX" --version)" = "26.46.02"
 echo "Verified TACHYON in $DESTINATION."

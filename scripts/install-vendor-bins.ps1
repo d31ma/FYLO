@@ -92,9 +92,9 @@ if (-not $Destination) {
 New-Item -ItemType Directory -Force -Path $Destination | Out-Null
 Install-VerifiedGitHubBinary `
     -Repository 'd31ma/Tachyon' `
-    -Version 'v26.36.01' `
+    -Version 'v26.46.02' `
     -Asset 'ty-windows-x64.exe' `
-    -ExpectedSha256 '8b8cc73a8407e5397e66d7fab6f3946162847c4b5639d089d0f16af57f3631f8' `
+    -ExpectedSha256 '5950bc91fd7eef88e7cd03b9ef4d26ecbdb248eca9a068cb2f45576e91fb6bab' `
     -Executable 'ty.exe'
 
 $env:Path = "$Destination;$env:Path"
@@ -102,6 +102,6 @@ if ($env:GITHUB_PATH) {
     Add-Content -Path $env:GITHUB_PATH -Value $Destination
 }
 $tachyonVersion = & (Join-Path $Destination 'ty.exe') --version
-if ($tachyonVersion.Trim() -ne '26.36.01') {
+if ($tachyonVersion.Trim() -ne '26.46.02') {
     throw "Unexpected TACHYON version: $tachyonVersion"
 }

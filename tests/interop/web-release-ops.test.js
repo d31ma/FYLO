@@ -1430,16 +1430,17 @@ describe('web release operations', () => {
         expect(build).toContain("readFile(new URL('../.bun-version'")
         expect(build).toContain("readFile(new URL('../rust-toolchain.toml'")
         expect(build).toContain("'--locked'")
-        expect(vendorInstaller).toContain("TACHYON_VERSION='v26.36.01'")
+        expect(vendorInstaller).toContain("TACHYON_VERSION='v26.46.02'")
         expect(websitePackage.scripts.bundle).toContain('run-site.mjs bundle')
         expect(websitePackage.scripts.bundle).toContain('patch-tachyon-runtime.mjs')
         expect(tachyonPatch).toContain("path.join(web, '.tachyon', 'tac-client.js')")
         expect(tachyonPatch).toContain('refusing to refresh its asset manifest')
         expect(tachyonPatch).toContain('"policy":"network-first"')
         expect(siteRunner).toContain('spawn(TachyonPin.binary(), [')
-        expect(tachyonPin).toMatch(/static COMMIT = '[0-9a-f]{40}'/)
-        expect(tachyonPin).toMatch(/'macos-arm64': '[0-9a-f]{64}'/)
-        expect(tachyonPin).toMatch(/'linux-arm64': '[0-9a-f]{64}'/)
+        expect(tachyonPin).toContain("static VERSION = '26.46.02'")
+        for (const digest of tachyonPin.match(/'[0-9a-f]{64}'/g)) {
+            expect(vendorInstaller).toContain(`TACHYON_SHA256=${digest}`)
+        }
         expect(explorerPackage.scripts.bundle).toContain('@d31ma/tachyon/src/cli/index.js bundle')
         expect(websitePackage.devDependencies?.['@d31ma/tachyon']).toBeUndefined()
         expect(explorerPackage.devDependencies?.['@d31ma/tachyon']).toContain(
