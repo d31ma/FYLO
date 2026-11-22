@@ -43,6 +43,20 @@ impl NativeWriteRoot {
             && (cfg!(any(unix, windows)) || collection.uses_segments())
     }
 
+    /// Whether the collection `collection_name` writes its documents through
+    /// the log, so one log record can hold a whole transaction (ADR 0035
+    /// section 5). A raw-file collection, or a root whose filesystem profile
+    /// keeps no log, answers `false`.
+    ///
+    /// # Errors
+    ///
+    /// `ENATIVE_NOT_FOUND` for a missing collection, or a stable error for an
+    /// invalid name or unsafe storage.
+    pub fn collection_uses_log(&self, collection_name: &str) -> Result<bool, NativeStorageError> {
+        let collection = self.writable_collection(collection_name)?;
+        Ok(self.uses_log(&collection))
+    }
+
     /// Commit one mutation through the collection's write-ahead log.
     ///
     /// `plan` runs under the collection lock and may run more than once when

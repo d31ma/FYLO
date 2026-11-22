@@ -201,11 +201,13 @@ One collection only (ADR 0035 section 5).
 - **Refused inside a transaction** with `ETXNSCOPE` (and the transaction
   rolls back): a write to another collection; queue operations; schema
   operations; `createCollection`, `dropCollection`.
-- **Profiles and layouts:** transactions need the native filesystem profile,
-  whose commit log writes all of a transaction's writes in one log record
-  with one durable flush. The `efs-sidecar-v1` profile, an explicit override
-  under ADR 0033, has no commit log, so `storeTransaction` and
-  `transactionBegin` answer `ETXNLAYOUT` there. Both layouts (files and
+- **Profiles and layouts:** transactions need a document collection whose
+  writes go through the commit log, which writes all of a transaction's
+  writes in one log record with one durable flush. The native filesystem
+  profile always has it. A raw-file collection, or a root whose filesystem
+  profile keeps no commit log (`efs-sidecar-v1`, an explicit override under
+  ADR 0033, until its documents move to the log), answers `ETXNLAYOUT` to
+  `storeTransaction` and `transactionBegin`. Both layouts (files and
   segments) and `.vdbx` databases take transactions.
 
 ## Error codes
@@ -232,7 +234,7 @@ Existing codes keep their meaning. Codes marked "new" enter
 | `ETXNUNKNOWN` (new) | an unknown handle, or one from an ended process | no (begin again) |
 | `ETXNBUSY` (new) | a write waited for another transaction on its collection past the limit | yes |
 | `ETXNLIMIT` (new) | a transaction passes 1,000 writes or 8 MiB | no |
-| `ETXNLAYOUT` (new) | the root's filesystem profile has no commit log (`efs-sidecar-v1`), so it cannot hold a transaction | no |
+| `ETXNLAYOUT` (new) | the collection does not write through a commit log (a raw-file collection, or a filesystem profile without one), so it cannot hold a transaction | no |
 
 `storeExists` on a missing collection answers `false`, not an error, so a
 caller can check without a separate `collectionExists` call.

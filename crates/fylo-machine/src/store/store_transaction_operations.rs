@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use fylo_engine::StorePending;
-use fylo_storage_native::FilesystemProfile;
 use serde_json::{Value, json};
 
 use super::store_batch_write::StoreBatchWrite;
@@ -10,7 +9,7 @@ use super::store_operations::StoreOperations;
 use super::store_request::StoreRequest;
 use super::store_transaction::StoreTransaction;
 use super::store_transactions::StoreTransactions;
-use crate::{MachineError, Session, require_string};
+use crate::{MachineError, Session, require_string, storage_error};
 
 /// One-collection transactions (`api/store/v1`, "Transactions"; ADR 0035
 /// section 5): a batch in one frame, or begin, Store operations with the
@@ -57,7 +56,7 @@ impl Session {
 
     fn transaction_begin(&self, request: &Value) -> Result<Value, MachineError> {
         let store = StoreRequest::parse(request)?;
-        self.store_require_log()?;
+        self.store_require_log(&store)?;
         let timeout = Self::store_timeout(request)?;
         self.store_require_collection(&store)?;
         let mut transactions = self.store_transactions.borrow_mut();
@@ -86,7 +85,7 @@ impl Session {
     /// written.
     fn store_batch(&self, request: &Value) -> Result<Value, MachineError> {
         let store = StoreRequest::parse(request)?;
-        self.store_require_log()?;
+        self.store_require_log(&store)?;
         self.store_refuse_busy("storeSave", store.collection())?;
         let writes = Self::store_batch_writes(request)?;
         let timeout = Duration::from_millis(Self::BATCH_TIMEOUT_MS);
@@ -139,10 +138,15 @@ impl Session {
             .map_err(|error| StoreFailure::engine(&error))
     }
 
-    /// A transaction needs the commit log, which the EFS sidecar profile
-    /// does not keep.
-    fn store_require_log(&self) -> Result<(), MachineError> {
-        if self.filesystem_profile == FilesystemProfile::Native {
+    /// A transaction needs a collection whose documents go through the
+    /// commit log; storage decides which do, so a profile that gains a log
+    /// gains transactions.
+    fn store_require_log(&self, store: &StoreRequest<'_>) -> Result<(), MachineError> {
+        let uses_log = self
+            .writer(store.frame())?
+            .collection_uses_log(store.collection())
+            .map_err(|error| storage_error(&error))?;
+        if uses_log {
             return Ok(());
         }
         Err(StoreFailure::layout())

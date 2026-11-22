@@ -73,7 +73,7 @@ impl StoreFailure {
     pub(crate) fn layout() -> MachineError {
         MachineError::new(
             Self::LAYOUT,
-            "this root's filesystem profile has no commit log, so it cannot hold a transaction",
+            "this collection does not write through a commit log (a raw-file collection, or a filesystem profile without one), so it cannot hold a transaction",
         )
     }
 
