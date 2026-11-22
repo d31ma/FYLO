@@ -483,9 +483,11 @@ Costs:
 
 ## Amendment 1 (2026-11-21): the Windows start time comes from the process handle
 
-- Status: **Accepted** (the user's "Allow it (Rec.)", Q-WIN1, 2026-11-21:
-  one small unsafe Windows function, following ADR 0032's
-  `windows_disks.rs` pattern)
+- Status: **Accepted** (2026-11-21: the user's "Allow it (Rec.)" for one
+  small unsafe Windows function with `OpenProcess` and `GetProcessTimes`,
+  Q-WIN1, following ADR 0032's `windows_disks.rs` pattern; and the user's
+  "Allow it (Rec.)" for the synchronize right and one zero-wait
+  `WaitForSingleObject` in the same function, Q-WIN1b)
 
 On Windows, `process_identity` asked WMI for a process's start time by
 starting PowerShell (`Get-CimInstance Win32_Process`). On the ARM64 Windows
