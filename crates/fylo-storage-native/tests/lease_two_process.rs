@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use fylo_storage_native::layout::{NamespaceName, RootLayout};
 use fylo_storage_native::{
-    CollectionKind, FilesystemProfile, LeaseTiming, NamespaceAdmin, NativeStorageErrorCode,
-    NativeWriteRoot, PutDocumentOptions, RootLease, RootOpenOptions,
+    CollectionKind, CollectionLayout, FilesystemProfile, LeaseTiming, NamespaceAdmin,
+    NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RootLease, RootOpenOptions,
 };
 
 const CHILD: &str = "FYLO_LEASE_TEST_CHILD";
@@ -573,4 +573,37 @@ fn two_processes_own_two_namespaces_of_one_app_at_the_same_time() {
         "ok"
     );
     assert!(!app.join("slice-1").exists());
+}
+
+/// ADR 0033 section 4: a commit-log (segment) collection checks the lease
+/// right before every log append, so a writer whose lease was taken over
+/// appends nothing.
+#[test]
+fn a_taken_over_writer_appends_nothing_to_a_commit_log_collection() {
+    let scratch = Scratch::new("log-fencing");
+    let lease = acquire(&scratch.root).unwrap();
+    let writer = writer(&scratch.root, lease);
+    writer
+        .create_collection_with_layout(
+            ITEMS,
+            CollectionKind::Document,
+            None,
+            Some(CollectionLayout::Segments),
+        )
+        .unwrap();
+    put(&writer, 1).unwrap();
+    let record_path = scratch.folder.join(".db.fylo-root-owner.lock.json");
+    let mut successor = scratch.record();
+    successor["ownerId"] = serde_json::json!("0123456789abcdef0123456789abcdef");
+    successor["generation"] = serde_json::json!(scratch.generation() + 1);
+    fs::write(&record_path, serde_json::to_vec(&successor).unwrap()).unwrap();
+    let refused = put(&writer, 2).unwrap_err();
+    assert_eq!(refused.code(), NativeStorageErrorCode::RootLeaseLost);
+    let ids = fylo_storage_native::NativeRoot::open(&scratch.root)
+        .unwrap()
+        .collection(ITEMS)
+        .unwrap()
+        .document_ids()
+        .unwrap();
+    assert_eq!(ids, [identifier(1)]);
 }

@@ -373,6 +373,10 @@ impl NativeWriteRoot {
             })?,
             lsn,
         };
+        // The fencing check of ADR 0033 section 4, as close to the commit as
+        // the log allows: a process that lost its lease while it waited in
+        // the commit queue stops here with EROOTLEASELOST and appends nothing.
+        self.root.assert_profile_owned()?;
         segment.append(&encoded, 1)?;
         busy.members += 1;
         busy.pending.extend(plan.touched().iter().cloned());
