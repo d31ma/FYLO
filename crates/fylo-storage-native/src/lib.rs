@@ -102,6 +102,13 @@ mod queue;
 mod read_scope;
 mod read_scope_state;
 mod record_attributes;
+#[cfg(not(target_family = "wasm"))]
+#[expect(
+    dead_code,
+    unused_imports,
+    reason = "FYLO-L1-4b and FYLO-PERF1 move the metadata writes onto this module; remove when both call it"
+)]
+mod record_metadata;
 mod root_damage;
 mod root_filesystem;
 mod root_open_options;
