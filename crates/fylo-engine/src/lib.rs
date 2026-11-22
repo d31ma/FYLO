@@ -582,13 +582,11 @@ impl WriteEngine {
         let chain = self.version_chain(collection)?;
         let mut failures = Vec::new();
         let mut failed = 0_usize;
-        for identifier in &identifiers {
-            let stored = match handle.read_document(identifier) {
-                Ok(stored) => stored,
-                // Deleted since it was listed.
-                Err(error) if error.code() == NativeStorageErrorCode::NotFound => continue,
-                Err(error) => return Err(EngineError::storage(error)),
-            };
+        let listed = identifiers
+            .chunks(Self::read_batch(&handle))
+            .map(|batch| Self::listed_documents(&handle, batch))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (identifier, stored) in listed.into_iter().flatten() {
             let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(&stored.bytes) else {
                 return Err(EngineError::new(
                     EngineErrorCode::CorruptData,
@@ -615,6 +613,35 @@ impl WriteEngine {
             "documents": failures,
             "truncated": failed > limit,
         }))
+    }
+
+    /// The documents of `batch` that are still live, read together, with
+    /// their identifiers. A document deleted since it was listed is left
+    /// out: the batch read refuses the whole batch for it, so that batch is
+    /// read again one document at a time.
+    fn listed_documents(
+        handle: &NativeCollection,
+        batch: &[String],
+    ) -> Result<Vec<(String, StoredBytes)>, EngineError> {
+        match handle.read_documents(batch) {
+            Ok(stored) => Ok(batch.iter().cloned().zip(stored).collect()),
+            Err(error) if error.code() == NativeStorageErrorCode::NotFound => batch
+                .iter()
+                .filter_map(|identifier| Self::still_live(handle, identifier).transpose())
+                .collect(),
+            Err(error) => Err(EngineError::storage(error)),
+        }
+    }
+
+    fn still_live(
+        handle: &NativeCollection,
+        identifier: &str,
+    ) -> Result<Option<(String, StoredBytes)>, EngineError> {
+        match handle.read_document(identifier) {
+            Ok(stored) => Ok(Some((identifier.to_owned(), stored))),
+            Err(error) if error.code() == NativeStorageErrorCode::NotFound => Ok(None),
+            Err(error) => Err(EngineError::storage(error)),
+        }
     }
 
     /// `schemaInspect` for one collection.
@@ -1332,6 +1359,45 @@ impl ReadOnlyEngine {
         })
     }
 
+    /// The fields the index is built from, for each document of `batch` as
+    /// stored, read together where the layout allows.
+    fn index_fields(
+        &self,
+        collection: &NativeCollection,
+        batch: &[String],
+    ) -> Result<Vec<Map<String, Value>>, EngineError> {
+        match collection.kind() {
+            CollectionKind::Document => collection
+                .read_documents(batch)
+                .map_err(EngineError::storage)?
+                .into_iter()
+                .map(|stored| self.stored_index_fields(collection, &stored))
+                .collect(),
+            CollectionKind::File => batch
+                .iter()
+                .map(|identifier| {
+                    let stored = collection
+                        .read_raw_file(identifier)
+                        .map_err(EngineError::storage)?;
+                    raw_file_index_fields(identifier, stored)
+                })
+                .collect(),
+        }
+    }
+
+    /// A stored document's fields as the index sees them: as stored, not in
+    /// their head shape, decrypted.
+    fn stored_index_fields(
+        &self,
+        collection: &NativeCollection,
+        stored: &StoredBytes,
+    ) -> Result<Map<String, Value>, EngineError> {
+        let fields = Document::parse(&stored.bytes, DocumentLimits::default())
+            .map_err(|error| EngineError::damaged_document(error, &stored.path))?
+            .into_fields();
+        self.decrypt_fields(collection.name(), fields, None)
+    }
+
     /// The full index check over a listing and index already read.
     fn verify_listing(
         &self,
@@ -1348,29 +1414,11 @@ impl ReadOnlyEngine {
             .map_err(EngineError::encryption)?
             .unwrap_or_default();
         let mut expected = BTreeSet::new();
-        for identifier in live {
-            let fields = match collection.kind() {
-                CollectionKind::Document => {
-                    let stored = collection
-                        .read_document(identifier)
-                        .map_err(EngineError::storage)?;
-                    // The index is built from documents as stored, so it
-                    // is checked against them, not their head shape.
-                    self.decrypt_fields(
-                        collection.name(),
-                        Document::parse(&stored.bytes, DocumentLimits::default())
-                            .map_err(|error| EngineError::damaged_document(error, &stored.path))?
-                            .into_fields(),
-                        None,
-                    )?
-                }
-                CollectionKind::File => {
-                    let stored = collection
-                        .read_raw_file(identifier)
-                        .map_err(EngineError::storage)?;
-                    raw_file_index_fields(identifier, stored)?
-                }
-            };
+        let read = live
+            .chunks(Self::read_batch(collection))
+            .map(|batch| self.index_fields(collection, batch))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (identifier, fields) in live.iter().zip(read.into_iter().flatten()) {
             expected.extend(
                 index_entries_for_document(identifier, &fields, |field, value| {
                     if is_encrypted_field(field, &encrypted_fields) {
