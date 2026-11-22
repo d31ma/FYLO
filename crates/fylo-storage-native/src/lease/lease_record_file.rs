@@ -1,7 +1,7 @@
 use super::lease_record::LeaseRecord;
 use crate::NativeStorageError;
 use fylo_vfs::{File, OpenOptions};
-use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{ErrorKind, Seek, SeekFrom, Write};
 use std::path::Path;
 
 /// The bytes of a lease record on disk, read and written so that a
@@ -21,10 +21,11 @@ pub(super) struct LeaseRecordFile;
 
 impl LeaseRecordFile {
     /// `None` only when no record exists. A link, a folder, an oversized
-    /// file or a failed read gives empty bytes: an unreadable record.
+    /// file or a failed read gives empty bytes: an unreadable record. The
+    /// read itself is `FreshRead`'s.
     pub(super) fn read(path: &Path) -> Option<Vec<u8>> {
-        match Self::open_for_read(path) {
-            Ok(file) => Some(Self::contents(file)),
+        match crate::fresh_read::FreshRead::bytes(path, LeaseRecord::MAXIMUM_BYTES) {
+            Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == ErrorKind::NotFound => None,
             Err(_) => Some(Vec::new()),
         }
@@ -41,38 +42,6 @@ impl LeaseRecordFile {
         crate::sync_handle(&file).map_err(NativeStorageError::io)
     }
 
-    fn contents(mut file: File) -> Vec<u8> {
-        let usable = file.metadata().is_ok_and(|metadata| {
-            metadata.is_file() && metadata.len() <= LeaseRecord::MAXIMUM_BYTES
-        });
-        if !usable {
-            return Vec::new();
-        }
-        Self::uncached(&file);
-        let mut bytes = Vec::new();
-        let read = (&mut file)
-            .take(LeaseRecord::MAXIMUM_BYTES)
-            .read_to_end(&mut bytes);
-        read.map_or_else(|_| Vec::new(), |_| bytes)
-    }
-
-    #[cfg(target_vendor = "apple")]
-    fn uncached(file: &File) {
-        let _ = rustix::fs::fcntl_nocache(file, true);
-    }
-
-    #[cfg(not(target_vendor = "apple"))]
-    fn uncached(_file: &File) {}
-
-    #[cfg(all(unix, not(target_family = "wasm")))]
-    fn open_for_read(path: &Path) -> std::io::Result<File> {
-        use std::os::unix::fs::OpenOptionsExt;
-        OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-    }
-
     #[cfg(all(unix, not(target_family = "wasm")))]
     fn open_for_write(path: &Path) -> std::io::Result<File> {
         use std::os::unix::fs::OpenOptionsExt;
@@ -82,12 +51,6 @@ impl LeaseRecordFile {
             .truncate(false)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)
-    }
-
-    #[cfg(not(all(unix, not(target_family = "wasm"))))]
-    fn open_for_read(path: &Path) -> std::io::Result<File> {
-        Self::refuse_link(path)?;
-        OpenOptions::new().read(true).open(path)
     }
 
     #[cfg(not(all(unix, not(target_family = "wasm"))))]
