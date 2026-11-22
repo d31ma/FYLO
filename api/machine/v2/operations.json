@@ -137,6 +137,11 @@
             "retry": "safe"
         },
         {
+            "name": "verifyRoot",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
             "name": "getFileData",
             "class": "read",
             "retry": "safe"

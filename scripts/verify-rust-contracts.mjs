@@ -65,8 +65,8 @@ assert(
     'response schema protocol version drift'
 )
 assert(
-    schema.$defs.request.properties.op.enum.length === 63,
-    'machine protocol v2 registry must have 63 operations'
+    schema.$defs.request.properties.op.enum.length === 64,
+    'machine protocol v2 registry must have 64 operations'
 )
 // The v1 document operations still answer until slice SDK-10 removes them
 // (ADR 0035), so they must stay implemented and are listed apart.
@@ -74,6 +74,15 @@ const keptOperations = operations.keptUntilSdk10.map(({ name }) => name).sort()
 assert(keptOperations.length === 9, 'nine v1 document operations are kept until SDK-10')
 
 const registeredOperations = operations.operations.map(({ name }) => name).sort()
+// Every v1 operation that stays after SDK-10 is in v2 too (ADR 0035
+// Amendment 3), so a new v1 operation cannot be left out of v2.
+const v1Operations = JSON.parse(await readFile('api/machine/v1/operations.json', 'utf8'))
+for (const { name } of v1Operations.operations) {
+    assert(
+        registeredOperations.includes(name) || keptOperations.includes(name),
+        `v1 operation ${name} is missing from api/machine/v2`
+    )
+}
 assertEqual(
     schema.$defs.request.properties.op.enum.slice().sort(),
     registeredOperations,

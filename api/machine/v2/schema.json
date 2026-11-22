@@ -39,6 +39,7 @@
                         "migrateLayout",
                         "compactCollection",
                         "verifyCollection",
+                        "verifyRoot",
                         "getFileData",
                         "getMeta",
                         "setMeta",
