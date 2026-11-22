@@ -47,6 +47,14 @@ impl TakeoverFixture {
         serde_json::from_slice(&std::fs::read(self.record_path()).unwrap()).unwrap()
     }
 
+    /// The heartbeat counter now, or `None` while the record is being
+    /// replaced (Windows can refuse a read during the rename).
+    fn heartbeat_now(&self) -> Option<u64> {
+        let bytes = std::fs::read(self.record_path()).ok()?;
+        let record = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
+        record["heartbeat"].as_u64()
+    }
+
     fn generation(&self) -> u64 {
         self.record()["generation"].as_u64().unwrap()
     }
@@ -126,9 +134,16 @@ fn the_heartbeat_moves_the_counter_while_the_owner_lives() {
     let fixture = TakeoverFixture::new();
     let lease = fixture.acquire().unwrap();
     let first = fixture.record()["heartbeat"].as_u64().unwrap();
-    std::thread::sleep(TakeoverFixture::HEARTBEAT * 10);
-    let later = fixture.record()["heartbeat"].as_u64().unwrap();
-    assert!(later > first, "heartbeat stayed at {first}");
+    // The first beat can wait for the process start (PowerShell on
+    // Windows), so this waits for the counter instead of a fixed time.
+    let started = Instant::now();
+    while fixture.heartbeat_now().is_none_or(|beat| beat <= first) {
+        assert!(
+            started.elapsed() < TakeoverFixture::LOST_WAIT,
+            "heartbeat stayed at {first}"
+        );
+        std::thread::sleep(TakeoverFixture::HEARTBEAT);
+    }
     lease.assert_owned().unwrap();
 }
 
