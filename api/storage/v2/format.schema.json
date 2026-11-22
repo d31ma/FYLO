@@ -39,6 +39,12 @@
                 "hardLinks": {
                     "description": "false: transaction before-images are copied instead of linked.",
                     "type": "boolean"
+                },
+                "maxAttributeBytes": {
+                    "description": "The largest single extended attribute value the probe could store on an empty file, measured up to 65536 bytes (65536 means at least that). Absent when metadata is sidecar, or for app folders made before FYLO-L1-4b. A value that does not fit, or a record whose values do not fit together, keeps the rest in its .fylo-attrs sidecar file.",
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 65536
                 }
             }
         }

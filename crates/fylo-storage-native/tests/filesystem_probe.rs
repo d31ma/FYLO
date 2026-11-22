@@ -73,7 +73,26 @@ fn a_local_disk_keeps_extended_attributes_and_hard_links() {
 
     let probed = FilesystemProbe::run(&directory.0, None).unwrap();
 
-    assert_eq!(probed, record(MetadataStore::ExtendedAttributes, true));
+    assert_eq!(probed.metadata(), MetadataStore::ExtendedAttributes);
+    assert!(probed.hard_links());
+}
+
+#[test]
+fn a_local_disk_records_the_largest_attribute_value_it_holds() {
+    let directory = Directory::temporary();
+
+    let probed = FilesystemProbe::run(&directory.0, None).unwrap();
+
+    assert!(probed.max_attribute_bytes().unwrap() >= 1024, "{probed:?}");
+}
+
+#[test]
+fn sidecar_storage_records_no_attribute_limit() {
+    let directory = Directory::temporary();
+
+    let probed = FilesystemProbe::run(&directory.0, Some(FilesystemProfile::EfsSidecarV1)).unwrap();
+
+    assert_eq!(probed.max_attribute_bytes(), None);
 }
 
 #[test]
@@ -216,8 +235,8 @@ fn a_new_app_folder_records_the_probe_in_format_json() {
         .unwrap();
 
     assert_eq!(
-        prepared.probe(),
-        record(MetadataStore::ExtendedAttributes, true)
+        prepared.probe().metadata(),
+        MetadataStore::ExtendedAttributes
     );
     assert_eq!(recorded.probe(), prepared.probe());
 }
@@ -259,6 +278,7 @@ fn a_file_system_without_attributes_gets_sidecar_files() {
     let probed = FilesystemProbe::run(&directory.0, None).unwrap();
 
     assert_eq!(probed.metadata(), MetadataStore::SidecarFiles);
+    assert_eq!(probed.max_attribute_bytes(), None);
     assert_eq!(directory.names(), Vec::<String>::new());
 }
 

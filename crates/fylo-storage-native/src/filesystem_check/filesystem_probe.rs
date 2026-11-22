@@ -2,6 +2,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
+use super::attribute_limit::AttributeLimit;
 use super::attribute_test::AttributeTest;
 use super::probe_failure::ProbeFailure;
 use super::probe_files::ProbeFiles;
@@ -43,8 +44,9 @@ impl FilesystemProbe {
         Self::check_rename_over(directory, &mut files)?;
         let attributes = AttributeTest::run(&mut files);
         let metadata = Self::choose_metadata(directory, forced, attributes)?;
+        let attribute_limit = Self::attribute_limit(directory, &mut files, metadata)?;
         let hard_links = Self::hard_links_work(directory, &mut files)?;
-        Ok(ProbeRecord::new(metadata, hard_links))
+        Ok(ProbeRecord::new(metadata, hard_links).with_max_attribute_bytes(attribute_limit))
     }
 
     /// Check, when an app folder is opened for writing, that the way
@@ -191,6 +193,21 @@ impl FilesystemProbe {
                 directory,
                 &error,
             )),
+        }
+    }
+
+    fn attribute_limit(
+        directory: &Path,
+        files: &mut ProbeFiles,
+        metadata: MetadataStore,
+    ) -> Result<Option<u32>, NativeStorageError> {
+        match metadata {
+            MetadataStore::SidecarFiles => Ok(None),
+            MetadataStore::ExtendedAttributes => {
+                AttributeLimit::measure(files).map(Some).map_err(|error| {
+                    ProbeFailure::from_io("measure the largest attribute value", directory, &error)
+                })
+            }
         }
     }
 

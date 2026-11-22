@@ -9,6 +9,8 @@ use super::MetadataStore;
 pub struct ProbeRecord {
     metadata: MetadataStore,
     hard_links: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_attribute_bytes: Option<u32>,
 }
 
 impl ProbeRecord {
@@ -18,7 +20,17 @@ impl ProbeRecord {
         Self {
             metadata,
             hard_links,
+            max_attribute_bytes: None,
         }
+    }
+
+    /// The same result with the largest single extended attribute value the
+    /// probe could store (FYLO-L1-4b). A larger value, or a record whose
+    /// values do not fit together, keeps the rest in its sidecar file.
+    #[must_use]
+    pub const fn with_max_attribute_bytes(mut self, bytes: Option<u32>) -> Self {
+        self.max_attribute_bytes = bytes;
+        self
     }
 
     /// Where record metadata is kept.
@@ -31,6 +43,14 @@ impl ProbeRecord {
     #[must_use]
     pub const fn hard_links(self) -> bool {
         self.hard_links
+    }
+
+    /// The largest single extended attribute value the probe could store,
+    /// measured up to 64 KiB; `None` when it was not measured (sidecar
+    /// storage, or an app folder made before FYLO-L1-4b).
+    #[must_use]
+    pub const fn max_attribute_bytes(self) -> Option<u32> {
+        self.max_attribute_bytes
     }
 }
 
@@ -48,6 +68,23 @@ mod tests {
         );
         assert_eq!(probe.metadata(), MetadataStore::SidecarFiles);
         assert!(!probe.hard_links());
+    }
+
+    #[test]
+    fn the_attribute_limit_is_recorded_when_measured() {
+        let probe = ProbeRecord::new(MetadataStore::ExtendedAttributes, true)
+            .with_max_attribute_bytes(Some(4000));
+        assert_eq!(
+            serde_json::to_string(&probe).unwrap(),
+            r#"{"metadata":"xattr","hardLinks":true,"maxAttributeBytes":4000}"#
+        );
+    }
+
+    #[test]
+    fn a_record_without_the_attribute_limit_still_reads() {
+        let text = r#"{"metadata":"xattr","hardLinks":true}"#;
+        let probe: ProbeRecord = serde_json::from_str(text).unwrap();
+        assert_eq!(probe.max_attribute_bytes(), None);
     }
 
     #[test]

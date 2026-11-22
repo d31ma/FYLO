@@ -1,6 +1,7 @@
 //! The file-system probe that runs once when an app folder is created, and
 //! the small check that runs at every writing open (ADR 0033 section 6).
 
+mod attribute_limit;
 mod attribute_test;
 mod filesystem_probe;
 mod probe_failure;

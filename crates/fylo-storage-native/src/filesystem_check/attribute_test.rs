@@ -20,17 +20,17 @@ impl AttributeTest {
 
     pub(crate) fn run(files: &mut ProbeFiles) -> std::io::Result<()> {
         let (path, file) = files.create_new()?;
-        Self::set(&file, &path)?;
+        Self::set(&file, &path, Self::VALUE)?;
         let value = Self::get(&file, &path)?;
         Self::require_same(value.as_deref())?;
         Self::require_no_apple_double(&path)
     }
 
     #[cfg(unix)]
-    fn set(file: &File, _path: &Path) -> std::io::Result<()> {
+    pub(super) fn set(file: &File, _path: &Path, value: &[u8]) -> std::io::Result<()> {
         use fylo_xattr::FileExt;
 
-        file.set_xattr(Self::ATTRIBUTE, Self::VALUE)
+        file.set_xattr(Self::ATTRIBUTE, value)
     }
 
     #[cfg(unix)]
@@ -41,8 +41,8 @@ impl AttributeTest {
     }
 
     #[cfg(not(unix))]
-    fn set(_file: &File, path: &Path) -> std::io::Result<()> {
-        std::fs::write(Self::stream_of(path), Self::VALUE)
+    pub(super) fn set(_file: &File, path: &Path, value: &[u8]) -> std::io::Result<()> {
+        std::fs::write(Self::stream_of(path), value)
     }
 
     #[cfg(not(unix))]
