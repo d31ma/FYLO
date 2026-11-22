@@ -1,3 +1,84 @@
+:scope {
+    display: contents;
+}
+
+::selection {
+    background: rgba(248, 155, 75, 0.3);
+    color: var(--w-text);
+}
+
+:where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--w-primary);
+    outline-offset: 2px;
+    border-radius: var(--w-radius-sm);
+}
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(248, 155, 75, 0.3) transparent;
+}
+
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: rgba(248, 155, 75, 0.28);
+    background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(248, 155, 75, 0.5);
+    background-clip: content-box;
+}
+
+:is(:where(.hero-actions, .cta-actions, .header-row) .w-btn) {
+    transition:
+        transform 0.18s ease,
+        box-shadow 0.18s ease,
+        border-color 0.18s ease;
+}
+
+:is(:where(.hero-actions, .cta-actions, .header-row) .w-btn-filled) {
+    box-shadow: 0 10px 26px -14px rgba(248, 155, 75, 0.9);
+}
+
+:is(:where(.hero-actions, .cta-actions, .header-row) .w-btn:hover) {
+    transform: translateY(-1px);
+}
+
+:is(:where(.hero-actions, .cta-actions, .header-row) .w-btn-filled:hover) {
+    box-shadow: 0 16px 32px -14px rgba(248, 155, 75, 1);
+}
+
+:is(:where(.hero-actions, .cta-actions, .header-row) .w-btn:active) {
+    transform: translateY(0);
+}
+
+:is(.home-section .home-kicker) {
+    margin: 0 0 0.8rem;
+    color: var(--w-primary);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+:is(.doc-sample-langs .w-btn) {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+@media (hover: none) and (pointer: coarse), (max-width: 599.98px) {
+    :is(.doc-sample-langs .w-btn) {
+            min-width: 44px;
+            min-height: 44px;
+        }
+}
+
 .home-hero {
     padding: clamp(3.5rem, 7vw, 6rem) 1rem clamp(3rem, 6vw, 5rem);
     text-align: center;

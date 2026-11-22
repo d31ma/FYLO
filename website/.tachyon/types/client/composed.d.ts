@@ -1,0 +1,40 @@
+export {};
+
+declare global {
+  type CodeSampleService = import("../../../client/services/CodeSampleService.js").default;
+  const CodeSampleService: typeof import("../../../client/services/CodeSampleService.js").default;
+  type DocumentationBrowserService = import("../../../client/services/DocumentationBrowserService.js").default;
+  const DocumentationBrowserService: typeof import("../../../client/services/DocumentationBrowserService.js").default;
+  type DocumentationBucketsService = import("../../../client/services/DocumentationBucketsService.js").default;
+  const DocumentationBucketsService: typeof import("../../../client/services/DocumentationBucketsService.js").default;
+  type DocumentationCliService = import("../../../client/services/DocumentationCliService.js").default;
+  const DocumentationCliService: typeof import("../../../client/services/DocumentationCliService.js").default;
+  type DocumentationConceptsService = import("../../../client/services/DocumentationConceptsService.js").default;
+  const DocumentationConceptsService: typeof import("../../../client/services/DocumentationConceptsService.js").default;
+  type DocumentationDocumentsService = import("../../../client/services/DocumentationDocumentsService.js").default;
+  const DocumentationDocumentsService: typeof import("../../../client/services/DocumentationDocumentsService.js").default;
+  type DocumentationHomeService = import("../../../client/services/DocumentationHomeService.js").default;
+  const DocumentationHomeService: typeof import("../../../client/services/DocumentationHomeService.js").default;
+  type DocumentationProtocolService = import("../../../client/services/DocumentationProtocolService.js").default;
+  const DocumentationProtocolService: typeof import("../../../client/services/DocumentationProtocolService.js").default;
+  type DocumentationQueryingService = import("../../../client/services/DocumentationQueryingService.js").default;
+  const DocumentationQueryingService: typeof import("../../../client/services/DocumentationQueryingService.js").default;
+  type DocumentationQueueService = import("../../../client/services/DocumentationQueueService.js").default;
+  const DocumentationQueueService: typeof import("../../../client/services/DocumentationQueueService.js").default;
+  type DocumentationRecoveryService = import("../../../client/services/DocumentationRecoveryService.js").default;
+  const DocumentationRecoveryService: typeof import("../../../client/services/DocumentationRecoveryService.js").default;
+  type DocumentationReplicationService = import("../../../client/services/DocumentationReplicationService.js").default;
+  const DocumentationReplicationService: typeof import("../../../client/services/DocumentationReplicationService.js").default;
+  type DocumentationSchemaService = import("../../../client/services/DocumentationSchemaService.js").default;
+  const DocumentationSchemaService: typeof import("../../../client/services/DocumentationSchemaService.js").default;
+  type DocumentationSecurityService = import("../../../client/services/DocumentationSecurityService.js").default;
+  const DocumentationSecurityService: typeof import("../../../client/services/DocumentationSecurityService.js").default;
+  type DocumentationVersioningService = import("../../../client/services/DocumentationVersioningService.js").default;
+  const DocumentationVersioningService: typeof import("../../../client/services/DocumentationVersioningService.js").default;
+  type InstallCommandService = import("../../../client/services/InstallCommandService.js").default;
+  const InstallCommandService: typeof import("../../../client/services/InstallCommandService.js").default;
+  type LanguageService = import("../../../client/services/LanguageService.js").default;
+  const LanguageService: typeof import("../../../client/services/LanguageService.js").default;
+  type OutlineService = import("../../../client/services/OutlineService.js").default;
+  const OutlineService: typeof import("../../../client/services/OutlineService.js").default;
+}

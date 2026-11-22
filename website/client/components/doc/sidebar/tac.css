@@ -1,4 +1,41 @@
-.doc-nav {
+:scope {
+    display: contents;
+}
+
+::selection {
+    background: rgba(248, 155, 75, 0.3);
+    color: var(--w-text);
+}
+
+:where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--w-primary);
+    outline-offset: 2px;
+    border-radius: var(--w-radius-sm);
+}
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(248, 155, 75, 0.3) transparent;
+}
+
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: rgba(248, 155, 75, 0.28);
+    background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(248, 155, 75, 0.5);
+    background-clip: content-box;
+}
+
+:is(.doc-nav) {
     position: sticky;
     top: 56px;
     align-self: start;
@@ -8,11 +45,11 @@
     box-sizing: border-box;
 }
 
-.doc-nav-group + .doc-nav-group {
+:is(.doc-nav-group + .doc-nav-group) {
     margin-top: 1.5rem;
 }
 
-.doc-nav-title {
+:is(.doc-nav-title) {
     margin: 0 0 0.5rem;
     padding-left: 0.75rem;
     font-size: 0.7rem;
@@ -22,7 +59,7 @@
     color: var(--w-text-very-subtle);
 }
 
-.doc-nav-list {
+:is(.doc-nav-list) {
     list-style: none;
     margin: 0;
     padding: 0;
@@ -31,7 +68,7 @@
     gap: 0.1rem;
 }
 
-.doc-nav-list a {
+:is(.doc-nav-list a) {
     display: block;
     padding: 0.4rem 0.75rem;
     border-radius: var(--w-radius-sm);
@@ -44,13 +81,19 @@
         background 0.15s ease;
 }
 
-.doc-nav-list a:hover {
+:is(.doc-nav-list a:hover) {
     color: var(--w-text);
     background: var(--w-surface-container-low);
 }
 
+:is(.doc-nav-list a.active) {
+    color: var(--w-on-primary-container, var(--w-primary));
+    background: var(--w-primary-container);
+    font-weight: 600;
+}
+
 @media (max-width: 899.98px) {
-    .doc-nav {
+    :is(.doc-nav) {
             position: static;
             height: auto;
             max-height: none;
@@ -58,8 +101,10 @@
             min-width: 0;
             border-bottom: 1px solid var(--w-divider);
         }
+}
 
-    .doc-nav-inner {
+@media (max-width: 899.98px) {
+    :is(.doc-nav-inner) {
             display: flex;
             min-width: 0;
             gap: 1.5rem;
@@ -67,25 +112,97 @@
             padding-inline: clamp(1rem, 4vw, 1.5rem);
             scrollbar-width: thin;
         }
+}
 
-    .doc-nav-group {
+@media (max-width: 899.98px) {
+    :is(.doc-nav-group) {
             flex: 0 0 auto;
         }
+}
 
-    .doc-nav-group + .doc-nav-group {
+@media (max-width: 899.98px) {
+    :is(.doc-nav-group + .doc-nav-group) {
             margin-top: 0;
         }
+}
 
-    .doc-nav-list {
+@media (max-width: 899.98px) {
+    :is(.doc-nav-list) {
             flex-direction: row;
             gap: 0.25rem;
         }
+}
 
-    .doc-nav-list a {
+@media (max-width: 899.98px) {
+    :is(.doc-nav-list a) {
             display: inline-flex;
             align-items: center;
             min-width: 44px;
             min-height: 44px;
             white-space: nowrap;
+        }
+}
+
+:is(.scroll-strip) {
+    display: grid;
+    grid-template-columns: 0 minmax(0, 1fr) 0;
+    align-items: center;
+    min-width: 0;
+}
+
+:is(.scroll-strip.has-overflow) {
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+}
+
+:is(.scroll-strip > .doc-nav-inner),
+:is(.scroll-strip > .doc-sample-langs) {
+    grid-column: 2;
+    min-width: 0;
+    margin: 0;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+:is(.strip-arrow) {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--w-radius-sm);
+    background: var(--w-surface-container-low);
+    color: var(--w-primary);
+    font: inherit;
+    font-size: 1.6rem;
+    cursor: pointer;
+}
+
+:is(.has-overflow > .strip-arrow) {
+    display: inline-flex;
+}
+
+:is(.strip-arrow:disabled) {
+    opacity: 0.35;
+    cursor: default;
+}
+
+:is(.strip-arrow:hover:not(:disabled)) {
+    background: var(--w-primary-container);
+}
+
+@media (hover: hover) and (pointer: fine) {
+    :is(.has-overflow > .doc-nav-inner),
+    :is(.has-overflow > .doc-sample-langs) {
+            cursor: grab;
+            user-select: none;
+        }
+}
+
+@media (hover: hover) and (pointer: fine) {
+    :is(.scroll-strip > .is-dragging),
+    :is(.scroll-strip > .is-dragging *) {
+            cursor: grabbing;
         }
 }

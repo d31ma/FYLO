@@ -1,4 +1,4 @@
-html {
+:root {
     --w-primary: #f89b4b;
     --w-on-primary: #1c1206;
     --w-primary-container: rgba(248, 155, 75, 0.16);
@@ -52,9 +52,9 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
     *,
-    *::before,
-    *::after {
-        transition-duration: 0.01ms !important;
-        animation-duration: 0.01ms !important;
-    }
+        *::before,
+        *::after {
+            transition-duration: 0.01ms !important;
+            animation-duration: 0.01ms !important;
+        }
 }

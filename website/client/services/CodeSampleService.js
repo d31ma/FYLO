@@ -2,10 +2,9 @@ import { sampleCode } from '/shared/scripts/samples.js'
 
 /** @import LanguageService from '/services/LanguageService.js' */
 @Service
-@Lifetime({"value":"prototype"})
+@NeedsAll
 export default class CodeSampleService {
     /** @type {LanguageService} */
-    @Needs
     language
 
     /** @type {string} */

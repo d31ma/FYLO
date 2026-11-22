@@ -1,3 +1,46 @@
+:scope {
+    display: contents;
+}
+
+::selection {
+    background: rgba(248, 155, 75, 0.3);
+    color: var(--w-text);
+}
+
+:where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--w-primary);
+    outline-offset: 2px;
+    border-radius: var(--w-radius-sm);
+}
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(248, 155, 75, 0.3) transparent;
+}
+
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: rgba(248, 155, 75, 0.28);
+    background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(248, 155, 75, 0.5);
+    background-clip: content-box;
+}
+
+:is(.footer-rule) {
+    height: 1px;
+    margin: 2rem 0 1.25rem;
+    background: var(--w-divider);
+}
+
 .site-footer {
     display: block;
     /* Sections already end on their own padding; 4rem on top of that left a
@@ -101,10 +144,4 @@
         min-width: 44px;
         min-height: 44px;
     }
-}
-
-.footer-rule {
-    height: 1px;
-    margin: 2rem 0 1.25rem;
-    background: var(--w-divider);
 }

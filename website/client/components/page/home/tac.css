@@ -1,0 +1,40 @@
+:scope {
+    display: contents;
+}
+
+::selection {
+    background: rgba(248, 155, 75, 0.3);
+    color: var(--w-text);
+}
+
+:where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--w-primary);
+    outline-offset: 2px;
+    border-radius: var(--w-radius-sm);
+}
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(248, 155, 75, 0.3) transparent;
+}
+
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: rgba(248, 155, 75, 0.28);
+    background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(248, 155, 75, 0.5);
+    background-clip: content-box;
+}
+
+:is(.home-main) {
+    min-height: calc(100vh - 56px);
+}

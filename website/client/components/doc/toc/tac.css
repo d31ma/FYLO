@@ -1,4 +1,41 @@
-.doc-toc {
+:scope {
+    display: contents;
+}
+
+::selection {
+    background: rgba(248, 155, 75, 0.3);
+    color: var(--w-text);
+}
+
+:where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--w-primary);
+    outline-offset: 2px;
+    border-radius: var(--w-radius-sm);
+}
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(248, 155, 75, 0.3) transparent;
+}
+
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: rgba(248, 155, 75, 0.28);
+    background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(248, 155, 75, 0.5);
+    background-clip: content-box;
+}
+
+:is(.doc-toc) {
     position: sticky;
     top: 56px;
     align-self: start;
@@ -8,7 +45,7 @@
     box-sizing: border-box;
 }
 
-.doc-toc-title {
+:is(.doc-toc-title) {
     margin: 0 0 0.6rem;
     color: var(--w-text-very-subtle);
     font-size: 0.7rem;
@@ -17,13 +54,13 @@
     text-transform: uppercase;
 }
 
-.doc-toc-list {
+:is(.doc-toc-list) {
     display: flex;
     flex-direction: column;
     border-left: 1px solid var(--w-divider);
 }
 
-.doc-toc-list a {
+:is(.doc-toc-list a) {
     margin-left: -1px;
     padding: 0.35rem 0 0.35rem 0.8rem;
     border-left: 2px solid transparent;
@@ -33,18 +70,18 @@
     text-decoration: none;
 }
 
-.doc-toc-list a:hover,
-.doc-toc-list a:focus-visible {
+:is(.doc-toc-list a:hover),
+:is(.doc-toc-list a:focus-visible) {
     border-left-color: var(--w-primary);
     color: var(--w-primary);
 }
 
-.doc-toc[hidden] {
+:is(.doc-toc[hidden]) {
     display: none;
 }
 
 @media (max-width: 1199.98px) {
-    .doc-toc {
+    :is(.doc-toc) {
             display: none;
         }
 }

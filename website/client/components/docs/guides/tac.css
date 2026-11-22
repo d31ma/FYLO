@@ -1,8 +1,82 @@
-.guide-row {
+:scope {
+    display: contents;
+}
+
+::selection {
+    background: rgba(248, 155, 75, 0.3);
+    color: var(--w-text);
+}
+
+:where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--w-primary);
+    outline-offset: 2px;
+    border-radius: var(--w-radius-sm);
+}
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(248, 155, 75, 0.3) transparent;
+}
+
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: rgba(248, 155, 75, 0.28);
+    background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(248, 155, 75, 0.5);
+    background-clip: content-box;
+}
+
+:is(.doc-section) {
+    max-width: 54rem;
+    margin: 0 0 2.75rem;
+    scroll-margin-top: 5rem;
+}
+
+:is(.doc-section--wide) {
+    max-width: none;
+}
+
+:is(.doc-section h2) {
+    margin: 0 0 0.85rem;
+    font-size: 1.3rem;
+    letter-spacing: -0.015em;
+}
+
+:is(.doc-section h3) {
+    margin: 1.75rem 0 0.6rem;
+    font-size: 1.02rem;
+}
+
+:is(.doc-section p),
+:is(.doc-section li) {
+    color: var(--w-text-subtle);
+    line-height: 1.78;
+    overflow-wrap: break-word;
+    text-wrap: pretty;
+}
+
+:is(.doc-section p) {
+    margin: 0 0 1rem;
+}
+
+:is(.doc-section a:not(.w-btn)) {
+    color: var(--w-primary);
+}
+
+:is(.guide-row) {
     row-gap: var(--w-space-6);
 }
 
-.guide-card {
+:is(.guide-card) {
     display: block;
     height: 100%;
     padding: 1.25rem;
@@ -16,31 +90,31 @@
         box-shadow 0.2s ease;
 }
 
-.guide-card:hover {
+:is(.guide-card:hover) {
     transform: translateY(-3px);
     border-color: rgba(248, 155, 75, 0.38);
     box-shadow: 0 22px 44px -28px rgba(0, 0, 0, 0.9);
 }
 
-.guide-card h3 {
+:is(.guide-card h3) {
     margin: 0 0 0.45rem;
     font-size: 1rem;
     letter-spacing: -0.01em;
 }
 
-.guide-card p {
+:is(.guide-card p) {
     margin: 0;
     color: var(--w-text-subtle);
     font-size: 0.89rem;
     line-height: 1.65;
 }
 
-.guide-arrow {
+:is(.guide-arrow) {
     display: inline-block;
     color: var(--w-primary);
     transition: transform 0.2s ease;
 }
 
-.guide-card:hover .guide-arrow {
+:is(.guide-card:hover .guide-arrow) {
     transform: translateX(3px);
 }

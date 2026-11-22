@@ -42,6 +42,12 @@
                 "kind": "foundation"
             }
         },
+        "cache": [
+            {
+                "path": "/*",
+                "policy": "network-first"
+            }
+        ],
         "metadata": {
             "defaults": {
                 "siteName": "FYLO",
