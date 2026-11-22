@@ -228,8 +228,14 @@ impl SidecarAttributes {
 
     fn binding_bytes(record: [&str; 3], checksum: &str) -> Result<Vec<u8>, NativeStorageError> {
         let [kind_folder, collection, identifier] = record;
-        serde_json::to_vec(&[IDENTITY_FORMAT, kind_folder, collection, identifier, checksum])
-            .map_err(|_| corrupt())
+        serde_json::to_vec(&[
+            IDENTITY_FORMAT,
+            kind_folder,
+            collection,
+            identifier,
+            checksum,
+        ])
+        .map_err(|_| corrupt())
     }
 
     /// The manifest a write-ahead log step writes for a document: `record`
