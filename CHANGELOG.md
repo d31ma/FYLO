@@ -74,6 +74,17 @@
 
 ### Changed
 
+- **The website builds with TACHYON 26.46 (develop).** The site moved from
+  `tac.config.js` to `website/client/manifest.json` (TACHYON ADR 0052). Its
+  page and component scripts became services (ADR 0029, 0030), and shared
+  styles that are not colors, fonts or resets moved into the components that
+  use them. Every route looks and reads the same (checked by comparing
+  computed styles and text at 1280 and 390 pixels). The site build pins
+  TACHYON develop `d8332172` in `scripts/tachyon-pin.mjs` until the
+  coordinated TACHYON release. Components that no page used (FAQ, docs
+  content, code showcase, architecture, call-to-action and stats) were
+  removed. The site CSP allows TACHYON's two inline runtime scripts by hash.
+
 - **`inspectCollection` reads no document (FYLO-CR1).** Its `indexedDocs`
   now comes from the collection's listing and its index, read once each, as
   the full index check counts it: the same number in every case, including a

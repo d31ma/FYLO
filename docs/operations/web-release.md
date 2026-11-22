@@ -23,17 +23,27 @@ the configured media type and content or binary marker, so an SPA fallback or st
 directory triggers automatic rollback instead of being promoted as current.
 
 Web builds are reproducible only with the repository-pinned toolchains: Bun is read from
-`.bun-version` (and mirrored by each `packageManager` field), Rust and the Wasm target are read from
-`rust-toolchain.toml`, and the Rust-native TACHYON `ty` binary is pinned to v26.33.01 with a
-repository-anchored SHA-256 digest in `scripts/install-vendor-bins.sh` and its PowerShell peer.
-`build-browser.mjs` rejects a different Bun version, installs the exact Rust toolchain through
-rustup, and builds the locked Cargo dependency graph. The marketing/docs site uses the verified
-`ty` asset. Its bundle step then applies the fail-closed, v26.33.01-specific
-`scripts/patch-tachyon-runtime.mjs` ownership guard to generated nested-island expressions and
-injects the shared browser entry once per HTML route. The patch refuses an unfamiliar runtime;
-remove it when the pinned compiler contains the upstream fix. Explorer remains on its
-commit-pinned compatibility compiler because its dynamic structural templates and component
-pub/sub are outside the 26.33.01 Rust compiler contract.
+`.bun-version` (and mirrored by each `packageManager` field), and Rust and the Wasm target are read
+from `rust-toolchain.toml`. `build-browser.mjs` rejects a different Bun version, installs the exact
+Rust toolchain through rustup, and builds the locked Cargo dependency graph.
+
+The marketing/docs site is built with the Rust-native TACHYON `ty`. Until the coordinated
+TACHYON release, the site pins a TACHYON `develop` build by commit and SHA-256 in
+`scripts/tachyon-pin.mjs` (commit `d8332172`, ty 26.46.02). `scripts/run-site.mjs` uses
+`TAC_BIN` when it is set; otherwise it takes the pinned build from
+`~/Developer/AnvilTargets/tachyon-develop/<commit>/ty/<platform>/ty` (or `TACHYON_DEVELOP_ROOT`)
+and refuses a file with another checksum. `scripts/install-vendor-bins.sh` and its PowerShell peer
+still install the released v26.36.01 for GitHub Actions; that release cannot build the current
+site. At the coordinated TACHYON release, move both pins to the released `ty` in one change.
+
+The site's configuration is `website/client/manifest.json` (TACHYON ADR 0052). Its bundle step
+fingerprints `/shared/assets/` URLs. Then `scripts/patch-tachyon-runtime.mjs` checks that the
+service worker is the verified, network-first worker (the `tac.cache` rule in the manifest),
+rewrites the worker's file hashes for the final bytes, and rewrites any `.br` or `.gz` copy whose
+file changed. It refuses an unfamiliar worker. The site's Content Security Policy allows TACHYON's
+two inline runtime scripts (view-transition error handling and speculation rules) by their SHA-256
+hashes. A TACHYON change to either script changes its hash; the release tests then fail until the
+policy is updated. Explorer stays on its commit-pinned JavaScript compatibility compiler.
 
 ## One-time AWS setup
 
