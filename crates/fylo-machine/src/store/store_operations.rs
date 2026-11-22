@@ -70,7 +70,9 @@ impl Session {
         let before = StoreView::new(self.engine(store.frame())?, &nothing);
         let outcome = self.store_outcome(operation, store, &before)?;
         self.store_write(store, outcome.change())?;
-        let after = StoreView::new(self.engine(store.frame())?, &nothing);
+        // The hot set is cleared only around the frame, so a read-back inside
+        // it would still find the document as it was before the write.
+        let after = StoreView::new(self.open_engine(store.frame())?, &nothing);
         outcome.answer(&after, store)
     }
 
