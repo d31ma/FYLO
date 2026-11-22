@@ -8,7 +8,9 @@ use std::time::Instant;
 
 use fylo_engine::{ReadOnlyEngine, WriteEngine};
 use fylo_query::{QueryLimits, StructuredQuery};
-use fylo_storage_native::{CollectionKind, CollectionLayout, DocumentWrite, NativeWriteRoot};
+use fylo_storage_native::{
+    CollectionKind, CollectionLayout, DocumentWrite, NativeWriteRoot, SegmentReadLog,
+};
 use serde_json::{Map, Value, json};
 
 struct Bench(PathBuf);
@@ -108,11 +110,15 @@ impl Bench {
     }
 
     fn timed<T: std::fmt::Debug>(name: &str, step: impl FnOnce() -> T) {
+        SegmentReadLog::start();
         let started = Instant::now();
         let result = step();
+        let seconds = started.elapsed().as_secs_f64();
+        let log = SegmentReadLog::finish();
         println!(
-            "=== {name}: {:.3} s ({result:?})",
-            started.elapsed().as_secs_f64()
+            "=== {name}: {seconds:.3} s, {} entries and {} frames decoded ({result:?})",
+            log.entries_decoded(),
+            log.frames_decoded()
         );
     }
 }
