@@ -18,11 +18,13 @@ mod extended_attributes;
 mod extended_attributes;
 #[cfg(target_os = "ios")]
 mod sized_read;
+mod value_too_large;
 
 #[cfg(target_os = "ios")]
 pub use attribute_file::FileExt;
 #[cfg(target_os = "ios")]
 pub use attribute_names::AttributeNames;
 pub use extended_attributes::ExtendedAttributes;
+pub use value_too_large::ValueTooLarge;
 #[cfg(all(unix, not(target_os = "ios")))]
 pub use xattr::FileExt;

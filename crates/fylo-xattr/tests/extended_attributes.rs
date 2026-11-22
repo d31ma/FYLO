@@ -8,7 +8,7 @@
 use std::fs::{self, File};
 use std::path::PathBuf;
 
-use fylo_xattr::{ExtendedAttributes, FileExt};
+use fylo_xattr::{ExtendedAttributes, FileExt, ValueTooLarge};
 
 struct Scratch(PathBuf);
 
@@ -93,16 +93,22 @@ fn an_empty_value_reads_back_empty_and_a_missing_one_as_none() {
 }
 
 #[test]
-fn a_value_larger_than_four_kibibytes_reads_back_whole() {
+fn a_value_larger_than_four_kibibytes_reads_back_whole_or_is_refused_as_too_large() {
     let scratch = Scratch::new("large");
     let path = scratch.file();
     let value = vec![b'x'; 8 * 1024];
 
-    ExtendedAttributes::set(&path, "user.fylo.meta.note", &value).unwrap();
+    let outcome = ExtendedAttributes::set(&path, "user.fylo.meta.note", &value);
 
+    assert!(
+        outcome
+            .as_ref()
+            .map_or_else(ValueTooLarge::matches, |()| true),
+        "{outcome:?}"
+    );
     assert_eq!(
         ExtendedAttributes::get(&path, "user.fylo.meta.note").unwrap(),
-        Some(value)
+        outcome.ok().map(|()| value)
     );
 }
 
