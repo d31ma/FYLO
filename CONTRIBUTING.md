@@ -213,6 +213,23 @@ to another folder.
 | Laptops and GitHub runners (Linux, macOS) | a sparse ext4 or APFS image the script makes on a disk that is not the boot disk (GitHub Linux: `/mnt`) | `scripts/ci/test-disk.sh make --folder <dir> --mount <dir>`, then `scripts/ci/test-disk.sh run --mount <dir> -- <command>` |
 | Laptops and GitHub runners (Windows) | a dynamically expanding VHDX on a disk other than the Windows disk (GitHub: `D:`) | `scripts/ci/test-disk.ps1 -Action Make -Folder D:\fylo-test -Letter T`, then `-Action Run -Letter T -Script <file.ps1>` |
 
+The Linux lane builds in a Docker volume per owner,
+`fylo-linux-lane-build-<owner>` (the owner is `--owner`, else
+`FYLO_TEST_OWNER` or `MAC_HEAVY_OWNER`, else the worktree's folder name;
+`FYLO_LINUX_BUILD_VOLUME` names another volume). It extracts the sources
+with fresh modification times, so cargo never reuses crates that another
+worktree built from other sources. Until 2026-11-22 all owners shared one
+volume, `fylo-linux-lane-build`, which could give a run another worktree's
+crates. `scripts/ci/linux-lane.sh --owner <name> --show-volumes` prints the
+volumes a run uses. Remove a finished owner's volume, and the old shared one,
+with Colima running (inside `mac-heavy --vm=colima`):
+
+```bash
+source ~/.local/share/tachyon-ci/docker-linux/colima-env.zsh
+docker volume ls --filter name=fylo-linux-lane-build
+docker volume rm fylo-linux-lane-build fylo-linux-lane-build-<owner>
+```
+
 `make` refuses a folder on the boot disk, on HAVEN or ATLAS (production
 volumes), and the build Mac's lane folders (`/Volumes/HANGAR/fylo-test`,
 `/Volumes/HANGAR/test-disks`). On Linux it needs `sudo` for the loop mount.
