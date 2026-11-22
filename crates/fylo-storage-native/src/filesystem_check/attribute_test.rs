@@ -12,7 +12,10 @@ use super::probe_files::ProbeFiles;
 pub(crate) struct AttributeTest;
 
 impl AttributeTest {
+    #[cfg(unix)]
     const ATTRIBUTE: &'static str = "user.fylo.probe";
+    #[cfg(not(unix))]
+    const STREAM: &'static str = ":fylo.probe";
     const VALUE: &'static [u8] = b"fylo";
 
     pub(crate) fn run(files: &mut ProbeFiles) -> std::io::Result<()> {
@@ -50,7 +53,7 @@ impl AttributeTest {
     #[cfg(not(unix))]
     fn stream_of(path: &Path) -> PathBuf {
         let mut stream = std::ffi::OsString::from(path.as_os_str());
-        stream.push(":fylo.probe");
+        stream.push(Self::STREAM);
         PathBuf::from(stream)
     }
 

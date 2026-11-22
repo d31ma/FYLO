@@ -449,7 +449,8 @@ fn network_roots_are_never_admitted_by_the_opt_out_or_app_mode() {
 /// Opt-in: every folder in `FYLO_TEST_DATA_DISK_ROOTS` is the mount point
 /// of a local disk that is not the system disk (on this Mac: the FYLO test
 /// image on HANGAR). A root directly below it is admitted as a data disk,
-/// and the handshake names the mount point.
+/// and the handshake names the mount point. While the mount-point rule is
+/// off (until slice L1-5), a root one folder deeper is admitted too.
 #[test]
 fn data_disk_roots_are_admitted_and_report_their_volume() {
     for base in Place::listed(Place::DATA_DISK_ROOTS) {
@@ -471,6 +472,18 @@ fn data_disk_roots_are_admitted_and_report_their_volume() {
         );
         assert_eq!(frames[1]["ok"], true, "{} {}", base.display(), frames[1]);
         assert!(!stderr.contains(Place::WARNING), "{stderr}");
+        let deeper = Place::under(&mount);
+        let (frames, _) = Place::exec_loop(
+            place.loop_command(&deeper.path("root"), &[]),
+            &[Place::handshake(), Place::create_collection()],
+        );
+        assert_eq!(
+            Place::lock(&frames[0])["placement"],
+            "dataDisk",
+            "{}",
+            frames[0]
+        );
+        assert_eq!(frames[1]["ok"], true, "{}", frames[1]);
     }
 }
 
