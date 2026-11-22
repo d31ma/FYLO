@@ -1,7 +1,5 @@
-const TITLE = 'Serverless queue — FYLO'
-document.title = TITLE
-
-export default class {
+@Service
+export default class DocumentationQueueService {
     layoutCode = `<root>/.fylo-queue/v1/
   manifest.json
   receipt-key.json

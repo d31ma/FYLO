@@ -1,7 +1,5 @@
-const TITLE = 'Version control — FYLO'
-document.title = TITLE
-
-export default class {
+@Service
+export default class DocumentationVersioningService {
     cliCode = `fylo checkout -b feature/docs --root /mnt/fylo
 fylo commit -m "snapshot feature docs" --root /mnt/fylo
 fylo branch --root /mnt/fylo

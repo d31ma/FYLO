@@ -14,13 +14,13 @@
             directory per collection. Any directory there containing a <code>manifest.json</code> is
             auto-created as a collection when the database opens.
         </p>
-        <pre class="code-block"><code>{layoutCode}</code></pre>
-        <pre class="code-block"><code>{manifestCode}</code></pre>
+        <pre class="code-block"><code>{documentationSchemas.layoutCode}</code></pre>
+        <pre class="code-block"><code>{documentationSchemas.manifestCode}</code></pre>
         <p>
             Schemas are chex regex schemas — a field name mapped to a pattern the value must match.
             A trailing <code>?</code> on a field name makes it optional.
         </p>
-        <pre class="code-block"><code>{schemaCode}</code></pre>
+        <pre class="code-block"><code>{documentationSchemas.schemaCode}</code></pre>
     </div>
 
     <div class="doc-section">
@@ -32,12 +32,12 @@
             chains the step files along the manifest history, so a v1 document written two years ago
             is materialized in v3 shape without ever being rewritten on disk.
         </p>
-        <pre class="code-block"><code>{migrationCode}</code></pre>
+        <pre class="code-block"><code>{documentationSchemas.migrationCode}</code></pre>
         <p>
             Each step has exactly one operation key, whose value is the field it works on as a
             slash-separated path, plus that operation's parameters:
         </p>
-        <pre class="code-block"><code>{stepsCode}</code></pre>
+        <pre class="code-block"><code>{documentationSchemas.stepsCode}</code></pre>
         <p>
             A step whose source field is missing does nothing, except <code>set</code>,
             <code>template</code> and <code>slugify</code>, which always write their field. A field
@@ -122,7 +122,7 @@
             head schema before it is written. Without it, schemas still drive migrations and
             encryption registration but do not gate writes.
         </p>
-        <pre class="code-block"><code>{cliCode}</code></pre>
+        <pre class="code-block"><code>{documentationSchemas.cliCode}</code></pre>
         <p>
             <code>schema doctor</code> is the readiness check: it reports a manifest that disagrees
             with the files on disk, a missing migration in the chain, or a schema that the data

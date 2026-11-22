@@ -14,7 +14,7 @@
             immutable, claims are durable before their receipts are returned, and each consumer
             group advances independently.
         </p>
-        <pre class="code-block"><code>{layoutCode}</code></pre>
+        <pre class="code-block"><code>{documentationQueue.layoutCode}</code></pre>
         <div class="doc-note doc-note--warn">
             <p>
                 Serverless does not mean distributed multi-writer storage. FYLO still permits one
@@ -86,7 +86,7 @@
             a trusted diagnostic reason. Delivery is at least once, so every handler must be
             idempotent.
         </p>
-        <pre class="code-block"><code>{directCode}</code></pre>
+        <pre class="code-block"><code>{documentationQueue.directCode}</code></pre>
         <p>
             Automatic consumers and general application code should persist a generic failure
             reason. Exception text can contain credentials or payload data and must not be copied
@@ -103,9 +103,9 @@
             <code>claimed</code>, <code>acknowledged</code>, <code>retried</code>, and
             <code>deadLettered</code> counts instead of hiding an infinite poll loop.
         </p>
-        <pre class="code-block"><code>{decoratorCode}</code></pre>
+        <pre class="code-block"><code>{documentationQueue.decoratorCode}</code></pre>
         <p>Python exposes the same lifecycle as a native decorator:</p>
-        <pre class="code-block"><code>{pythonCode}</code></pre>
+        <pre class="code-block"><code>{documentationQueue.pythonCode}</code></pre>
         <div class="doc-table-wrap">
             <table class="doc-table">
                 <thead>

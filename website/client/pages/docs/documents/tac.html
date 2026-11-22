@@ -31,7 +31,7 @@
             its <code>deletedAt</code>, and it is made read-only (<code>0444</code>). Soft-deleted
             documents are excluded from ordinary queries.
         </p>
-        <pre class="code-block"><code>{restoreCode}</code></pre>
+        <pre class="code-block"><code>{documentationDocuments.restoreCode}</code></pre>
         <p>
             <code>restore</code> preserves the TTID, moves the payload back, restores writable
             permissions (<code>0644</code>), rebuilds its index entries, and records the restoration
@@ -45,7 +45,7 @@
         <p>
             Scalars, nested objects, and arrays of scalars. Not an array of objects, at any depth.
         </p>
-        <pre class="code-block"><code>{rejectCode}</code></pre>
+        <pre class="code-block"><code>{documentationDocuments.rejectCode}</code></pre>
         <p>
             The rejection is deterministic and happens before any disk work, so it leaves no partial
             state, and it applies equally to <code>putData</code>, <code>batchPutData</code>,
@@ -65,7 +65,7 @@
             Windows; browser document collections use a durable OPFS sidecar with identical
             semantics.
         </p>
-        <pre class="code-block"><code>{metaCode}</code></pre>
+        <pre class="code-block"><code>{documentationDocuments.metaCode}</code></pre>
         <p>
             Every record includes <code>id</code>, <code>mtime</code>, <code>updatedAt</code>, and
             <code>createdAt</code>; raw files also include their stored file descriptor. Canonical
@@ -87,7 +87,7 @@
                 or merge policy.
             </p>
         </div>
-        <pre class="code-block"><code>{metaMachineCode}</code></pre>
+        <pre class="code-block"><code>{documentationDocuments.metaMachineCode}</code></pre>
         <p>
             On filesystem-backed JSON documents metadata is per-version, because a
             <code>patch</code> writes a new version file. The low-level helpers
@@ -103,7 +103,7 @@
             covering every document it touched, instead of one commit per document. Prefer them over
             a loop of single writes for any real ingest.
         </p>
-        <pre class="code-block"><code>{batchCode}</code></pre>
+        <pre class="code-block"><code>{documentationDocuments.batchCode}</code></pre>
         <div class="doc-note doc-note--warn">
             <p>
                 <code>import</code> from a URL is for trusted sources. Its SSRF guard blocks private

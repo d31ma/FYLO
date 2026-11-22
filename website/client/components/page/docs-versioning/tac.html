@@ -9,7 +9,7 @@
 
     <div class="doc-section">
         <h2>The commands</h2>
-        <pre class="code-block"><code>{cliCode}</code></pre>
+        <pre class="code-block"><code>{documentationVersioning.cliCode}</code></pre>
         <p>
             <code>status</code> and <code>diff</code> compare document payloads only (<code
                 >docs/</code
@@ -44,7 +44,7 @@
             deduplicated blob, so commits share unchanged bytes across history and branches instead
             of copying whole collections. Object hashes are verified before any restore or merge.
         </p>
-        <pre class="code-block"><code>{layoutCode}</code></pre>
+        <pre class="code-block"><code>{documentationVersioning.layoutCode}</code></pre>
         <p>
             <code>main</code> uses the root <code>.collections</code> tree. Other branches use
             hidden working trees under <code>.fylo-vcs/branches/</code>, so

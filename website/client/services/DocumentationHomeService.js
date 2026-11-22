@@ -1,7 +1,5 @@
-const TITLE = 'Docs — FYLO'
-document.title = TITLE
-
-export default class {
+@Service
+export default class DocumentationHomeService {
     installCode = `# macOS / Linux
 curl -fsSL https://fylo.del.ma/install.sh | sh
 

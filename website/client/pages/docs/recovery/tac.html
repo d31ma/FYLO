@@ -15,7 +15,7 @@
             data files directly — FYLO cannot see writes it did not make.
         </p>
         <docs-sample topic="rebuild" hydrate="load" />
-        <pre class="code-block"><code>{rebuildCliCode}</code></pre>
+        <pre class="code-block"><code>{documentationRecovery.rebuildCliCode}</code></pre>
         <p>
             A rebuild does not repair bucket files whose xattrs were stripped by a copy tool: a
             file's key and metadata live only in its xattrs, so restore such files from version
@@ -29,7 +29,7 @@
             Ordinary collection writes use a logical journal kept outside the collection tree, so it
             is never mistaken for a document, indexed, or versioned.
         </p>
-        <pre class="code-block"><code>{journalCode}</code></pre>
+        <pre class="code-block"><code>{documentationRecovery.journalCode}</code></pre>
         <p>
             If a process dies <em>before</em> the commit marker, recovery restores document bytes,
             file modes, mtimes, xattrs, and the event-journal offset, then rebuilds the derived
@@ -48,7 +48,7 @@
     <div class="doc-section">
         <h2>Reading the state</h2>
         <p>Inspect a collection without opening journal files by hand:</p>
-        <pre class="code-block"><code>{statusCode}</code></pre>
+        <pre class="code-block"><code>{documentationRecovery.statusCode}</code></pre>
         <p>
             <code>state</code> and <code>generation</code> come from the durable
             collection-generation record; <code>transactionId</code> is also present while that

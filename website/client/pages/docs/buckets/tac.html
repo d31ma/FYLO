@@ -26,7 +26,7 @@
             <code>file</code> field, through its raw <code>request</code> method, and reads it with
             <code>getFileData</code> the same way — see <a href="/docs/clients">Language clients</a>.
         </p>
-        <pre class="code-block"><code>{basicCode}</code></pre>
+        <pre class="code-block"><code>{documentationBuckets.basicCode}</code></pre>
         <p>
             <code>getDoc</code> answers a bucket with the manifest and no bytes.
             <code>getFileData</code> returns the content — base64 inline, or written to an absolute
@@ -34,7 +34,7 @@
             versioned: read through the operation, not the path.
         </p>
         <p>FYLO stores the bytes unchanged:</p>
-        <pre class="code-block"><code>{pathCode}</code></pre>
+        <pre class="code-block"><code>{documentationBuckets.pathCode}</code></pre>
         <p>
             The metadata it derives — <code>name</code>, <code>key</code>, <code>extension</code>,
             <code>contentType</code>, <code>contentLength</code>, <code>etag</code>,
@@ -59,7 +59,7 @@
             UTF-8 bytes, and cannot contain backslashes, control characters, or <code>.</code> /
             <code>..</code> segments.
         </p>
-        <pre class="code-block"><code>{keysCode}</code></pre>
+        <pre class="code-block"><code>{documentationBuckets.keysCode}</code></pre>
         <p>
             Without a key, a file gets <code>/</code> followed by its source file name; a supplied
             key is stored exactly as given. FYLO does not make keys unique, so pick unique keys in
@@ -83,13 +83,13 @@
             active and soft-deleted, freshens matching stamps, and reports mismatches without
             touching the corrupt file's original claim.
         </p>
-        <pre class="code-block"><code>{verifyCode}</code></pre>
+        <pre class="code-block"><code>{documentationBuckets.verifyCode}</code></pre>
         <p>
             The audit reads every byte, so it is slow by design — run it as a scheduled job, never
             per request. The CLI equivalent exits non-zero when corruption is found, so a cron line
             is a complete weekly audit:
         </p>
-        <pre class="code-block"><code>{cronCode}</code></pre>
+        <pre class="code-block"><code>{documentationBuckets.cronCode}</code></pre>
     </div>
 
     <div class="doc-section">
@@ -99,9 +99,9 @@
             bulk-edit it with <code>setMeta</code> (<code>null</code> removes an entry), and read it
             with <code>getMeta</code>.
         </p>
-        <pre class="code-block"><code>{metaCode}</code></pre>
+        <pre class="code-block"><code>{documentationBuckets.metaCode}</code></pre>
         <p>On buckets, metadata is indexed under <code>meta/</code>, so it can be queried — including numerically.</p>
-        <pre class="code-block"><code>{metaQueryCode}</code></pre>
+        <pre class="code-block"><code>{documentationBuckets.metaQueryCode}</code></pre>
         <p>
             Metadata survives soft delete, restore, and version-control restore. A file's key and
             metadata live only in its xattrs, so copy a store only with a tool that preserves
@@ -118,7 +118,7 @@
             512 MiB limit. The machine request behind <code>putFile</code> takes a tagged absolute
             path (or <code>url</code>) with an optional <code>key</code>:
         </p>
-        <pre class="code-block"><code>{machineCode}</code></pre>
+        <pre class="code-block"><code>{documentationBuckets.machineCode}</code></pre>
     </div>
 
     <div class="doc-pager">

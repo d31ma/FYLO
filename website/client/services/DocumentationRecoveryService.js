@@ -1,7 +1,5 @@
-const TITLE = 'Recovery & rebuild — FYLO'
-document.title = TITLE
-
-export default class {
+@Service
+export default class DocumentationRecoveryService {
     rebuildCliCode = `fylo rebuild posts --root /mnt/fylo --json`
 
     statusCode = `const status = await fylo.recoveryStatus('posts')

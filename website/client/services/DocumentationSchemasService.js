@@ -1,7 +1,5 @@
-const TITLE = 'Schemas & migrations — FYLO'
-document.title = TITLE
-
-export default class {
+@Service
+export default class DocumentationSchemasService {
     layoutCode = `<fylo.schema>/
   <collection>/
     manifest.json          # { current, versions: [{ v, sha256?, addedAt? }] }

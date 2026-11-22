@@ -1,7 +1,5 @@
-const TITLE = 'CLI reference — FYLO'
-document.title = TITLE
-
-export default class {
+@Service
+export default class DocumentationCliService {
     queryCode = `fylo "SELECT * FROM posts WHERE published = true"
 fylo sql "SELECT * FROM posts" --page-size 25
 fylo sql "EXPLAIN SELECT * FROM posts WHERE published = true" --root /mnt/fylo`
@@ -13,7 +11,7 @@ fylo get     posts 4UUB32VGUDW --root /mnt/fylo --json
 fylo deleted posts   --root /mnt/fylo --json
 fylo restore posts 4UUB32VGUDW --root /mnt/fylo --json`
 
-    vcsCode = `fylo checkout -b feature/docs --root /mnt/fylo
+    versionControlCode = `fylo checkout -b feature/docs --root /mnt/fylo
 fylo commit -m "snapshot feature docs" --root /mnt/fylo
 fylo branch --root /mnt/fylo
 fylo log    --root /mnt/fylo

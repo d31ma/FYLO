@@ -1,7 +1,5 @@
-const TITLE = 'Buckets & raw files — FYLO'
-document.title = TITLE
-
-export default class {
+@Service
+export default class DocumentationBucketsService {
     basicCode = `import { Fylo } from './fylo.mjs'
 
 const db = new Fylo('/mnt/fylo')

@@ -1,7 +1,5 @@
-const TITLE = 'Documents & metadata — FYLO'
-document.title = TITLE
-
-export default class {
+@Service
+export default class DocumentationDocumentsService {
     restoreCode = `const deleted = {}
 for await (const doc of db.users.find
     .deleted({ $deleted: { $gte: Date.parse('2026-05-01T00:00:00Z') } })

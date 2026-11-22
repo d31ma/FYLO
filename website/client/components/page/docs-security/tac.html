@@ -14,7 +14,7 @@
             Equality queries still work through HMAC blind indexes, so a lookup never has to
             decrypt.
         </p>
-        <pre class="code-block"><code>{schemaCode}</code></pre>
+        <pre class="code-block"><code>{documentationSecurity.schemaCode}</code></pre>
         <p>
             Nested fields use a <strong>slash-separated</strong> path
             (<code>payload/verifier</code>), matching the index field-path format. A dotted path
@@ -63,14 +63,14 @@
             <code>keychain:com.example.app</code>. A protected <code>.vdbx</code> database is
             created by an admin identity, and that admin becomes the database's trust anchor.
         </p>
-        <pre class="code-block"><code>{identityCode}</code></pre>
+        <pre class="code-block"><code>{documentationSecurity.identityCode}</code></pre>
         <p>
             The admin grants other identities <code>read</code>, <code>write</code>, or
             <code>admin</code> on the whole database or on one collection. Each grant is a new
             policy version, signed by the admin. Reads use per-collection keys wrapped for each
             granted identity, and every write is signed by the identity that made it.
         </p>
-        <pre class="code-block"><code>{grantCode}</code></pre>
+        <pre class="code-block"><code>{documentationSecurity.grantCode}</code></pre>
         <p>
             A process opens the database as one identity, with <code>--identity</code>,
             <code>FYLO_IDENTITY</code>, or <code>fylo.identity</code>, and pins the admin with
@@ -78,7 +78,7 @@
             <code>fylo.trustAnchor</code>. Binary-backed shims pass these settings to the
             <code>fylo</code> process they start:
         </p>
-        <pre class="code-block"><code>{configCode}</code></pre>
+        <pre class="code-block"><code>{documentationSecurity.configCode}</code></pre>
         <div class="doc-note doc-note--warn">
             <p>
                 FYLO does not authenticate end users. Your application checks who the user is;
@@ -93,7 +93,7 @@
             move an existing root, list what changes with <code>fylo access report</code>, then
             copy it into a protected database with <code>fylo pack --protect</code>:
         </p>
-        <pre class="code-block"><code>{migrateCode}</code></pre>
+        <pre class="code-block"><code>{documentationSecurity.migrateCode}</code></pre>
     </div>
 
     <div class="doc-pager">

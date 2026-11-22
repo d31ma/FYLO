@@ -13,12 +13,12 @@
             A bare argument is treated as SQL, so the shortest useful invocation is the statement
             itself.
         </p>
-        <pre class="code-block"><code>{queryCode}</code></pre>
+        <pre class="code-block"><code>{documentationCli.queryCode}</code></pre>
     </div>
 
     <div class="doc-section">
         <h2>Collections</h2>
-        <pre class="code-block"><code>{adminCode}</code></pre>
+        <pre class="code-block"><code>{documentationCli.adminCode}</code></pre>
         <p>
             <code>verify</code> exits non-zero when it finds corruption, which makes it a complete
             cron job on its own — see <a href="/docs/buckets">Buckets & raw files</a>.
@@ -27,7 +27,7 @@
 
     <div class="doc-section">
         <h2>Version control</h2>
-        <pre class="code-block"><code>{vcsCode}</code></pre>
+        <pre class="code-block"><code>{documentationCli.versionControlCode}</code></pre>
         <p>
             <code>status</code> and <code>diff</code> compare document payloads only, so rebuilt
             indexes and mtime-only changes never show up as noise.
@@ -38,12 +38,12 @@
 
     <div class="doc-section">
         <h2>Schemas</h2>
-        <pre class="code-block"><code>{schemaCode}</code></pre>
+        <pre class="code-block"><code>{documentationCli.schemaCode}</code></pre>
     </div>
 
     <div class="doc-section">
         <h2>Filesystem snapshot and restore</h2>
-        <pre class="code-block"><code>{recoveryCode}</code></pre>
+        <pre class="code-block"><code>{documentationCli.recoveryCode}</code></pre>
         <p>
             FYLO has no built-in object-storage client. Snapshot tooling must preserve native
             metadata, and restore always targets a new directory rather than merging into a live
@@ -58,7 +58,7 @@
             <code>fylo exec</code> is the interface every non-JavaScript client uses. It reads one
             JSON request and writes one JSON response, or holds a persistent NDJSON loop.
         </p>
-        <pre class="code-block"><code>{execCode}</code></pre>
+        <pre class="code-block"><code>{documentationCli.execCode}</code></pre>
         <p>
             The framing contract, cursor rules, and the exclusive root lease are documented on
             <a href="/docs/protocol">Machine protocol</a>.
@@ -67,7 +67,7 @@
 
     <div class="doc-section">
         <h2>Identity</h2>
-        <pre class="code-block"><code>{versionCode}</code></pre>
+        <pre class="code-block"><code>{documentationCli.versionCode}</code></pre>
         <p>
             <code>version --output json</code> and the <code>handshake</code> operation share one
             stable identity payload: FYLO runtime and protocol versions, the immutable release

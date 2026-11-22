@@ -103,9 +103,9 @@
                 <a href="/docs/clients">Language clients</a>.
             </p>
         </div>
-        <pre class="code-block"><code>{explainCode}</code></pre>
+        <pre class="code-block"><code>{documentationQuerying.explainCode}</code></pre>
         <p>The CLI accepts the same syntax:</p>
-        <pre class="code-block"><code>{cliSqlCode}</code></pre>
+        <pre class="code-block"><code>{documentationQuerying.cliSqlCode}</code></pre>
     </div>
 
     <div class="doc-section">
@@ -115,7 +115,7 @@
             <code>findDeletedDocs</code> support bounded continuation on a persistent loop, so a
             large result never has to fit in one response frame.
         </p>
-        <pre class="code-block"><code>{pageCode}</code></pre>
+        <pre class="code-block"><code>{documentationQuerying.pageCode}</code></pre>
         <p>
             The result is <code>items</code>, <code>nextCursor</code>, and <code>page</code>. The
             first request materializes an immutable, disk-backed process-scoped snapshot ordered by
@@ -142,7 +142,7 @@
             <code>queryFromSearch</code> in <code>src/query/postgrest.js</code>
             translates it into an ordinary query.
         </p>
-        <pre class="code-block"><code>{postgrestCode}</code></pre>
+        <pre class="code-block"><code>{documentationQuerying.postgrestCode}</code></pre>
     </div>
 
     <div class="doc-pager">

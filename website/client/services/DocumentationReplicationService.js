@@ -1,7 +1,5 @@
-const TITLE = 'Backup & sync — FYLO'
-document.title = TITLE
-
-export default class {
+@Service
+export default class DocumentationReplicationService {
     hooksCode = `const fylo = new Fylo('/mnt/fylo', {
     syncMode: 'fire-and-forget',
     sync: {

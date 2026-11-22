@@ -1,7 +1,5 @@
-const TITLE = 'Browser & Explorer — FYLO'
-document.title = TITLE
-
-export default class {
+@Service
+export default class DocumentationBrowserService {
     loaderCode =
         `<script src="https://d31ma.github.io/FYLO/version/26.45.07/fylo.js"></` + `script>`
 
@@ -17,7 +15,7 @@ const doc = await db.users.latest(id)`
     wasmCode = `const db = createBrowserClient({ storage: 'opfs', worker: true, wasm: true })
 await db.ready()`
 
-    fsaCode = `const handle = await showDirectoryPicker({ mode: 'readwrite' })
+    fileSystemAccessCode = `const handle = await showDirectoryPicker({ mode: 'readwrite' })
 
 const db = createBrowserClient({
     storage: { type: 'fsa', handle, access: 'readwrite' },

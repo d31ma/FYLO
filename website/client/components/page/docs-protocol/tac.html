@@ -9,8 +9,8 @@
 
     <div class="doc-section">
         <h2>A request</h2>
-        <pre class="code-block"><code>{requestCode}</code></pre>
-        <pre class="code-block"><code>{responseCode}</code></pre>
+        <pre class="code-block"><code>{documentationProtocol.requestCode}</code></pre>
+        <pre class="code-block"><code>{documentationProtocol.responseCode}</code></pre>
         <p>
             Every response carries <code>protocolVersion</code>, <code>ok</code>, the
             <code>op</code> it answered, and <code>durationMs</code>. A successful response carries
@@ -26,7 +26,7 @@
             discover its framing contract. A handshake is side-effect-free: it does not create the
             configured root or initialize a collection.
         </p>
-        <pre class="code-block"><code>{handshakeCode}</code></pre>
+        <pre class="code-block"><code>{documentationProtocol.handshakeCode}</code></pre>
         <p>
             It reports FYLO runtime and protocol versions, the immutable release commit and build
             target, required CHEX and TTID versions with their current availability, effective frame
@@ -128,14 +128,14 @@
             <code>.fylo-queue/v1</code>. A claim is durable before its receipt is returned; workers
             acknowledge with that receipt or the message becomes visible after its lease.
         </p>
-        <pre class="code-block"><code>{queueCode}</code></pre>
+        <pre class="code-block"><code>{documentationProtocol.queueCode}</code></pre>
         <p>
             Every native SDK shim also provides a consumer decorator, annotation, or callable
             wrapper. A decorated invocation processes one bounded batch, acknowledges successful
             handlers, and negative-acknowledges failures—appropriate for a serverless function
             invocation without hiding an infinite poll loop.
         </p>
-        <pre class="code-block"><code>{queueDecoratorCode}</code></pre>
+        <pre class="code-block"><code>{documentationProtocol.queueDecoratorCode}</code></pre>
         <p>
             Delivery is at least once. Publish retries are idempotent only with the same topic,
             payload, and <code>idempotencyKey</code>. Topic and consumer-group names are limited to
@@ -166,7 +166,7 @@
             may lower or raise them, up to 64 MiB, then confirm the effective values in the
             handshake.
         </p>
-        <pre class="code-block"><code>{framesCode}</code></pre>
+        <pre class="code-block"><code>{documentationProtocol.framesCode}</code></pre>
         <p>
             FYLO uses a fixed-capacity input buffer. It rejects invalid UTF-8
             (<code>EFRAME_UTF8</code>), malformed JSON (<code>EFRAME_JSON</code>), duplicate object
@@ -191,7 +191,7 @@
             <code>findDocs</code> and <code>findDeletedDocs</code> support bounded continuation on a
             persistent loop.
         </p>
-        <pre class="code-block"><code>{pageCode}</code></pre>
+        <pre class="code-block"><code>{documentationProtocol.pageCode}</code></pre>
         <p>
             The result is <code>items</code>, <code>nextCursor</code>, and <code>page</code>. The
             first request materializes an immutable, process-scoped snapshot ordered by TTID binary
@@ -214,7 +214,7 @@
             Long-lived supervisors that require exactly one authoritative process can take a
             root-wide lease.
         </p>
-        <pre class="code-block"><code>{leaseCode}</code></pre>
+        <pre class="code-block"><code>{documentationProtocol.leaseCode}</code></pre>
         <p>
             FYLO canonicalizes the root, acquires a non-blocking kernel file lock before it reads
             stdin, and holds it for the whole loop lifetime. A competing process receives

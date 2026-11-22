@@ -1,33 +1,5 @@
-const TITLE = 'Machine protocol — FYLO'
-document.title = TITLE
-
-export default class {
-    ops = [
-        { group: 'Session', items: 'handshake' },
-        {
-            group: 'Collections',
-            items: 'createCollection, dropCollection, inspectCollection, rebuildCollection, reshardCollection, verifyCollection'
-        },
-        {
-            group: 'Documents',
-            items: 'getDoc, getFileData, getLatest, putData, batchPutData, patchDoc, patchDocs, delDoc, delDocs, restoreDoc, importBulkData'
-        },
-        { group: 'Metadata', items: 'getMeta, setMeta' },
-        { group: 'Queries', items: 'findDocs, findDeletedDocs, changes, joinDocs, executeSQL' },
-        {
-            group: 'Version control',
-            items: 'checkout, branch, commit, log, status, diff, restoreCommit, merge'
-        },
-        {
-            group: 'Schemas',
-            items: 'schemaInspect, schemaCurrent, schemaHistory, schemaDoctor, schemaValidate, schemaMaterialize, schemaMode, schemaCheck, schemaMigrate, schemaPush, schemaPull'
-        },
-        {
-            group: 'Serverless queue',
-            items: 'queuePublish, queueClaim, queueAck, queueNack, queueExtend, queueStats, queueDeadLetters'
-        }
-    ]
-
+@Service
+export default class DocumentationProtocolService {
     requestCode = `echo '{"op":"inspectCollection","root":"/mnt/fylo","collection":"posts"}' | fylo exec --request -`
 
     responseCode = `{

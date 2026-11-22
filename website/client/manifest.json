@@ -1,0 +1,99 @@
+{
+    "name": "FYLO",
+    "short_name": "FYLO",
+    "description": "Filesystem-first document store. Query the files you already own.",
+    "start_url": "/",
+    "scope": "/",
+    "display": "standalone",
+    "icons": [
+        {
+            "src": "/shared/assets/fylo-mark.svg",
+            "sizes": "any",
+            "type": "image/svg+xml"
+        }
+    ],
+    "tac": {
+        "origin": "https://fylo.del.ma",
+        "names": {
+            "words": [
+                "postgrest"
+            ]
+        },
+        "application": {
+            "id": "ma.del.fylo.website",
+            "version": "26.45.7"
+        },
+        "styles": [
+            "/shared/assets/duvay/duvay.min.css",
+            "/shared/assets/site.css"
+        ],
+        "metadata": {
+            "defaults": {
+                "siteName": "FYLO",
+                "image": "/shared/assets/fylo-mark.svg"
+            },
+            "routes": {
+                "/": {
+                    "title": "FYLO — Query the files you already own."
+                },
+                "/docs": {
+                    "title": "Docs — FYLO"
+                },
+                "/docs/browser": {
+                    "title": "Browser & Explorer — FYLO"
+                },
+                "/docs/buckets": {
+                    "title": "Buckets & raw files — FYLO"
+                },
+                "/docs/cli": {
+                    "title": "CLI reference — FYLO"
+                },
+                "/docs/clients": {
+                    "title": "Language clients — FYLO"
+                },
+                "/docs/concepts": {
+                    "title": "Concepts — FYLO"
+                },
+                "/docs/documents": {
+                    "title": "Documents & metadata — FYLO"
+                },
+                "/docs/errors": {
+                    "title": "Error codes — FYLO"
+                },
+                "/docs/limitations": {
+                    "title": "Limitations — FYLO"
+                },
+                "/docs/operations": {
+                    "title": "Native configuration — FYLO"
+                },
+                "/docs/protocol": {
+                    "title": "Machine protocol — FYLO"
+                },
+                "/docs/querying": {
+                    "title": "Querying & SQL — FYLO"
+                },
+                "/docs/queue": {
+                    "title": "Serverless queue — FYLO"
+                },
+                "/docs/recovery": {
+                    "title": "Recovery & rebuild — FYLO"
+                },
+                "/docs/replication": {
+                    "title": "Backup & sync — FYLO"
+                },
+                "/docs/schemas": {
+                    "title": "Schemas & migrations — FYLO"
+                },
+                "/docs/security": {
+                    "title": "Encryption & access — FYLO"
+                },
+                "/docs/versioning": {
+                    "title": "Version control — FYLO"
+                },
+                "/download": {
+                    "title": "Download — FYLO"
+                }
+            }
+        }
+    }
+}

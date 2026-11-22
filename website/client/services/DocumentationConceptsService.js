@@ -1,7 +1,5 @@
-const TITLE = 'Concepts — FYLO'
-document.title = TITLE
-
-export default class {
+@Service
+export default class DocumentationConceptsService {
     keyCode = `name/f/alice/4UUB32VGUDW      # forward prefix   — LIKE 'ali%'
 name/r/ecila/4UUB32VGUDW      # reversed prefix  — LIKE '%ice'
 age/n/c03e000000000000/4UUB…  # sortable numeric — range queries

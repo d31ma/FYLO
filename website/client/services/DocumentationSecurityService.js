@@ -1,7 +1,5 @@
-const TITLE = 'Encryption & access — FYLO'
-document.title = TITLE
-
-export default class {
+@Service
+export default class DocumentationSecurityService {
     schemaCode = `{
     "$encrypted": ["ssn", "email", "payload/verifier"],
     "id": "^[0-9]+$",

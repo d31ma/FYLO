@@ -1,7 +1,5 @@
-const TITLE = 'Querying & SQL — FYLO'
-document.title = TITLE
-
-export default class {
+@Service
+export default class DocumentationQueryingService {
     explainCode = `const plan = await db.executeSQL(
     "EXPLAIN SELECT * FROM posts WHERE title = 'Hello'"
 )

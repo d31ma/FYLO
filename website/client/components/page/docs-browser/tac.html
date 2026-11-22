@@ -10,8 +10,8 @@
     <div class="doc-section">
         <h2>Loading the engine</h2>
         <p>Add the version-pinned loader to the document head:</p>
-        <pre class="code-block"><code>{loaderCode}</code></pre>
-        <pre class="code-block"><code>{useCode}</code></pre>
+        <pre class="code-block"><code>{documentationBrowser.loaderCode}</code></pre>
+        <pre class="code-block"><code>{documentationBrowser.useCode}</code></pre>
         <p>
             Use the <code>version/latest/</code> path to track the newest successful release. Direct
             ESM consumers can import <code>fylo-web.mjs</code> from the same pinned directory
@@ -82,7 +82,7 @@
             JavaScript applies live WAL additions and removals, falling back automatically if the
             module cannot load.
         </p>
-        <pre class="code-block"><code>{wasmCode}</code></pre>
+        <pre class="code-block"><code>{documentationBrowser.wasmCode}</code></pre>
         <p>
             Build the adjacent assets with <code>bun run build:web:wasm</code>. Pass
             <code>wasm</code> an object with a <code>url</code> to override the module location.
@@ -98,7 +98,7 @@
             Chromium can mount a user-selected FYLO root directly through the File System Access
             API, so the browser reads the same directory the CLI writes.
         </p>
-        <pre class="code-block"><code>{fsaCode}</code></pre>
+        <pre class="code-block"><code>{documentationBrowser.fileSystemAccessCode}</code></pre>
         <p>
             Set <code>access: 'overlay'</code> for read-only exploration: reads fall through to the
             selected directory while generated indexes, journals, and other writes stay in memory.
@@ -112,7 +112,7 @@
             Explorer is a browser UI over a real FYLO root on your disk — no server, no protocol.
             Pick the root once in the OS dialog and later visits reopen it automatically.
         </p>
-        <pre class="code-block"><code>{explorerCode}</code></pre>
+        <pre class="code-block"><code>{documentationBrowser.explorerCode}</code></pre>
         <ul>
             <li>
                 <strong>Read-only by default.</strong> Reads go straight to the folder; the engine's
@@ -152,7 +152,7 @@
             <code>fylo-explorer-&lt;CalVer&gt;.zip</code>. Extract it into the root of a static host
             — <code>index.html</code> is at the ZIP root.
         </p>
-        <pre class="code-block"><code>{zipCode}</code></pre>
+        <pre class="code-block"><code>{documentationBrowser.zipCode}</code></pre>
         <p>
             Production hosts should use a dedicated HTTPS origin, serve the extracted tree at
             <code>/</code>, and preserve the generated MIME types — especially

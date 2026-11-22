@@ -85,7 +85,7 @@
             field path, kind, value, document ID — held in a sorted snapshot file that is
             memory-mapped for binary search, plus an append-only WAL that is compacted at 1 MiB.
         </p>
-        <pre class="code-block"><code>{keyCode}</code></pre>
+        <pre class="code-block"><code>{documentationConcepts.keyCode}</code></pre>
         <p>
             The index is always local and always derived. No remote store is in the query path. If
             the index drifts — because a process wrote data files directly, or a copy tool dropped
@@ -101,7 +101,7 @@
             records, and the next even <em>stable</em> generation after it commits. Readers
             materialize against one stable generation and retry if it changes underneath them.
         </p>
-        <pre class="code-block"><code>{generationCode}</code></pre>
+        <pre class="code-block"><code>{documentationConcepts.generationCode}</code></pre>
         <p>
             A <code>writing</code> state with no transaction in flight, or a
             <code>corrupt</code> state, is an operator incident — see
