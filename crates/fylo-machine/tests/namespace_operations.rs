@@ -4,7 +4,7 @@
 use std::io::Cursor;
 use std::path::PathBuf;
 
-use fylo_machine::{ApplicationConfig, FrameLimits, serve_application};
+use fylo_machine::{ApplicationConfig, FrameLimits, NamespaceSeparation, serve_application};
 use serde_json::{Value, json};
 
 struct Drive {
@@ -13,6 +13,8 @@ struct Drive {
 
 impl Drive {
     fn new() -> Self {
+        // These tests cover the namespace code itself, ahead of slice L1-5.
+        NamespaceSeparation::enable_for_tests();
         let folder = fylo_test_support::TestFolder::path().join(format!(
             "fylo-namespace-ops-{}-{}",
             std::process::id(),

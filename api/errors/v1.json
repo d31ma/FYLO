@@ -106,6 +106,10 @@
             "retryable": false
         },
         {
+            "code": "ENAMESPACEUNSUPPORTED",
+            "retryable": false
+        },
+        {
             "code": "EFSPROBE",
             "retryable": false
         },

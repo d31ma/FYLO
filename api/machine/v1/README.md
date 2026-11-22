@@ -54,9 +54,17 @@ with a letter or digit; Windows device names and FYLO's reserved words are
 refused. A bad name fails the frame with `ENAMESPACE` (not retryable) before
 the operation runs; a value that is not a string fails with `EBADREQUEST`.
 Until the layout release the engine stores every collection in the root's
-existing layout, so the field is checked but does not yet select a folder.
+existing layout, so a second namespace would share the default namespace's
+data. So any namespace other than `public`, in the field or as the session
+default, fails the frame with `ENAMESPACEUNSUPPORTED` (not retryable) before
+the operation runs, with the message "namespaces are not yet supported in this
+build; namespace separation arrives with the FYLO layout release (L1-5)".
 
 ### Creating, listing and dropping namespaces
+
+Until the layout release these three operations are refused with
+`ENAMESPACEUNSUPPORTED` too, so nobody believes a namespace exists. The text
+below describes them as they work once namespaces are switched on.
 
 These three operations work on the app folder the request's `root` names (or
 the session's root), in the layout of ADR 0033: `<drive>/<app>/<namespace>`.

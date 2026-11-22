@@ -188,13 +188,20 @@
   `{"collections":[...]}` with the document and file collection names,
   sorted. Both work on folder roots and `.vdbx` databases. The machine
   registry now has 59 operations.
-- **Namespaces (ADR 0033 sections 3 and 4, slice L1-3b).** New machine
-  operations `createNamespace`, `listNamespaces` and `dropNamespace` (with
-  `cascade`), and the CLI `fylo namespace create|drop|list [<name>] --root
-  <drive>/<app> [--cascade]`, on app folders in the new layout. A drop
-  fails with `EROOTLOCKED` while another process owns the namespace. New
-  stable codes `ENAMESPACEEXISTS` and `ENAMESPACENOTEMPTY`. Rust callers can
-  own one namespace with `RootLease::acquire_namespace`.
+- **Namespaces are refused until the layout release (slice L1-3b).** Until
+  slice L1-5 namespaces do not keep data apart, so any namespace other than
+  `public` (the request field `namespace`, `fylo exec --namespace`, and the
+  new operations below) fails with the new stable code
+  `ENAMESPACEUNSUPPORTED` before anything is written.
+- **Namespaces, built and switched off (ADR 0033 sections 3 and 4, slice
+  L1-3b).** New machine operations `createNamespace`, `listNamespaces` and
+  `dropNamespace` (with `cascade`), and the CLI `fylo namespace
+  create|drop|list [<name>] --root <drive>/<app> [--cascade]`, on app
+  folders in the new layout. A drop fails with `EROOTLOCKED` while another
+  process owns the namespace. New stable codes `ENAMESPACEEXISTS` and
+  `ENAMESPACENOTEMPTY`. Rust callers can own one namespace with
+  `RootLease::acquire_namespace`. All of it answers `ENAMESPACEUNSUPPORTED`
+  until L1-5 switches namespaces on.
 - **Heartbeat lease and storage-crash checks (ADR 0033 section 4, slice
   L1-3).** The root lease beats every 5 s and is taken over after 20 s
   without a beat (`FYLO_LEASE_HEARTBEAT_SECONDS`,

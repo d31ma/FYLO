@@ -3788,6 +3788,9 @@ pub enum NativeStorageErrorCode {
     /// A namespace to drop still holds collections and the drop did not
     /// ask for `cascade` (ADR 0033 section 3).
     NamespaceNotEmpty,
+    /// A namespace other than `public` before namespaces keep data apart
+    /// (ADR 0033 section 3; slice L1-5 turns them on).
+    NamespaceUnsupported,
 }
 
 impl NativeStorageErrorCode {
@@ -3832,6 +3835,7 @@ impl NativeStorageErrorCode {
             Self::NotFyloRoot => "ENOTFYLOROOT",
             Self::NamespaceExists => "ENAMESPACEEXISTS",
             Self::NamespaceNotEmpty => "ENAMESPACENOTEMPTY",
+            Self::NamespaceUnsupported => "ENAMESPACEUNSUPPORTED",
         }
     }
 }
@@ -3845,6 +3849,17 @@ pub struct NativeStorageError {
 }
 
 impl NativeStorageError {
+    /// Namespaces other than `public` are refused until slice L1-5 makes
+    /// them keep data apart. The message is the planned limit, with no
+    /// version in it.
+    #[must_use]
+    pub fn namespace_unsupported() -> Self {
+        Self::new(
+            NativeStorageErrorCode::NamespaceUnsupported,
+            "namespaces are not yet supported in this build; namespace separation arrives with the FYLO layout release (L1-5)",
+        )
+    }
+
     /// A [`DocumentCodec`] refused a body. Reported as a malformed document;
     /// a codec that needs its own error code keeps it beside the call.
     #[must_use]

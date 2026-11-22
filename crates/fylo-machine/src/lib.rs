@@ -11,6 +11,7 @@ mod frame_session;
 mod handshake_identity;
 mod invocation_options;
 mod invocation_runtime;
+mod namespace_separation;
 mod request_frame;
 mod request_namespace;
 mod session_temp_cache;
@@ -54,6 +55,7 @@ use serde_json::{Value, json};
 pub use fylo_storage_native::layout::NamespaceName;
 use fylo_storage_native::layout::RootLayout;
 pub use fylo_storage_native::{DatabaseKey, RootConfig, parse_shard_width};
+pub use namespace_separation::NamespaceSeparation;
 pub use strict::StrictValue;
 
 /// Protocol major version implemented by this crate.
@@ -1744,6 +1746,7 @@ impl Session {
     /// These operations use the new layout directly and never open the
     /// app folder as a folder root of the layout before ADR 0033.
     fn create_namespace(&self, request: &Value) -> Result<Value, MachineError> {
+        NamespaceSeparation::require_enabled()?;
         let layout = self.app_layout(request)?;
         let namespace = Self::named_namespace(request)?;
         let folder = NamespaceAdmin::create_namespace(&layout, &namespace, RUNTIME_VERSION, None)
@@ -1754,6 +1757,7 @@ impl Session {
     /// Drop the namespace a request names; `cascade: true` also deletes its
     /// collections. Fails with `EROOTLOCKED` while another process owns it.
     fn drop_namespace(&self, request: &Value) -> Result<Value, MachineError> {
+        NamespaceSeparation::require_enabled()?;
         let layout = self.app_layout(request)?;
         let namespace = Self::named_namespace(request)?;
         let cascade = request.get("cascade").and_then(Value::as_bool) == Some(true);
@@ -1769,6 +1773,7 @@ impl Session {
     }
 
     fn list_namespaces(&self, request: &Value) -> Result<Value, MachineError> {
+        NamespaceSeparation::require_enabled()?;
         let layout = self.app_layout(request)?;
         let names =
             NamespaceAdmin::list_namespaces(&layout).map_err(|error| storage_error(&error))?;

@@ -26,6 +26,13 @@ rustls.workspace = true
 
 [dev-dependencies]
 fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
+# The tests turn namespace separation on with `NamespaceSeparation::enable_for_tests`.
+fylo-machine = { version = "0.1.0", path = ".", features = ["test-support"] }
+
+[features]
+# Hooks for tests only, such as turning namespace separation on before
+# slice L1-5 does.
+test-support = []
 
 [lints]
 workspace = true

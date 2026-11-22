@@ -1,9 +1,13 @@
 use std::io::Cursor;
 
-use fylo_machine::{ApplicationConfig, FrameLimits, NamespaceName, serve_application};
+use fylo_machine::{
+    ApplicationConfig, FrameLimits, NamespaceName, NamespaceSeparation, serve_application,
+};
 use serde_json::{Value, json};
 
 fn frames(input: &str, namespace: Option<&str>) -> Vec<Value> {
+    // These tests cover the namespace code itself, ahead of slice L1-5.
+    NamespaceSeparation::enable_for_tests();
     let application = ApplicationConfig {
         namespace: namespace.map(|name| NamespaceName::parse(name).unwrap()),
         ..ApplicationConfig::default()
