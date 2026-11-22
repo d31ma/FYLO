@@ -668,3 +668,15 @@ fn writes_answer_the_new_document_when_the_hot_set_has_the_old_one() {
     assert_eq!(frames[3]["result"], patched);
     assert_eq!(frames[4]["result"], patched);
 }
+
+#[test]
+fn a_raw_file_collection_cannot_hold_a_transaction() {
+    let fixture = Fixture::new();
+    let created =
+        fixture.result(json!({ "op": "createCollection", "collection": "files", "kind": "file" }));
+    assert_eq!(created, json!({ "collection": "files", "kind": "file" }));
+    let begin = json!({ "op": "transactionBegin", "collection": "files" });
+    assert_eq!(fixture.error_code(begin), json!("ETXNLAYOUT"));
+    let batch = json!({ "op": "storeTransaction", "collection": "files", "writes": [{ "deleteById": FIRST }] });
+    assert_eq!(fixture.error_code(batch), json!("ETXNLAYOUT"));
+}
