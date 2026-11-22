@@ -64,13 +64,16 @@ impl Bench {
     }
 
     fn overwrite_one_per_commit(&self) {
-        let writer = WriteEngine::open(&self.0).unwrap();
-        for commit in 0..Self::COMMITS {
-            let number = commit * Self::PER_COMMIT;
-            writer
-                .put_document(Self::COLLECTION, &Self::id(number), Self::fields(number))
-                .unwrap();
-        }
+        let writes: Vec<DocumentWrite> = (0..Self::COMMITS)
+            .map(|commit| DocumentWrite::Replace {
+                identifier: Self::id(commit * Self::PER_COMMIT),
+                fields: Self::fields(0),
+            })
+            .collect();
+        WriteEngine::open(&self.0)
+            .unwrap()
+            .commit_document_writes(Self::COLLECTION, &writes)
+            .unwrap();
     }
 
     fn reader(&self) -> ReadOnlyEngine {
