@@ -80,6 +80,28 @@ fn measure(base: &Path, label: &str, collections: usize) -> Vec<Duration> {
     times
 }
 
+/// The same writes as one commit per collection, as a caller without
+/// transactions over several collections would make them.
+fn measure_separately(base: &Path, label: &str) -> Vec<Duration> {
+    let root = fresh_root(base, label);
+    let writer = NativeWriteRoot::open(&root).unwrap();
+    let mut times = Vec::with_capacity(ROUNDS);
+    for round in 0..ROUNDS {
+        let batches = batches(round, COLLECTIONS);
+        let started = Instant::now();
+        for batch in &batches {
+            writer
+                .commit_document_writes_with(&batch.collection, &batch.writes, &PlainDocumentCodec)
+                .unwrap();
+        }
+        times.push(started.elapsed());
+    }
+    NativeWriteRoot::close_logs_under(&root).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    times.sort();
+    times
+}
+
 fn report(label: &str, times: &[Duration]) {
     let at = |percent: usize| times[(times.len() - 1) * percent / 100];
     println!(
@@ -97,6 +119,8 @@ fn twenty_five_writes_over_seven_collections_against_one() {
     let base = PathBuf::from(std::env::var(MEASURE_DIR).expect(MEASURE_DIR));
     let one = measure(&base, "one", 1);
     let seven = measure(&base, "seven", COLLECTIONS);
+    let separate = measure_separately(&base, "separate");
     report("25 writes, 1 collection", &one);
     report("25 writes, 7 collections", &seven);
+    report("25 writes, 7 separate commits", &separate);
 }
