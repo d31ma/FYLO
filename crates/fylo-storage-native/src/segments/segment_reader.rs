@@ -55,6 +55,7 @@ impl SegmentReader {
         frame: &[u8],
         bodies: &dyn LogBodyCodec,
     ) -> Result<LogRecord, NativeStorageError> {
+        crate::SegmentReadLog::record_frame();
         match LogSegmentKind::Documents.unframe_with(frame, bodies) {
             Ok((record, length)) if length == frame.len() => Ok(record),
             Ok(_) => Err(Self::corrupt(

@@ -17,7 +17,8 @@ pub(crate) struct SegmentDocument {
 }
 
 impl SegmentDocument {
-    /// The document `location` names inside `record`.
+    /// The document `location` names inside `record`, decoding only its own
+    /// manifest entry (a point read).
     ///
     /// The record must be the one the location names, by LSN as well as by
     /// entry: an older record of the same document put in its place, as a
@@ -28,16 +29,42 @@ impl SegmentDocument {
         location: &SegmentLocation,
         record: &LogRecord,
     ) -> Result<Self, NativeStorageError> {
+        Self::require_record(location, record)?;
+        let entry = SegmentCommitManifest::entry_at(&record.manifest, location.entry)?;
+        Self::from_entry(location, record, entry)
+    }
+
+    /// The document `location` names inside `record`, whose manifest the
+    /// caller has already decoded, so the many documents of one record
+    /// share one decode. The same checks as [`Self::from_record`] apply.
+    pub(crate) fn from_manifest(
+        location: &SegmentLocation,
+        record: &LogRecord,
+        manifest: &SegmentCommitManifest,
+    ) -> Result<Self, NativeStorageError> {
+        Self::require_record(location, record)?;
+        let entry = manifest.entries.get(usize::from(location.entry)).cloned();
+        Self::from_entry(location, record, entry)
+    }
+
+    fn require_record(
+        location: &SegmentLocation,
+        record: &LogRecord,
+    ) -> Result<(), NativeStorageError> {
         if location.lsn != 0 && record.lsn != location.lsn {
             return Err(Self::corrupt(
                 "segment record is not the one its location names",
             ));
         }
-        let manifest = SegmentCommitManifest::decode(&record.manifest)?;
-        let entry = manifest
-            .entries
-            .into_iter()
-            .nth(usize::from(location.entry))
+        Ok(())
+    }
+
+    fn from_entry(
+        location: &SegmentLocation,
+        record: &LogRecord,
+        entry: Option<SegmentEntry>,
+    ) -> Result<Self, NativeStorageError> {
+        let entry = entry
             .filter(|entry| entry.id == location.id && entry.state == location.state)
             .ok_or_else(|| Self::corrupt("segment entry does not match its location"))?;
         let body = Self::body_of(&entry, &record.blobs)?;

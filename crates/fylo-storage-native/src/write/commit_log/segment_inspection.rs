@@ -349,7 +349,7 @@ impl SegmentInspection {
                 .get(&entry.id)
                 .is_none_or(|(lsn, _)| record.lsn >= *lsn);
             if newer {
-                let document = SegmentDocument::from_record(&location, record)?;
+                let document = SegmentDocument::from_manifest(&location, record, &manifest)?;
                 newest.insert(entry.id.clone(), (record.lsn, document));
             }
         }

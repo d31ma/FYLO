@@ -14,7 +14,7 @@ use super::segment_plan::SegmentPlan;
 use super::segment_recovery::{SchemaCopies, SegmentRecovery};
 use super::segment_schemas::{SchemaVersionEntry, SegmentSchemas};
 use crate::segments::{
-    SegmentCommitManifest, SegmentDocument, SegmentHandle, SegmentLocation, SegmentMedium,
+    DecodedRecord, SegmentCommitManifest, SegmentHandle, SegmentLocation, SegmentMedium,
     SegmentReader, SegmentStore,
 };
 use crate::{
@@ -149,11 +149,11 @@ impl SegmentCompactor {
             copy.write_at(&frame, length)?;
             length += frame.len() as u64;
         }
-        let mut records: BTreeMap<(u64, u64), LogRecord> = BTreeMap::new();
+        let mut records: BTreeMap<(u64, u64), DecodedRecord> = BTreeMap::new();
         for row in &self.rows {
             let key = (row.segment, row.offset);
             if let Entry::Vacant(slot) = records.entry(key) {
-                slot.insert(reader.record(row)?);
+                slot.insert(DecodedRecord::new(reader.record(row)?)?);
             }
             let frame = Self::copied_frame(row, &records[&key], &*medium.frame_bodies())?;
             copy.write_at(&frame, length)?;
@@ -417,10 +417,11 @@ impl SegmentCompactor {
     /// afresh, so a `.vdbx` collection's LZ4 records come out as zstd.
     fn copied_frame(
         row: &SegmentLocation,
-        record: &LogRecord,
+        decoded: &DecodedRecord,
         bodies: &dyn LogBodyCodec,
     ) -> Result<Vec<u8>, NativeStorageError> {
-        let document = SegmentDocument::from_record(row, record)?;
+        let document = decoded.document(row)?;
+        let record = decoded.record();
         let mut entry = document.entry;
         if let Some(body) = entry.body.as_mut() {
             body.offset = 0;

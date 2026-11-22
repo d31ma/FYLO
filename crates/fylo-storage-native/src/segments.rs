@@ -3,12 +3,15 @@
 
 mod container_frames;
 mod container_medium;
+mod decoded_record;
 mod directory_medium;
+mod entry_list_seed;
 mod generation_slots;
 mod index_delta;
 mod layout_id;
 mod location_state;
 mod location_table;
+mod manifest_entry_seed;
 mod positioned_read;
 mod record_position;
 mod segment_body;
@@ -27,12 +30,15 @@ mod table_reach;
 
 pub(crate) use container_frames::{ContainerFrames, DictionarySource};
 pub(crate) use container_medium::{ContainerMedium, ContainerOpen, ContainerOpenFile, SlotWriter};
+pub(crate) use decoded_record::DecodedRecord;
 pub(crate) use directory_medium::{DirectoryMedium, FileSegment};
+pub(crate) use entry_list_seed::EntryListSeed;
 use generation_slots::GenerationSlots;
 pub(crate) use index_delta::IndexDelta;
 pub(crate) use layout_id::LayoutId;
 pub(crate) use location_state::LocationState;
 pub(crate) use location_table::LocationTable;
+pub(crate) use manifest_entry_seed::ManifestEntrySeed;
 use positioned_read::PositionedRead;
 pub(crate) use record_position::RecordPosition;
 pub(crate) use segment_body::SegmentBody;

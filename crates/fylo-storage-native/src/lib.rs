@@ -107,6 +107,7 @@ mod root_filesystem;
 mod root_open_options;
 mod root_verification;
 mod root_verification_report;
+mod segment_read_log;
 mod segments;
 mod session_certificate;
 mod sidecar_attributes;
@@ -198,6 +199,7 @@ pub use document_rekey::DocumentRekey;
 pub use durability::Durability;
 pub use field_keys::{FieldKey, FieldKeys};
 pub use file_access_log::FileAccessLog;
+pub use segment_read_log::SegmentReadLog;
 pub use file_stamp::FileStamp;
 #[cfg(not(target_family = "wasm"))]
 pub use filesystem_check::FilesystemProbe;
