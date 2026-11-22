@@ -83,16 +83,20 @@ fn a_local_disk_records_the_largest_attribute_value_it_holds() {
 
     let probed = FilesystemProbe::run(&directory.0, None).unwrap();
 
-    assert!(probed.max_attribute_bytes().unwrap() >= 1024, "{probed:?}");
+    assert!(
+        probed.max_attribute_bytes().unwrap() >= 64 * 1024,
+        "{probed:?}"
+    );
 }
 
 #[test]
-fn sidecar_storage_records_no_attribute_limit() {
+fn the_sidecar_override_still_records_the_attribute_limit() {
     let directory = Directory::temporary();
 
     let probed = FilesystemProbe::run(&directory.0, Some(FilesystemProfile::EfsSidecarV1)).unwrap();
 
-    assert_eq!(probed.max_attribute_bytes(), None);
+    assert_eq!(probed.metadata(), MetadataStore::SidecarFiles);
+    assert!(probed.max_attribute_bytes().is_some(), "{probed:?}");
 }
 
 #[test]

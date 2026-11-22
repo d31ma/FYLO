@@ -25,10 +25,11 @@ impl FilesystemProbe {
     const NEW_BYTES: &'static [u8] = b"new";
 
     /// Probe `directory` when its app folder is created, and choose where
-    /// metadata lives: extended attributes when the file system keeps them,
-    /// sidecar files otherwise. `forced` is the `--filesystem-profile`
+    /// metadata lives: extended attributes when the file system keeps them
+    /// and holds FYLO's largest metadata value in one attribute, sidecar
+    /// files otherwise (plain ext4 holds only about 4 KiB). `forced` is the `--filesystem-profile`
     /// override for tests: `efs-sidecar-v1` always chooses sidecar files, and
-    /// `native` requires extended attributes.
+    /// `native` requires extended attributes with that room.
     ///
     /// # Errors
     ///
@@ -43,8 +44,9 @@ impl FilesystemProbe {
         Self::check_exclusive_create(directory, &mut files)?;
         Self::check_rename_over(directory, &mut files)?;
         let attributes = AttributeTest::run(&mut files);
-        let metadata = Self::choose_metadata(directory, forced, attributes)?;
-        let attribute_limit = Self::attribute_limit(directory, &mut files, metadata)?;
+        let attribute_limit = Self::measured_limit(directory, &mut files, attributes.is_ok())?;
+        let usable = Self::attributes_usable(attributes, attribute_limit);
+        let metadata = Self::choose_metadata(directory, forced, usable)?;
         let hard_links = Self::hard_links_work(directory, &mut files)?;
         Ok(ProbeRecord::new(metadata, hard_links).with_max_attribute_bytes(attribute_limit))
     }
@@ -196,18 +198,31 @@ impl FilesystemProbe {
         }
     }
 
-    fn attribute_limit(
+    fn measured_limit(
         directory: &Path,
         files: &mut ProbeFiles,
-        metadata: MetadataStore,
+        attributes_work: bool,
     ) -> Result<Option<u32>, NativeStorageError> {
-        match metadata {
-            MetadataStore::SidecarFiles => Ok(None),
-            MetadataStore::ExtendedAttributes => {
-                AttributeLimit::measure(files).map(Some).map_err(|error| {
-                    ProbeFailure::from_io("measure the largest attribute value", directory, &error)
-                })
-            }
+        if !attributes_work {
+            return Ok(None);
+        }
+        AttributeLimit::measure(files).map(Some).map_err(|error| {
+            ProbeFailure::from_io("measure the largest attribute value", directory, &error)
+        })
+    }
+
+    fn attributes_usable(
+        attributes: std::io::Result<()>,
+        limit: Option<u32>,
+    ) -> std::io::Result<()> {
+        match (attributes, limit) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Some(bytes)) if bytes >= AttributeLimit::ROOM => Ok(()),
+            (Ok(()), bytes) => Err(std::io::Error::other(format!(
+                "extended attributes hold only {} bytes in one value; FYLO needs {}",
+                bytes.unwrap_or(0),
+                AttributeLimit::ROOM
+            ))),
         }
     }
 
@@ -229,14 +244,32 @@ impl FilesystemProbe {
     ) -> Result<(), NativeStorageError> {
         match metadata {
             MetadataStore::SidecarFiles => Ok(()),
-            MetadataStore::ExtendedAttributes => AttributeTest::run(files).map_err(|error| {
-                ProbeFailure::from_io(
-                    "extended attributes, recorded in format.json, no longer work",
-                    directory,
-                    &error,
-                )
-            }),
+            MetadataStore::ExtendedAttributes => {
+                Self::attributes_still_work(files).map_err(|error| {
+                    ProbeFailure::from_io(
+                        "extended attributes, recorded in format.json, no longer work",
+                        directory,
+                        &error,
+                    )
+                })
+            }
         }
+    }
+
+    fn attributes_still_work(files: &mut ProbeFiles) -> std::io::Result<()> {
+        AttributeTest::run(files)?;
+        let holds_room = AttributeLimit::holds_room(files)?;
+        Self::require_room(holds_room)
+    }
+
+    fn require_room(holds_room: bool) -> std::io::Result<()> {
+        if holds_room {
+            return Ok(());
+        }
+        Err(std::io::Error::other(format!(
+            "extended attributes no longer hold FYLO's largest metadata value ({} bytes in one value)",
+            AttributeLimit::ROOM
+        )))
     }
 
     fn hard_links_still_work(
@@ -259,5 +292,51 @@ impl FilesystemProbe {
             directory,
             "no longer work",
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FilesystemProbe;
+    use crate::filesystem_check::attribute_limit::AttributeLimit;
+
+    #[test]
+    fn attributes_with_room_for_the_largest_value_are_usable() {
+        let usable = FilesystemProbe::attributes_usable(Ok(()), Some(AttributeLimit::ROOM));
+
+        assert!(usable.is_ok());
+    }
+
+    #[test]
+    fn attributes_without_room_for_the_largest_value_are_not_usable() {
+        let usable = FilesystemProbe::attributes_usable(Ok(()), Some(4000));
+
+        assert!(
+            usable
+                .unwrap_err()
+                .to_string()
+                .contains("hold only 4000 bytes")
+        );
+    }
+
+    #[test]
+    fn failed_attributes_are_not_usable() {
+        let failed = std::io::Error::other("no attributes here");
+
+        let usable = FilesystemProbe::attributes_usable(Err(failed), None);
+
+        assert_eq!(usable.unwrap_err().to_string(), "no attributes here");
+    }
+
+    #[test]
+    fn a_folder_that_lost_the_room_fails_its_check() {
+        let error = FilesystemProbe::require_room(false).unwrap_err();
+
+        assert!(error.to_string().contains("no longer hold"));
+    }
+
+    #[test]
+    fn a_folder_that_kept_the_room_passes_its_check() {
+        assert!(FilesystemProbe::require_room(true).is_ok());
     }
 }

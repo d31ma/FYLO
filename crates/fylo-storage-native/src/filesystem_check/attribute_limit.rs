@@ -5,17 +5,35 @@ use super::attribute_test::AttributeTest;
 use super::probe_files::ProbeFiles;
 
 /// Measures the largest single extended attribute value a new file can
-/// hold, up to 64 KiB, by a binary search of about seventeen writes. Plain
-/// ext4 holds about 4 KiB (one block for all of a file's attributes); APFS,
-/// XFS and NTFS streams hold the whole 64 KiB.
+/// hold, up to [`Self::ROOM`], by a binary search of about seventeen writes.
+/// Plain ext4 holds about 4 KiB (one block for all of a file's attributes);
+/// APFS, XFS, ext4 with `ea_inode` and NTFS streams hold all of it.
 pub(crate) struct AttributeLimit;
 
 impl AttributeLimit {
-    const CEILING: u32 = 64 * 1024;
+    const NAMES_AND_OTHER_ATTRIBUTES: u32 = 4 * 1024;
+    /// The room one record's attributes need: FYLO's largest metadata value
+    /// plus its name and the record's other attributes (key, checksum,
+    /// access). A file system with less keeps a whole app folder's metadata
+    /// in sidecar files (ADR 0033 section 6, FYLO-L1-4b).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "MAX_META_VALUE_BYTES is 60 KiB"
+    )]
+    pub(crate) const ROOM: u32 =
+        crate::MAX_META_VALUE_BYTES as u32 + Self::NAMES_AND_OTHER_ATTRIBUTES;
+    const CEILING: u32 = Self::ROOM;
 
     pub(crate) fn measure(files: &mut ProbeFiles) -> std::io::Result<u32> {
         let (path, file) = files.create_new()?;
         Self::search(&file, &path)
+    }
+
+    /// Whether a new file still holds [`Self::ROOM`] bytes in one attribute:
+    /// one write, for the check at every writing open.
+    pub(crate) fn holds_room(files: &mut ProbeFiles) -> std::io::Result<bool> {
+        let (path, file) = files.create_new()?;
+        Self::stores(&file, &path, Self::ROOM)
     }
 
     fn search(file: &File, path: &Path) -> std::io::Result<u32> {

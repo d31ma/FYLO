@@ -41,7 +41,7 @@
                     "type": "boolean"
                 },
                 "maxAttributeBytes": {
-                    "description": "The largest single extended attribute value the probe could store on an empty file, measured up to 65536 bytes (65536 means at least that). Absent when metadata is sidecar, or for app folders made before FYLO-L1-4b. A value that does not fit, or a record whose values do not fit together, keeps the rest in its .fylo-attrs sidecar file.",
+                    "description": "The largest single extended attribute value the probe could store on an empty file, measured up to 65536 bytes (65536 means at least that). The probe chooses \"xattr\" only when this holds FYLO's largest metadata value (MAX_META_VALUE_BYTES, 61440) plus 4096 bytes for names and the record's other attributes; otherwise the whole app folder uses \"sidecar\" (plain ext4 holds only about 4 KiB). Absent when extended attributes did not work at all, and for app folders made before FYLO-L1-4b.",
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 65536
