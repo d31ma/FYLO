@@ -583,7 +583,7 @@ impl WriteEngine {
         let mut failures = Vec::new();
         let mut failed = 0_usize;
         let listed = identifiers
-            .chunks(Self::read_batch(&handle))
+            .chunks(ReadOnlyEngine::read_batch(&handle))
             .map(|batch| Self::listed_documents(&handle, batch))
             .collect::<Result<Vec<_>, _>>()?;
         for (identifier, stored) in listed.into_iter().flatten() {
