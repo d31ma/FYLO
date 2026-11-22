@@ -7,7 +7,9 @@ use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fylo_machine::{ApplicationConfig, FrameLimits, FrameSession, serve_configured};
+use fylo_machine::{
+    ApplicationConfig, FrameLimits, FrameSession, serve_configured, serve_exclusive,
+};
 use fylo_storage_native::RootConfig;
 use serde_json::{Value, json};
 
@@ -15,6 +17,7 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture {
     root: PathBuf,
+    folder: PathBuf,
 }
 
 impl Fixture {
@@ -28,7 +31,29 @@ impl Fixture {
             NEXT.fetch_add(1, Ordering::Relaxed),
         ));
         fs::create_dir_all(&root).unwrap();
-        let fixture = Self { root };
+        let fixture = Self {
+            folder: root.clone(),
+            root,
+        };
+        let created =
+            fixture.session(&[json!({ "op": "createCollection", "collection": Self::COLLECTION })]);
+        assert_eq!(created[0]["ok"], json!(true), "{created:?}");
+        fixture
+    }
+
+    fn database() -> Self {
+        let directory = fylo_test_support::TestFolder::path().join(format!(
+            "fylo-machine-store-db-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let root = directory.join("app.vdbx");
+        fylo_storage_native::NativeRoot::create_database(&root).unwrap();
+        let fixture = Self {
+            root,
+            folder: directory,
+        };
         let created =
             fixture.session(&[json!({ "op": "createCollection", "collection": Self::COLLECTION })]);
         assert_eq!(created[0]["ok"], json!(true), "{created:?}");
@@ -52,6 +77,7 @@ impl Fixture {
             RootConfig::default(),
         )
         .unwrap();
+        let _ = fylo_storage_native::NativeRoot::close_database(&self.root);
         String::from_utf8(output)
             .unwrap()
             .lines()
@@ -106,7 +132,8 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
+        let _ = fylo_storage_native::NativeRoot::close_database(&self.root);
+        let _ = fs::remove_dir_all(&self.folder);
     }
 }
 
@@ -552,4 +579,92 @@ fn a_bad_timeout_is_a_bad_request() {
         json!({ "timeoutMs": 300_001 }),
     ));
     assert_eq!(code, json!("EBADREQUEST"));
+}
+
+#[test]
+fn a_session_that_ends_before_commit_wrote_nothing() {
+    let fixture = Fixture::new();
+    let mut live = Live::new(&fixture);
+    let handle = live.begin();
+    live.result(in_tickets(
+        "storeSave",
+        json!({ "transaction": handle, "entity": { "id": FIRST, "title": "alpha" } }),
+    ));
+    drop(live);
+    assert_eq!(
+        fixture.result(in_tickets("storeCount", json!({}))),
+        json!(0)
+    );
+}
+
+#[test]
+fn a_batch_commits_in_a_vdbx_database() {
+    let fixture = Fixture::database();
+    let results = fixture.result(in_tickets(
+        "storeTransaction",
+        json!({ "writes": [
+            { "save": { "id": FIRST, "title": "alpha" } },
+            { "save": { "id": SECOND, "title": "bravo" } }
+        ] }),
+    ));
+    assert_eq!(results.as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        fixture.result(in_tickets("storeCount", json!({}))),
+        json!(2)
+    );
+}
+
+/// A session that holds the root's lease, so its hot set caches reads;
+/// frames name no root and use the session's own.
+fn exclusive_session(fixture: &Fixture, requests: &[Value]) -> Vec<Value> {
+    let mut input = String::new();
+    for request in requests {
+        input.push_str(&request.to_string());
+        input.push('\n');
+    }
+    let mut output = Vec::new();
+    serve_exclusive(
+        &mut Cursor::new(input.into_bytes()),
+        &mut output,
+        Some(fixture.root.clone()),
+        FrameLimits::default(),
+    )
+    .unwrap();
+    String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn writes_answer_the_new_document_when_the_hot_set_has_the_old_one() {
+    let fixture = Fixture::new();
+    let frames = exclusive_session(
+        &fixture,
+        &[
+            in_tickets(
+                "storeSave",
+                json!({ "entity": { "id": FIRST, "title": "alpha" } }),
+            ),
+            in_tickets("storeFindById", json!({ "id": FIRST })),
+            in_tickets(
+                "storeSave",
+                json!({ "entity": { "id": FIRST, "title": "bravo" } }),
+            ),
+            in_tickets(
+                "storePatch",
+                json!({ "id": FIRST, "fields": { "status": "open" } }),
+            ),
+            in_tickets("storeFindById", json!({ "id": FIRST })),
+        ],
+    );
+    assert_eq!(
+        frames[2]["result"],
+        json!({ "id": FIRST, "title": "bravo" }),
+        "{frames:?}"
+    );
+    let patched = json!({ "id": FIRST, "title": "bravo", "status": "open" });
+    assert_eq!(frames[3]["result"], patched);
+    assert_eq!(frames[4]["result"], patched);
 }
