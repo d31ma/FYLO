@@ -253,6 +253,23 @@ statements unchanged.
 3. **Case.** Keywords and the literals `TRUE`, `FALSE` and `NULL` are
    case-insensitive (Mesail writes `true`).
 
+### Amendment 3 (2026-11-21): additions to the frozen v2 contract
+
+Additive; no existing operation, request or result changes.
+
+1. **`verifyRoot` is in v2.** L1-3 added it to v1 (class `read`, retry
+   `safe`) after the v2 freeze. It joins `api/machine/v2` (operations and
+   schema enum); v2 has 64 operations.
+2. **Rule:** every v1 operation that stays after SDK-10 is also in v2.
+   `contracts:verify` checks that each v1 operation is in v2 or in
+   `keptUntilSdk10`. L1-3b's `createNamespace`, `listNamespaces` and
+   `dropNamespace` join v2 the same way when they land (67 operations).
+3. **Transactions on the sidecar store.** With ADR 0013 Amendment 2 the
+   `efs-sidecar-v1` profile writes its documents through the commit log on
+   Unix, so it takes transactions there. `ETXNLAYOUT` remains for a raw-file
+   collection and for a sidecar-store root on Windows (`api/store/v1`,
+   "Profiles and layouts").
+
 ## Consequences
 
 - **Breaking Changes** (CHANGELOG of the next release): machine protocol v2;
