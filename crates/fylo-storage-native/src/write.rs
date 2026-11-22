@@ -505,6 +505,7 @@ impl NativeWriteRoot {
     /// failed durable repair.
     pub fn recover_collection(&self, collection: &str) -> Result<bool, NativeStorageError> {
         self.root.assert_profile_owned()?;
+        let settled = self.recover_namespace_naming(collection)?;
         let opened = self.root.collection(collection)?;
         let migrated = {
             let _lock = self.lock_collection(&opened)?;
@@ -513,7 +514,7 @@ impl NativeWriteRoot {
         // A finished migration changed the layout the first handle names.
         let collection = self.root.collection(collection)?;
         let _lock = self.lock_collection(&collection)?;
-        Ok(self.recover_locked(&collection)? || migrated)
+        Ok(self.recover_locked(&collection)? || migrated || settled)
     }
 
     /// Finish the write a stopped writer left in collection `name` of the

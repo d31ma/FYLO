@@ -4,7 +4,8 @@
 - Date: **2026-10-28**
 - To be amended by [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md) (accepted, not yet built): a client's one-collection transaction (`storeTransaction`, `transactionBegin`/`Commit`) commits as one log record.
 - Amended by the namespace log for transactions over several collections
-  (Amendment "Several collections", FYLO-TXN2, review pending).
+  (Amendment "one commit over several collections", FYLO-TXN2, accepted
+  2026-11-21).
 - Owners: **FYLO maintainers**
 - Amends: the collection transaction journal described in `README.md`
   ("`.fylo-transactions`") for ordinary record mutations. The journal stays for
@@ -419,7 +420,7 @@ source of truth, and the durability promise above.
 
 ## Amendment: one commit over several collections (FYLO-TXN2, 2026-11-21)
 
-- Review: **pending (FYLO BC)**
+- Status: **Accepted 2026-11-21 (FYLO Build Coordinator)**
 - Asked for by: the user ("Yes, several"), for TACHYON and Mesail: one
   commit per user action, such as a message and its outbox entry. Mesail's
   largest action (a chat send) writes 6 to 8 collections and about 25
@@ -585,6 +586,12 @@ marks (read whole after an open), and each collection's `state.json` and log
 segment (read after an open, as today). This is the rule L1-3 follows for the
 lease record.
 
+An open and a read are not enough on macOS NFS: within the attribute cache
+time the client returns data up to 5 s old (1.6 s with `F_NOCACHE`), as
+FYLO-L1-3 measured. So the namespace log, its marks and every `state.json`
+that settling and recovery read go through L1-3's fresh-read helper, the one
+the lease record uses. There is one helper; this slice adds no second copy.
+
 ### Readers after a power cut
 
 A power cut (of the writer, or of the storage server of a network root) can
@@ -595,9 +602,9 @@ reader must not serve that older state. The rule:
 - A namespace log names, per collection, the highest generation of its
   parts. A reader of a collection the log names whose `state.json` is
   `stable` at a lower generation treats the collection as `writing`: it
-  retries and then answers `EENGINE_CONCURRENT_WRITE`, as for a collection log with an
-  unapplied record. The next writer settles the namespace and the reader then
-  sees the new state.
+  retries as for a collection log with an unapplied record, then answers
+  `EENGINE_NAMESPACE_UNSETTLED` (below). The next writer settles the
+  namespace and the reader then sees the new state.
 - Each reader process reads the namespace log (open and read) at its first
   read of the namespace, again whenever it sees a collection's generation go
   backwards (only a lost write on the storage can cause that), and again
@@ -607,6 +614,12 @@ reader must not serve that older state. The rule:
   reader never needs more than this.
 - Collections the log does not name pay nothing; a collection it names pays
   one integer comparison per read while the cached log is current.
+- **The wait is bounded.** A reader does not settle the namespace itself: it
+  may hold no lease and no write access, and a read-only tool must not write.
+  After the normal read retries it fails with `EENGINE_NAMESPACE_UNSETTLED`
+  (retryable), whose message says that a writer must open the root (any
+  write, or `fylo recover`) and that the read can then run again. A
+  collection the log does not hold back reads normally meanwhile.
 
 ### Limits (answers for Mesail and TACHYON)
 

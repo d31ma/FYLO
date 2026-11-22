@@ -2064,13 +2064,33 @@ impl ReadOnlyEngine {
                 return value;
             }
         }
-        Err(Self::concurrent_write())
+        Err(Self::held_back(collection))
     }
 
     /// The collection's generation and log end, refusing a collection that
     /// is being written or has a committed record not yet applied.
     fn stable_generation(collection: &NativeCollection) -> Result<GenerationState, EngineError> {
-        Self::read_attempt_generation(collection)?.ok_or_else(Self::concurrent_write)
+        Self::read_attempt_generation(collection)?.ok_or_else(|| Self::held_back(collection))
+    }
+
+    /// Why a read found no stable generation: a writer is working, or a
+    /// transaction over several collections waits since a crash for a writer
+    /// to settle it (ADR 0013, "Readers after a power cut"), which a reader
+    /// cannot wait out.
+    fn held_back(collection: &NativeCollection) -> EngineError {
+        let unsettled = collection
+            .generation()
+            .is_ok_and(|state| state.awaits_namespace_settling());
+        if !unsettled {
+            return Self::concurrent_write();
+        }
+        EngineError::new(
+            EngineErrorCode::NamespaceUnsettled,
+            format!(
+                "collection {} has a committed transaction that no writer has settled since a crash; open the root with a writer (any write, or `fylo recover`), then read again",
+                collection.name()
+            ),
+        )
     }
 
     fn concurrent_write() -> EngineError {
@@ -2416,6 +2436,9 @@ pub enum EngineErrorCode {
     CorruptData,
     /// A writer prevented a stable generation read.
     ConcurrentWrite,
+    /// A transaction over several collections was committed before a crash
+    /// and no writer has settled it yet; a writer must open the root.
+    NamespaceUnsettled,
     /// Encrypted data could not be safely decoded.
     Encryption,
     /// The identity the root was opened with may not do the operation.
@@ -2449,6 +2472,7 @@ impl EngineErrorCode {
             Self::Query => "EENGINE_QUERY",
             Self::CorruptData => "EENGINE_CORRUPT",
             Self::ConcurrentWrite => "EENGINE_CONCURRENT_WRITE",
+            Self::NamespaceUnsettled => "EENGINE_NAMESPACE_UNSETTLED",
             Self::Encryption => "EENGINE_ENCRYPTION",
             Self::Access => "EACCES",
             Self::Unsupported => "EENGINE_UNSUPPORTED",

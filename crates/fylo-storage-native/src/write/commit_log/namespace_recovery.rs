@@ -182,4 +182,17 @@ impl NativeWriteRoot {
         }
         LogRecovery::run(self, collection, &stored)
     }
+
+    /// Settle the namespace log when it names `collection`, so an explicit
+    /// recovery (`fylo recover`) of that collection always applies its parts,
+    /// even in a process that settled the namespace before.
+    pub(crate) fn recover_namespace_naming(
+        &self,
+        collection: &str,
+    ) -> Result<bool, NativeStorageError> {
+        if self.root.database().is_some() || !NamespaceRecovery::names(self.path(), collection)? {
+            return Ok(false);
+        }
+        self.recover_namespace()
+    }
 }

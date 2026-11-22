@@ -346,6 +346,10 @@
             "retryable": true
         },
         {
+            "code": "EENGINE_NAMESPACE_UNSETTLED",
+            "retryable": true
+        },
+        {
             "code": "EVDBX_NOT_VDBX",
             "retryable": false
         },

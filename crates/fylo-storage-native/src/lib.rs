@@ -3670,6 +3670,15 @@ impl GenerationState {
     /// fence that stops it writing documents it cannot validate.
     pub const FORMAT_V3: &'static str = "fylo.collection-generation.v3";
 
+    /// Whether a reader sees this collection held back by a part only the
+    /// namespace log holds: a writer must open the root to settle it.
+    #[must_use]
+    pub fn awaits_namespace_settling(&self) -> bool {
+        self.state == GenerationStatus::Writing
+            && self.transaction_id.as_deref()
+                == Some(NativeCollection::UNAPPLIED_NAMESPACE_TRANSACTION)
+    }
+
     /// Whether this state carries the schema registry fence.
     #[must_use]
     pub fn schema_fenced(&self) -> bool {
