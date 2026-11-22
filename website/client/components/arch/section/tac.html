@@ -13,7 +13,18 @@
         <div class="w-grid-row arch-row">
             <div class="w-grid-col-12 w-grid-col-lg-6">
                 <h3 class="arch-sub">One collection on disk</h3>
-                <pre class="code-block arch-tree"><code>{treeText()}</code></pre>
+                <pre class="code-block arch-tree"><code>&lt;root&gt;/.collections/users/
+  docs/                  ← one .json file per document
+    4U/
+      4UUB32VGUDW.json
+  .deleted/              ← soft-deleted payloads
+  index/
+    manifest.json        ← format version marker
+    keys.snapshot        ← sorted keys, mmap'd O(log n)
+    keys.wal             ← append-only mutation log
+  events/
+    users.ndjson         ← browser engine only: its change journal
+  locks/                 ← advisory file locks</code></pre>
             </div>
 
             <div class="w-grid-col-12 w-grid-col-lg-6">
