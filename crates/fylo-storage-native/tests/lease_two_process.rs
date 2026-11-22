@@ -12,9 +12,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
+use fylo_storage_native::layout::{NamespaceName, RootLayout};
 use fylo_storage_native::{
-    CollectionKind, FilesystemProfile, LeaseTiming, NativeStorageErrorCode, NativeWriteRoot,
-    PutDocumentOptions, RootLease, RootOpenOptions,
+    CollectionKind, FilesystemProfile, LeaseTiming, NamespaceAdmin, NativeStorageErrorCode,
+    NativeWriteRoot, PutDocumentOptions, RootLease, RootOpenOptions,
 };
 
 const CHILD: &str = "FYLO_LEASE_TEST_CHILD";
@@ -22,6 +23,7 @@ const ROOT: &str = "FYLO_LEASE_TEST_ROOT";
 const TEST_DIR: &str = "FYLO_LEASE_TEST_DIR";
 const TEST_PROFILE: &str = "FYLO_LEASE_TEST_PROFILE";
 const MACHINE: &str = "FYLO_TEST_LEASE_MACHINE";
+const NAMESPACE: &str = "FYLO_LEASE_TEST_NAMESPACE";
 const ITEMS: &str = "items";
 const HEARTBEAT_SECONDS: &str = "0.05";
 // On Windows a taker reads the owner's start time through PowerShell, which
@@ -206,11 +208,38 @@ fn timed<T>(action: impl FnOnce() -> T) -> (T, Duration) {
 /// one document and writes the outcome to `result`. `lose-kernel-lock`
 /// first gives up its kernel lock, as a router reboot does. `crash` only
 /// takes the root: a failpoint set by the parent aborts it on the way.
+/// A child that takes namespace `FYLO_LEASE_TEST_NAMESPACE` of the app
+/// folder `FYLO_LEASE_TEST_ROOT` (mode `take-namespace`), or drops it (mode
+/// `drop-namespace`), and writes the outcome to `result-<namespace>`.
+fn namespace_child(mode: &str, app: &Path) {
+    let namespace = NamespaceName::parse(&std::env::var(NAMESPACE).unwrap()).unwrap();
+    let layout = RootLayout::checked(app.to_path_buf()).unwrap();
+    let outcome = match mode {
+        "take-namespace" => {
+            RootLease::acquire_namespace(&layout, &namespace, profile(), timing()).map(drop)
+        }
+        _ => NamespaceAdmin::drop_namespace(&layout, &namespace, true, (profile(), timing())),
+    };
+    let text = outcome.map_or_else(
+        |error| error.code().as_str().to_owned(),
+        |()| "ok".to_owned(),
+    );
+    fs::write(
+        app.parent().unwrap().join(format!("result-{namespace}")),
+        text,
+    )
+    .unwrap();
+}
+
 #[test]
 fn lease_child() {
     let Ok(mode) = std::env::var(CHILD) else {
         return;
     };
+    if mode.ends_with("-namespace") {
+        namespace_child(&mode, &PathBuf::from(std::env::var(ROOT).unwrap()));
+        return;
+    }
     let root = PathBuf::from(std::env::var(ROOT).unwrap());
     let folder = root.parent().unwrap().to_path_buf();
     let lease = RootLease::acquire_with_profile(&root, profile()).unwrap();
@@ -489,4 +518,59 @@ fn a_root_shared_with_another_machine_has_one_owner_at_a_time() {
     println!("killed remote owner: taken over after {waited:?}");
     assert!(waited >= RemoteMachine::TAKEOVER, "waited only {waited:?}");
     taken.assert_owned().unwrap();
+}
+
+/// Run a namespace child against the app folder `app` and return what it
+/// wrote.
+fn namespace_child_outcome(scratch: &Scratch, app: &Path, mode: &str, namespace: &str) -> String {
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "lease_child", "--nocapture", "--test-threads=1"])
+        .env(CHILD, mode)
+        .env(ROOT, app)
+        .env(NAMESPACE, namespace)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{mode} child failed");
+    fs::read_to_string(scratch.folder.join(format!("result-{namespace}"))).unwrap()
+}
+
+/// ADR 0033 section 4: two processes own two namespaces of one app at the
+/// same time; a namespace another process owns can be neither taken nor
+/// dropped.
+#[test]
+fn two_processes_own_two_namespaces_of_one_app_at_the_same_time() {
+    let scratch = Scratch::new("namespaces");
+    let app = scratch.folder.join("chat");
+    let layout = RootLayout::checked(app.clone()).unwrap();
+    for name in ["slice-1", "slice-2"] {
+        let namespace = NamespaceName::parse(name).unwrap();
+        NamespaceAdmin::create_namespace(&layout, &namespace, "test", None).unwrap();
+    }
+    let mine = RootLease::acquire_namespace(
+        &layout,
+        &NamespaceName::parse("slice-1").unwrap(),
+        profile(),
+        timing(),
+    )
+    .unwrap();
+    assert_eq!(
+        namespace_child_outcome(&scratch, &app, "take-namespace", "slice-2"),
+        "ok"
+    );
+    assert_eq!(
+        namespace_child_outcome(&scratch, &app, "take-namespace", "slice-1"),
+        "EROOTLOCKED"
+    );
+    assert_eq!(
+        namespace_child_outcome(&scratch, &app, "drop-namespace", "slice-1"),
+        "EROOTLOCKED"
+    );
+    mine.assert_owned().unwrap();
+    drop(mine);
+    assert_eq!(
+        namespace_child_outcome(&scratch, &app, "drop-namespace", "slice-1"),
+        "ok"
+    );
+    assert!(!app.join("slice-1").exists());
 }

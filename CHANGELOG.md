@@ -188,6 +188,21 @@
   `{"collections":[...]}` with the document and file collection names,
   sorted. Both work on folder roots and `.vdbx` databases. The machine
   registry now has 59 operations.
+- **Namespaces (ADR 0033 sections 3 and 4, slice L1-3b).** New machine
+  operations `createNamespace`, `listNamespaces` and `dropNamespace` (with
+  `cascade`), and the CLI `fylo namespace create|drop|list [<name>] --root
+  <drive>/<app> [--cascade]`, on app folders in the new layout. A drop
+  fails with `EROOTLOCKED` while another process owns the namespace. New
+  stable codes `ENAMESPACEEXISTS` and `ENAMESPACENOTEMPTY`. Rust callers can
+  own one namespace with `RootLease::acquire_namespace`.
+- **Heartbeat lease and storage-crash checks (ADR 0033 section 4, slice
+  L1-3).** The root lease beats every 5 s and is taken over after 20 s
+  without a beat (`FYLO_LEASE_HEARTBEAT_SECONDS`,
+  `FYLO_LEASE_TAKEOVER_SECONDS`), at once when the owner was a process on
+  this machine that ended. Every commit checks the lease first
+  (`EROOTLEASELOST`). `fylo verify --root <root>` (machine `verifyRoot`)
+  lists every damaged file and exits non-zero; see
+  `docs/operations/after-a-storage-crash.md`.
 - **Temp cache folder (ADR 0030, slice S2).** A new `capabilities.tempCache`
   in every handshake, the options `--temp-cache <off|auto|on>`,
   `--temp-cache-bytes <n>` and `--temp-cache-dir <path>` (and

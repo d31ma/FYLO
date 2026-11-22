@@ -56,6 +56,30 @@ the operation runs; a value that is not a string fails with `EBADREQUEST`.
 Until the layout release the engine stores every collection in the root's
 existing layout, so the field is checked but does not yet select a folder.
 
+### Creating, listing and dropping namespaces
+
+These three operations work on the app folder the request's `root` names (or
+the session's root), in the layout of ADR 0033: `<drive>/<app>/<namespace>`.
+They never open the app folder as a folder root of the older layout.
+
+- `createNamespace` (`namespace` required): makes the app folder when it is
+  new (it must sit directly below a mount point; its folder name is the app
+  name), then `<app>/<namespace>` with its `.fylo` folder and marker, under
+  the short lock `<app>/.fylo/namespaces.lock`. Result:
+  `{"namespace", "path"}`. An existing namespace fails with
+  `ENAMESPACEEXISTS` (not retryable).
+- `listNamespaces`: result `{"namespaces": [...]}`, sorted by name.
+- `dropNamespace` (`namespace` required, optional `cascade`): takes the
+  namespace's lease, so it fails with `EROOTLOCKED` while another process
+  owns the namespace; without `cascade: true` a namespace that holds
+  collections fails with `ENAMESPACENOTEMPTY` (not retryable). It moves the
+  folder into `<app>/.fylo/trash`, gives the lease back, then deletes it. A
+  missing namespace fails with `ENATIVE_NOT_FOUND`. Result:
+  `{"namespace", "dropped": true}`.
+
+The CLI form is `fylo namespace create|drop|list [<name>] --root
+<drive>/<app> [--cascade]`.
+
 ## Compatibility
 
 Within protocol v1:

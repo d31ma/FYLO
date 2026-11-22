@@ -1,6 +1,6 @@
 use super::kernel_file_lock::KernelFileLock;
 use super::lease_backoff::LeaseBackoff;
-use super::root_lease_inner::RootLeaseInner;
+use super::lease_target::LeaseTarget;
 use crate::{FilesystemProfile, NativeStorageError, RootFilesystem};
 use fylo_vfs::{File, OpenOptions};
 use std::fs::TryLockError;
@@ -23,8 +23,6 @@ pub(super) struct RootTurn {
 }
 
 impl RootTurn {
-    const FILE_SUFFIX: &str = "fylo-root-turn.lock";
-
     /// Wait until `wait_until` for the turn to take `root`. `None` when the
     /// root does not exist yet or the time ran out: the caller then tries
     /// the root without a turn.
@@ -45,18 +43,34 @@ impl RootTurn {
             .map(Option::flatten)
     }
 
+    /// Wait until `wait_until` for the turn kept in `path` (a namespace's
+    /// turn file, from `RootLayout::turn_lock_path`).
+    ///
+    /// # Errors
+    /// Returns a turn file that cannot be opened or locked.
+    pub(super) fn wait_at(
+        path: &Path,
+        wait_until: Instant,
+    ) -> Result<Option<Self>, NativeStorageError> {
+        let file = Self::open_file(path)?;
+        Self::poll(file, wait_until)
+    }
+
     fn open(root: &Path) -> Result<Option<File>, NativeStorageError> {
         let Ok(canonical) = fylo_vfs::canonicalize(root) else {
             return Ok(None);
         };
-        let path = RootLeaseInner::sibling_path(&canonical, Self::FILE_SUFFIX)?;
+        let path = LeaseTarget::root_turn_path(&canonical)?;
+        Self::open_file(&path).map(Some)
+    }
+
+    fn open_file(path: &Path) -> Result<File, NativeStorageError> {
         OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .truncate(false)
             .open(path)
-            .map(Some)
             .map_err(NativeStorageError::io)
     }
 

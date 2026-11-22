@@ -43,15 +43,16 @@ use fylo_query::{
     JoinSpec, QueryErrorCode, QueryLimits, SqlOperation, SqlPlan, StructuredQuery, prepare_sql,
 };
 use fylo_storage_native::{
-    CollectionKind, CollectionLayout, FilesystemProfile, NativeQueue, NativeRoot,
-    NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PlacementKind, PutRawFileOptions,
-    QueueClaimOptions, QueuePublishOptions, ReadScope, RootFilesystem, RootLease, RootOpenOptions,
-    SqlMutationResultKind, ValidationMode,
+    CollectionKind, CollectionLayout, FilesystemProfile, LeaseTiming, NamespaceAdmin, NativeQueue,
+    NativeRoot, NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PlacementKind,
+    PutRawFileOptions, QueueClaimOptions, QueuePublishOptions, ReadScope, RootFilesystem,
+    RootLease, RootOpenOptions, SqlMutationResultKind, ValidationMode,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
 
 pub use fylo_storage_native::layout::NamespaceName;
+use fylo_storage_native::layout::RootLayout;
 pub use fylo_storage_native::{DatabaseKey, RootConfig, parse_shard_width};
 pub use strict::StrictValue;
 
@@ -961,6 +962,9 @@ impl Session {
             "verifyDatabase" => self.verify_database(&self.database_path(request, operation)?),
             "verifyCollection" => self.verify_collection(request),
             "verifyRoot" => self.verify_root(request),
+            "createNamespace" => self.create_namespace(request),
+            "dropNamespace" => self.drop_namespace(request),
+            "listNamespaces" => self.list_namespaces(request),
             "log" => self.history(request),
             "getMeta" => self.get_metadata(request),
             "executeSQL" => self.execute_sql(request),
@@ -1733,6 +1737,91 @@ impl Session {
         self.writer(request)?
             .verify_file_collection(collection)
             .map_err(|error| storage_error(&error))
+    }
+
+    /// Create the namespace a request names in the app folder its root
+    /// names (ADR 0033 section 3), making the app folder when it is new.
+    /// These operations use the new layout directly and never open the
+    /// app folder as a folder root of the layout before ADR 0033.
+    fn create_namespace(&self, request: &Value) -> Result<Value, MachineError> {
+        let layout = self.app_layout(request)?;
+        let namespace = Self::named_namespace(request)?;
+        let folder = NamespaceAdmin::create_namespace(&layout, &namespace, RUNTIME_VERSION, None)
+            .map_err(|error| storage_error(&error))?;
+        Ok(json!({ "namespace": namespace.as_str(), "path": folder }))
+    }
+
+    /// Drop the namespace a request names; `cascade: true` also deletes its
+    /// collections. Fails with `EROOTLOCKED` while another process owns it.
+    fn drop_namespace(&self, request: &Value) -> Result<Value, MachineError> {
+        let layout = self.app_layout(request)?;
+        let namespace = Self::named_namespace(request)?;
+        let cascade = request.get("cascade").and_then(Value::as_bool) == Some(true);
+        let timing = LeaseTiming::from_environment().map_err(|error| storage_error(&error))?;
+        NamespaceAdmin::drop_namespace(
+            &layout,
+            &namespace,
+            cascade,
+            (self.filesystem_profile, timing),
+        )
+        .map_err(|error| storage_error(&error))?;
+        Ok(json!({ "namespace": namespace.as_str(), "dropped": true }))
+    }
+
+    fn list_namespaces(&self, request: &Value) -> Result<Value, MachineError> {
+        let layout = self.app_layout(request)?;
+        let names =
+            NamespaceAdmin::list_namespaces(&layout).map_err(|error| storage_error(&error))?;
+        let names = names.iter().map(NamespaceName::as_str).collect::<Vec<_>>();
+        Ok(json!({ "namespaces": names }))
+    }
+
+    /// The layout of the app folder a request's root names, judged by the
+    /// drive rule. The folder itself may not exist yet; its parent must.
+    fn app_layout(&self, request: &Value) -> Result<RootLayout, MachineError> {
+        let root = request
+            .get("root")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .or_else(|| self.default_root.clone())
+            .ok_or_else(|| {
+                MachineError::new(
+                    "EBADREQUEST",
+                    "a namespace request needs an app folder root",
+                )
+            })?;
+        Self::refuse_database_root(&root)?;
+        let app = Self::canonical_app_folder(&root)?;
+        RootFilesystem::admit(&app, self.filesystem_profile)
+            .map_err(|error| storage_error(&error))?;
+        RootLayout::checked(app).map_err(|error| storage_error(&error))
+    }
+
+    fn refuse_database_root(root: &Path) -> Result<(), MachineError> {
+        if NativeRoot::names_database(root) {
+            return Err(MachineError::new(
+                "EBADREQUEST",
+                "namespaces belong to an app folder, not a .vdbx file",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The canonical app folder: the folder itself when it exists, else its
+    /// canonical parent joined with its name.
+    fn canonical_app_folder(root: &Path) -> Result<PathBuf, MachineError> {
+        let name = root
+            .file_name()
+            .ok_or_else(|| MachineError::new("EBADREQUEST", "the app folder root has no name"))?;
+        let parent = root.parent().unwrap_or_else(|| Path::new("."));
+        let canonical_parent = fylo_vfs::canonicalize(parent)
+            .map_err(|error| MachineError::new("ENATIVE_IO", error.to_string()))?;
+        Ok(canonical_parent.join(name))
+    }
+
+    fn named_namespace(request: &Value) -> Result<NamespaceName, MachineError> {
+        let text = require_string(request, "namespace")?;
+        NamespaceName::parse(text).map_err(|error| storage_error(&error))
     }
 
     /// Read every document and file of a folder root and list the damaged

@@ -22,6 +22,21 @@
             "retry": "unsafe"
         },
         {
+            "name": "createNamespace",
+            "class": "write",
+            "retry": "conditional"
+        },
+        {
+            "name": "dropNamespace",
+            "class": "write",
+            "retry": "unsafe"
+        },
+        {
+            "name": "listNamespaces",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
             "name": "inspectCollection",
             "class": "read",
             "retry": "safe"
