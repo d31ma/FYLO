@@ -174,6 +174,11 @@ impl RootLeaseInner {
         Ok(crate::hex_bytes(&bytes))
     }
 
+    #[cfg(test)]
+    pub(super) fn heartbeat_lost(&self) -> bool {
+        self.heartbeat.lost()
+    }
+
     pub(super) fn owner_generation(&self) -> &str {
         &self.scope_name
     }

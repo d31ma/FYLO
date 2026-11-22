@@ -18,6 +18,7 @@ impl TakeoverFixture {
     const TAKEOVER: Duration = Duration::from_secs(2);
     #[cfg(windows)]
     const TAKEOVER: Duration = Duration::from_secs(15);
+    const LOST_WAIT: Duration = Duration::from_secs(10);
     const OTHER_MACHINE: &str = "ffffffffffffffffffffffffffffffff";
     const OTHER_OWNER: &str = "0123456789abcdef0123456789abcdef";
     const RECORD_NAME: &str = ".db.fylo-root-owner.lock.json";
@@ -302,7 +303,14 @@ fn a_taken_over_owner_stops_with_lease_lost_even_if_the_record_comes_back() {
     successor["ownerId"] = serde_json::json!(TakeoverFixture::OTHER_OWNER);
     successor["generation"] = serde_json::json!(2);
     fixture.write_record(&successor);
-    std::thread::sleep(TakeoverFixture::HEARTBEAT * 5);
+    let started = Instant::now();
+    while !lease.heartbeat_lost() {
+        assert!(
+            started.elapsed() < TakeoverFixture::LOST_WAIT,
+            "the heartbeat never saw the successor"
+        );
+        std::thread::sleep(TakeoverFixture::HEARTBEAT);
+    }
     assert_eq!(
         fixture.record()["ownerId"],
         TakeoverFixture::OTHER_OWNER,

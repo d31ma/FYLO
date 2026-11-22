@@ -105,6 +105,12 @@ impl RootLease {
         self.inner.drop_kernel_lock_for_test();
     }
 
+    /// Whether the heartbeat has seen another owner's record.
+    #[cfg(test)]
+    pub(super) fn heartbeat_lost(&self) -> bool {
+        self.inner.heartbeat_lost()
+    }
+
     pub(crate) fn owner_generation(&self) -> &str {
         self.inner.owner_generation()
     }
