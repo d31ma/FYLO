@@ -28,7 +28,7 @@ impl ManifestEntrySeed {
         &self,
         map: &mut A,
         key: &str,
-        fields: &mut (Option<String>, bool, Option<Option<SegmentEntry>>),
+        fields: &mut (Option<String>, bool, bool, Option<SegmentEntry>),
     ) -> Result<(), A::Error> {
         match key {
             "format" => fields.0 = Some(map.next_value::<String>()?),
@@ -36,7 +36,10 @@ impl ManifestEntrySeed {
                 map.next_value::<String>()?;
                 fields.1 = true;
             }
-            "entries" => fields.2 = Some(map.next_value_seed(EntryListSeed::new(self.index))?),
+            "entries" => {
+                fields.3 = map.next_value_seed(EntryListSeed::new(self.index))?;
+                fields.2 = true;
+            }
             "indexRemoved" | "indexAdded" => {
                 map.next_value::<Vec<String>>()?;
             }
@@ -66,12 +69,13 @@ impl<'de> Visitor<'de> for ManifestEntrySeed {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        let mut fields = (None, false, None);
+        let mut fields = (None, false, false, None);
         while let Some(key) = map.next_key::<String>()? {
             self.read_field(&mut map, &key, &mut fields)?;
         }
-        let (format, operation, entries) = fields;
+        let (format, operation, entries, entry) = fields;
         Self::require(operation.then_some(()), "operation")?;
-        Ok((Self::require(format, "format")?, Self::require(entries, "entries")?))
+        Self::require(entries.then_some(()), "entries")?;
+        Ok((Self::require(format, "format")?, entry))
     }
 }

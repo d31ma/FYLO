@@ -199,7 +199,6 @@ pub use document_rekey::DocumentRekey;
 pub use durability::Durability;
 pub use field_keys::{FieldKey, FieldKeys};
 pub use file_access_log::FileAccessLog;
-pub use segment_read_log::SegmentReadLog;
 pub use file_stamp::FileStamp;
 #[cfg(not(target_family = "wasm"))]
 pub use filesystem_check::FilesystemProbe;
@@ -219,6 +218,7 @@ pub use root_filesystem::RootFilesystem;
 pub use root_open_options::RootOpenOptions;
 pub use root_verification::RootVerification;
 pub use root_verification_report::RootVerificationReport;
+pub use segment_read_log::SegmentReadLog;
 pub use system_disk::{
     AppId, OptOutSource, PlacementKind, PlacementReport, PlacementSettings, RootPlacement,
 };

@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use fylo_storage_native::{
-    CollectionKind, CollectionLayout, DocumentWrite, NativeCollection, NativeRoot,
-    NativeWriteRoot, PlainDocumentCodec, RootConfig, SegmentReadLog,
+    CollectionKind, CollectionLayout, DocumentWrite, NativeCollection, NativeRoot, NativeWriteRoot,
+    PlainDocumentCodec, RootConfig, SegmentReadLog,
 };
 use serde_json::json;
 
@@ -39,10 +39,12 @@ impl Fixture {
     }
 
     fn writer(&self) -> NativeWriteRoot {
-        NativeWriteRoot::open(&self.0).unwrap().with_config(RootConfig {
-            layout: CollectionLayout::Segments,
-            ..RootConfig::default()
-        })
+        NativeWriteRoot::open(&self.0)
+            .unwrap()
+            .with_config(RootConfig {
+                layout: CollectionLayout::Segments,
+                ..RootConfig::default()
+            })
     }
 
     fn collection(&self) -> NativeCollection {
@@ -135,7 +137,10 @@ fn compaction_decodes_each_copied_commit_once() {
     let writer = fixture.writer();
     let (report, log) = counted(|| writer.compact_collection(Fixture::COLLECTION).unwrap());
     println!("{report:?} {log:?}");
-    assert!(report.documents_copied >= Fixture::PER_COMMIT - 1, "{report:?}");
+    assert!(
+        report.documents_copied >= Fixture::PER_COMMIT - 1,
+        "{report:?}"
+    );
     assert!(
         log.entries_decoded() <= 4 * (Fixture::PER_COMMIT + 1),
         "{log:?}"

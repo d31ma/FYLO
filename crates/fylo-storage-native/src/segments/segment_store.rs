@@ -3,8 +3,8 @@ use std::collections::btree_map::Entry;
 use std::sync::Arc;
 
 use super::{
-    DecodedRecord, LocationState, LocationTable, SegmentDocument, SegmentLocation, SegmentMedium, SegmentReader,
-    TableCache, TableReach,
+    DecodedRecord, LocationState, LocationTable, SegmentDocument, SegmentLocation, SegmentMedium,
+    SegmentReader, TableCache, TableReach,
 };
 use crate::{NativeStorageError, NativeStorageErrorCode};
 

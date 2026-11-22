@@ -25,7 +25,8 @@ impl SegmentCommitManifest {
     pub(crate) const FORMAT: &'static str = "fylo.segment-commit.v1";
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, NativeStorageError> {
-        let manifest: Self = serde_json::from_slice(bytes).map_err(Self::corrupt)?;
+        let manifest: Self =
+            serde_json::from_slice(bytes).map_err(|error| Self::corrupt(&error))?;
         Self::require_format(&manifest.format)?;
         SegmentReadLog::record_entries(manifest.entries.len());
         Ok(manifest)
@@ -43,7 +44,7 @@ impl SegmentCommitManifest {
         let (format, entry) = ManifestEntrySeed::new(usize::from(index))
             .deserialize(&mut deserializer)
             .and_then(|found| deserializer.end().map(|()| found))
-            .map_err(Self::corrupt)?;
+            .map_err(|error| Self::corrupt(&error))?;
         Self::require_format(&format)?;
         SegmentReadLog::record_entries(usize::from(entry.is_some()));
         Ok(entry)
@@ -59,7 +60,7 @@ impl SegmentCommitManifest {
         Ok(())
     }
 
-    fn corrupt(error: serde_json::Error) -> NativeStorageError {
+    fn corrupt(error: &serde_json::Error) -> NativeStorageError {
         NativeStorageError::new(
             NativeStorageErrorCode::CorruptMetadata,
             format!("segment commit manifest is corrupt: {error}"),

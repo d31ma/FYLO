@@ -135,7 +135,9 @@ fn segment_read_cost() {
     let bench = Bench::new();
     Bench::timed("seed 10 commits x 1000 documents", || bench.seed());
     Bench::timed("find all (batch reads)", || bench.find_all());
-    Bench::timed("1000 point reads (get)", || bench.point_reads(Bench::PER_COMMIT));
+    Bench::timed("1000 point reads (get)", || {
+        bench.point_reads(Bench::PER_COMMIT)
+    });
     Bench::timed("full index check (inspect verify)", || bench.full_check());
     Bench::timed("overwrite one document per commit", || {
         bench.overwrite_one_per_commit();
