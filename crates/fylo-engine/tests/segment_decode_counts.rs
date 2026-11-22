@@ -21,8 +21,8 @@ impl Fixture {
         let root = fylo_test_support::TestFolder::path()
             .join(format!("fylo-engine-decode-{}", std::process::id()));
         fs::create_dir(&root).unwrap();
-        let writer = NativeWriteRoot::open(&root).unwrap();
-        writer
+        let native = NativeWriteRoot::open(&root).unwrap();
+        native
             .create_collection_with_layout(
                 Self::COLLECTION,
                 CollectionKind::Document,
@@ -39,7 +39,7 @@ impl Fixture {
                     .clone(),
             })
             .collect();
-        writer
+        native
             .commit_document_writes_with(Self::COLLECTION, &writes, &PlainDocumentCodec)
             .unwrap();
         Self(root)
