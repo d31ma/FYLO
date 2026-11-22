@@ -15,21 +15,14 @@
     "tac": {
         "origin": "https://fylo.del.ma",
         "names": {
-            "words": [
-                "postgrest"
-            ]
+            "words": ["postgrest"]
         },
         "application": {
             "id": "ma.del.fylo.website",
             "version": "26.45.7"
         },
-        "scripts": [
-            "/shared/scripts/imports.js"
-        ],
-        "styles": [
-            "/shared/assets/duvay/duvay.min.css",
-            "/shared/assets/site.css"
-        ],
+        "scripts": ["/shared/scripts/imports.js"],
+        "styles": ["/shared/assets/duvay/duvay.min.css", "/shared/assets/site.css"],
         "styleSources": {
             "/shared/assets/duvay/duvay.min.css": {
                 "kind": "vendor",

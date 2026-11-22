@@ -226,12 +226,12 @@
 @media (max-width: 760px) {
     :is(.home-config-grid),
     :is(.home-guide-grid) {
-            grid-template-columns: minmax(0, 1fr);
-        }
+        grid-template-columns: minmax(0, 1fr);
+    }
 }
 
 @media (max-width: 760px) {
     :is(.home-section) {
-            padding-inline: 0;
-        }
+        padding-inline: 0;
+    }
 }

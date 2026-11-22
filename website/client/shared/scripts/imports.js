@@ -77,7 +77,8 @@ if (typeof document !== 'undefined') {
     }
     document.addEventListener('tachyon:rendered', syncRoute)
     document.addEventListener('click', (event) => {
-        if (event.target.closest('.doc-sample-langs button')) requestAnimationFrame(revealLanguageSelections)
+        if (event.target.closest('.doc-sample-langs button'))
+            requestAnimationFrame(revealLanguageSelections)
     })
     syncRoute()
 

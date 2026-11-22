@@ -2,7 +2,13 @@ import { SiteArtifacts } from './site-artifacts.mjs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { readFile, realpath, stat, writeFile } from 'node:fs/promises'
-import { brotliCompressSync, brotliDecompressSync, constants, gunzipSync, gzipSync } from 'node:zlib'
+import {
+    brotliCompressSync,
+    brotliDecompressSync,
+    constants,
+    gunzipSync,
+    gzipSync
+} from 'node:zlib'
 
 const project = process.argv[2] ? path.resolve(process.argv[2]) : process.cwd()
 const web = SiteArtifacts.web(project)

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import path from 'node:path'
-import DocsSample from '../../website/client/components/docs/sample/tac.js'
+import { sampleCode, sampleLanguages } from '../../website/client/shared/scripts/samples.js'
 
 const root = path.resolve(import.meta.dir, '../..')
 const homepage = await Bun.file(
@@ -37,13 +37,12 @@ describe('website guided homepage', () => {
 
     test('reuses the documentation recipe for every language', () => {
         expect(homepage).toContain('<docs-sample topic="first-write" hydrate="load" />')
-        const sample = new DocsSample({ topic: 'first-write' })
-        expect(sample.langs).toHaveLength(13)
-        for (const language of sample.langs) {
-            sample.showLang(null, language.key)
-            expect(sample.activeLabel()).toBe(language.label)
-            expect(sample.code()).toContain('Ada')
-            expect(sample.code()).not.toContain('undefined')
+        const languages = sampleLanguages()
+        expect(languages).toHaveLength(9)
+        for (const language of languages) {
+            const code = sampleCode(language.key, 'first-write')
+            expect(code).toContain('Ada')
+            expect(code).not.toContain('undefined')
         }
     })
 })

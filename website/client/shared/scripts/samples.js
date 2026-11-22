@@ -34,7 +34,8 @@ function literal(lang, v) {
     const text = (s) => (lang === 'dart' ? s.replace(/\$/g, '\\$') : s)
     if (typeof v === 'number') return String(v)
     if (typeof v === 'string') return quote + text(v) + quote
-    if (Array.isArray(v)) return listOpen + v.map((item) => literal(lang, item)).join(', ') + listClose
+    if (Array.isArray(v))
+        return listOpen + v.map((item) => literal(lang, item)).join(', ') + listClose
     const entries = Object.entries(v).map(
         ([k, val]) => pair.replace('%k', () => text(k)) + literal(lang, val)
     )

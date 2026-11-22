@@ -110,9 +110,9 @@
 
 @media (max-width: 760px) {
     :is(.home-example-panel .doc-sample-langs) {
-            margin-inline: 0;
-            padding-inline: 0;
-        }
+        margin-inline: 0;
+        padding-inline: 0;
+    }
 }
 
 :is(.doc-sample-langs .w-btn) {
@@ -122,20 +122,20 @@
 
 @media (hover: none) and (pointer: coarse), (max-width: 599.98px) {
     :is(.doc-sample-langs .w-btn) {
-            min-width: 44px;
-            min-height: 44px;
-        }
+        min-width: 44px;
+        min-height: 44px;
+    }
 }
 
 @media (max-width: 599.98px) {
     :is(.doc-sample-langs) {
-            flex-wrap: nowrap;
-            overflow-x: auto;
-            margin-inline: 0;
-            padding-inline: 0;
-            scroll-padding-inline: 1rem;
-            scrollbar-width: thin;
-        }
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        margin-inline: 0;
+        padding-inline: 0;
+        scroll-padding-inline: 1rem;
+        scrollbar-width: thin;
+    }
 }
 
 :is(.scroll-strip) {
@@ -194,14 +194,14 @@
 @media (hover: hover) and (pointer: fine) {
     :is(.has-overflow > .doc-nav-inner),
     :is(.has-overflow > .doc-sample-langs) {
-            cursor: grab;
-            user-select: none;
-        }
+        cursor: grab;
+        user-select: none;
+    }
 }
 
 @media (hover: hover) and (pointer: fine) {
     :is(.scroll-strip > .is-dragging),
     :is(.scroll-strip > .is-dragging *) {
-            cursor: grabbing;
-        }
+        cursor: grabbing;
+    }
 }

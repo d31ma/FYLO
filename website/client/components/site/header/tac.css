@@ -57,9 +57,9 @@
 
 @media (hover: none) and (pointer: coarse), (max-width: 599.98px) {
     :is(.doc-sample-langs .w-btn) {
-            min-width: 44px;
-            min-height: 44px;
-        }
+        min-width: 44px;
+        min-height: 44px;
+    }
 }
 
 .site-header {

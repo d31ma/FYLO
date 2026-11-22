@@ -39,7 +39,10 @@ export class TachyonPin {
         const file = TachyonPin.#location(platform)
         TachyonPin.#require(existsSync(file), `is not at ${file}`)
         const digest = createHash('sha256').update(readFileSync(file)).digest('hex')
-        TachyonPin.#require(digest === TachyonPin.SHA256[platform], `at ${file} has SHA-256 ${digest}`)
+        TachyonPin.#require(
+            digest === TachyonPin.SHA256[platform],
+            `at ${file} has SHA-256 ${digest}`
+        )
         return file
     }
 

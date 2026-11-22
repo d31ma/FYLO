@@ -1234,9 +1234,11 @@ describe('web release operations', () => {
         const finalPolicy = await Bun.file(config.sites.fylo.finalHeadersPolicy).text()
         const directiveHashes = (directive) =>
             new Set(
-                [...(finalPolicy.match(new RegExp(`${directive} [^;]*`))?.[0] ?? '').matchAll(
-                    /'sha256-([^']+)'/g
-                )].map((match) => match[1])
+                [
+                    ...(finalPolicy.match(new RegExp(`${directive} [^;]*`))?.[0] ?? '').matchAll(
+                        /'sha256-([^']+)'/g
+                    )
+                ].map((match) => match[1])
             )
         const finalStyleHashes = directiveHashes('style-src')
         const finalScriptHashes = directiveHashes('script-src')

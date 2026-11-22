@@ -75,20 +75,17 @@ describe('GitHub Pages browser client publishing', () => {
     })
 
     test('keeps website browser examples aligned with the Pages loader', async () => {
-        const examples = await Promise.all([
-            Bun.file(path.join(root, 'website/client/components/docs/content/tac.js')).text(),
-            Bun.file(path.join(root, 'website/client/components/code/showcase/tac.js')).text()
-        ])
+        const samples = await Bun.file(
+            path.join(root, 'website/client/shared/scripts/samples.js')
+        ).text()
 
-        for (const example of examples) {
-            expect(example).toContain('https://d31ma.github.io/FYLO/version/26.45.07/fylo.js')
-            expect(example).toContain('const db = await Fylo.open({ wasm: true })')
-            expect(example).not.toContain("createBrowserClient } from './fylo-web.mjs'")
-        }
+        expect(samples).toContain('https://d31ma.github.io/FYLO/version/26.45.07/fylo.js')
+        expect(samples).toContain('const db = await Fylo.open()')
+        expect(samples).not.toContain("createBrowserClient } from './fylo-web.mjs'")
     })
 
     test('pins every website release reference to the current version', async () => {
-        // The loader-alignment test above covers two components by name. These
+        // The loader-alignment test above covers the sample renderer. These
         // sources carry the same version and were drifting unguarded: the browser
         // page shipped a 26.30.04 loader while the rest of the site said
         // 26.45.07, and the download page names the Explorer zip by version
@@ -96,9 +93,9 @@ describe('GitHub Pages browser client publishing', () => {
         const pinned = await Promise.all(
             [
                 'README.md',
-                'website/client/components/docs/sample/tac.js',
-                'website/client/pages/docs/browser/tac.js',
-                'website/client/components/download/content/tac.js'
+                'website/client/shared/scripts/samples.js',
+                'website/client/services/DocumentationBrowserService.js',
+                'website/client/components/download/content/tac.html'
             ].map((file) => Bun.file(path.join(root, file)).text())
         )
 
