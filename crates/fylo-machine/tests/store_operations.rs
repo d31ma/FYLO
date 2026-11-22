@@ -301,6 +301,27 @@ fn scroll_answers_content_and_a_cursor_until_the_end() {
 }
 
 #[test]
+fn a_scroll_cursor_works_only_in_the_namespace_that_made_it() {
+    let fixture = Fixture::new();
+    fixture.seed();
+    let query = json!({ "orderBy": [{ "field": "title" }] });
+    let first = fixture.result(json!({
+        "op": "storeScroll", "collection": Fixture::COLLECTION, "query": query, "page": { "size": 2 }
+    }));
+    let page = json!({ "size": 2, "cursor": first["nextCursor"] });
+    let same = fixture.result(json!({
+        "op": "storeScroll", "collection": Fixture::COLLECTION, "namespace": "public",
+        "query": query, "page": page
+    }));
+    assert_eq!(Fixture::titles(&same["content"]), ["charlie", "delta"]);
+    let other = fixture.error_code(json!({
+        "op": "storeScroll", "collection": Fixture::COLLECTION, "namespace": "slice-12",
+        "query": query, "page": page
+    }));
+    assert_eq!(other, json!("ECURSOR"));
+}
+
+#[test]
 fn delete_by_query_and_by_id_answer_how_many_were_deleted() {
     let fixture = Fixture::new();
     let ids = fixture.seed();

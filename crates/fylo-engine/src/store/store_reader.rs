@@ -64,7 +64,7 @@ impl ReadOnlyEngine {
                 page.size().saturating_add(1),
                 after.clone(),
             )?;
-            let next_cursor = Self::store_next_cursor(&handle, query, &positions, page.size());
+            let next_cursor = Self::store_next_cursor(&handle, query, &positions, page);
             let shown: Vec<StorePosition> = positions.into_iter().take(page.size()).collect();
             let content = self.store_read_positions(&handle, &shown, overlay)?;
             Ok(StoreScroll {
@@ -165,7 +165,7 @@ impl ReadOnlyEngine {
         page: &StoreScrollPage,
     ) -> Result<Option<StorePosition>, EngineError> {
         page.cursor()
-            .map(|cursor| query.cursor_position(cursor, handle.name()))
+            .map(|cursor| query.cursor_position(cursor, &page.scope(handle.name())))
             .transpose()
             .map_err(EngineError::query)
     }
@@ -174,14 +174,14 @@ impl ReadOnlyEngine {
         handle: &NativeCollection,
         query: &StoreQuery,
         positions: &[StorePosition],
-        size: usize,
+        page: &StoreScrollPage,
     ) -> Option<String> {
-        if positions.len() <= size {
+        if positions.len() <= page.size() {
             return None;
         }
         positions
-            .get(size.checked_sub(1)?)
-            .map(|last| query.cursor(last, handle.name()))
+            .get(page.size().checked_sub(1)?)
+            .map(|last| query.cursor(last, &page.scope(handle.name())))
     }
 
     fn store_ranked(

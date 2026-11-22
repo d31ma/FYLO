@@ -138,7 +138,7 @@ impl Session {
             "storeFind" => Self::store_find(store, view),
             "storeCount" => Self::store_count(store, view),
             "storeExists" => Self::store_exists(store, view),
-            "storeScroll" => Self::store_scroll(store, view),
+            "storeScroll" => self.store_scroll(store, view),
             "storeSave" => self.store_save(store, view),
             "storePatch" => Self::store_patch(store, view),
             "storeDeleteById" => Self::store_delete_by_id(store, view),
@@ -199,11 +199,15 @@ impl Session {
         Ok(StoreOutcome::value(Value::Bool(found)))
     }
 
+    /// A cursor is bound to the request's namespace and collection.
     fn store_scroll(
+        &self,
         store: &StoreRequest<'_>,
         view: &StoreView<'_>,
     ) -> Result<StoreOutcome, MachineError> {
-        let page = view.scroll(store.collection(), &store.query()?, &store.scroll_page()?)?;
+        let namespace = self.request_namespace(store.frame())?;
+        let page = store.scroll_page()?.within(namespace.as_str());
+        let page = view.scroll(store.collection(), &store.query()?, &page)?;
         Ok(StoreOutcome::value(json!({
             "content": StoreEntity::list(&page.content, store.id_field()),
             "nextCursor": page.next_cursor,

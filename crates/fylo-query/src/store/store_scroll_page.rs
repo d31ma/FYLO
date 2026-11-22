@@ -10,10 +10,12 @@ use crate::QueryError;
 pub struct StoreScrollPage {
     size: usize,
     cursor: Option<String>,
+    namespace: Option<String>,
 }
 
 impl StoreScrollPage {
     const KEYS: [&'static str; 3] = ["size", "cursor", "maxSize"];
+    const DEFAULT_NAMESPACE: &'static str = "public";
 
     /// Parse and check a scroll page; `None` or `null` is the first page of
     /// the default size.
@@ -28,13 +30,37 @@ impl StoreScrollPage {
         StoreFields::require_known_keys(object, &Self::KEYS, "a page")?;
         let size = StorePageSize::from_page(object)?;
         let cursor = Self::parse_cursor(object.get("cursor"))?;
-        Ok(Self { size, cursor })
+        Ok(Self {
+            size,
+            cursor,
+            namespace: None,
+        })
     }
 
     /// A page of `size` documents after `cursor`.
     #[must_use]
     pub const fn new(size: usize, cursor: Option<String>) -> Self {
-        Self { size, cursor }
+        Self {
+            size,
+            cursor,
+            namespace: None,
+        }
+    }
+
+    /// The same page for a collection in `namespace`; without it the page
+    /// belongs to the `public` namespace.
+    #[must_use]
+    pub fn within(mut self, namespace: &str) -> Self {
+        self.namespace = Some(namespace.to_owned());
+        self
+    }
+
+    /// The scope a cursor of this page is bound to: the namespace and the
+    /// collection, so a cursor works only where it was made.
+    #[must_use]
+    pub fn scope(&self, collection: &str) -> String {
+        let namespace = self.namespace.as_deref().unwrap_or(Self::DEFAULT_NAMESPACE);
+        format!("{namespace}/{collection}")
     }
 
     /// The most documents the page holds.

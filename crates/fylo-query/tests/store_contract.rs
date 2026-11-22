@@ -222,6 +222,14 @@ fn a_cursor_resumes_at_its_position_and_only_for_its_query_and_scope() {
 }
 
 #[test]
+fn a_scroll_page_scopes_its_cursor_to_a_namespace_and_a_collection() {
+    let page = StoreScrollPage::new(3, None);
+    assert_eq!(page.scope("people"), "public/people");
+    let within = page.within("slice-12");
+    assert_eq!(within.scope("people"), "slice-12/people");
+}
+
+#[test]
 fn pages_default_to_twenty_and_check_their_sizes() {
     let first = StorePage::from_value(None).unwrap();
     assert_eq!((first.size(), first.offset()), (20, 0));
