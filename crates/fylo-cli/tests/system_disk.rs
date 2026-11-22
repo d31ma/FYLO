@@ -147,6 +147,13 @@ impl Place {
         json!({"op":"createCollection","collection":"records"})
     }
 
+    /// `path` as the handshake's `storage.volume` names it: without the
+    /// Windows `\\?\` prefix that `fs::canonicalize` adds.
+    fn volume_name(path: &Path) -> String {
+        let text = path.to_string_lossy();
+        text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned()
+    }
+
     fn listed(variable: &str) -> Vec<PathBuf> {
         std::env::var_os(variable)
             .map(|list| std::env::split_paths(&list).collect())
@@ -458,7 +465,7 @@ fn data_disk_roots_are_admitted_only_directly_below_the_mount_point() {
         assert_eq!(lock["systemDisk"], false, "{lock}");
         assert_eq!(
             frames[0]["result"]["storage"]["volume"],
-            mount.to_string_lossy().as_ref(),
+            Place::volume_name(&mount),
             "{}",
             frames[0]
         );
