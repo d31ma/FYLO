@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn another_running_process_start_equals_the_value_wmi_gives() {
         let mut child = Command::new("ping.exe")
-            .args(["-n", "30", "127.0.0.1"])
+            .args(["-n", "600", "127.0.0.1"])
             .stdout(Stdio::null())
             .spawn()
             .unwrap();

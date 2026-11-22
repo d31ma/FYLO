@@ -3805,8 +3805,10 @@ pub(crate) fn process_identity(pid: u32) -> Option<String> {
 #[cfg(target_os = "windows")]
 pub(crate) fn process_identity(pid: u32) -> Option<String> {
     crate::process_start_time::ProcessStartTime::ticks(pid)
-        .map(|found| found.map(|ticks| ticks.to_string()))
-        .unwrap_or_else(|_| wmi_creation_ticks(pid))
+        .map_or_else(
+            |_| wmi_creation_ticks(pid),
+            |found| found.map(|ticks| ticks.to_string()),
+        )
         .map(|value| format!("win32:{value}"))
 }
 
