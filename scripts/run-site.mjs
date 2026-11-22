@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { SiteArtifacts } from './site-artifacts.mjs'
+import { TachyonPin } from './tachyon-pin.mjs'
 
 class SiteCommand {
     static async run() {
@@ -12,7 +13,7 @@ class SiteCommand {
         )
             ? []
             : ['--out-dir', SiteArtifacts.web()]
-        const child = spawn(process.env.TAC_BIN ?? 'ty', [command, ...output, ...arguments_], {
+        const child = spawn(TachyonPin.binary(), [command, ...output, ...arguments_], {
             stdio: 'inherit',
             env: process.env
         })
