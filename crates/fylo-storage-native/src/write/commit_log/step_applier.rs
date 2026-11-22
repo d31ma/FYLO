@@ -142,7 +142,7 @@ impl<'a> StepApplier<'a> {
         let from = self.resolve(&rename.from)?;
         let to = self.resolve(&rename.to)?;
         if path_exists_no_follow(&to)? {
-            return Ok(());
+            return self.drop_replayed_source(&from);
         }
         if !path_exists_no_follow(&from)? {
             return Err(NativeStorageError::new(
@@ -158,6 +158,18 @@ impl<'a> StepApplier<'a> {
         })?;
         self.create_directories(parent)?;
         fs::rename(&from, &to).map_err(NativeStorageError::io)
+    }
+
+    /// A move whose destination exists already happened. During replay a
+    /// source that exists too was re-created by an earlier record's step
+    /// (the put of a document a later record deleted), so it is removed,
+    /// or the move would be undone.
+    fn drop_replayed_source(&self, from: &Path) -> Result<(), NativeStorageError> {
+        if !self.replay || !path_exists_no_follow(from)? {
+            return Ok(());
+        }
+        self.root.verify_path(from, ExpectedType::File)?;
+        Self::remove_if_present(from)
     }
 
     fn undo_move(&self, rename: &MoveStep) -> Result<(), NativeStorageError> {

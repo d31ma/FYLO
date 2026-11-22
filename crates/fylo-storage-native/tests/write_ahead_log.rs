@@ -236,3 +236,15 @@ fn patch_delete_and_restore_round_trip_through_the_log() {
     assert_eq!(value["group"], 99);
     fixture.index_matches_rebuild();
 }
+
+#[test]
+fn recovery_does_not_bring_back_a_document_a_later_record_deleted() {
+    let fixture = Fixture::create("replay-delete");
+    let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+    put(&writer, 5);
+    writer.delete_document("items", &identifier(5)).unwrap();
+    mark_writing(&fixture);
+    assert!(writer.recover_collection("items").unwrap());
+    assert!(!fixture.live(&identifier(5)));
+    fixture.index_matches_rebuild();
+}
