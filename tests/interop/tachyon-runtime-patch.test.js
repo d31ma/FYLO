@@ -8,10 +8,7 @@ import { runInNewContext } from 'node:vm'
 const script = path.resolve('scripts/patch-tachyon-runtime.mjs')
 const template = await readFile('tests/fixtures/tachyon-verified-service-worker.txt', 'utf8')
 const roots = []
-const originalDispatch =
-    "  const cacheFirst = rule ? rule.policy === 'cache-first' : request.mode !== 'navigate'\n  event.respondWith(cacheFirst ? fromCache(request, asset) : fromNetwork(request, asset))\n"
-const patchedDispatch =
-    "  // FYLO keeps stable asset URLs network-first; preserve Tachyon's verified offline fallback.\n  event.respondWith(fromNetwork(request, asset))\n"
+const networkFirstRules = JSON.stringify([{ pattern: '^/[^?]*$', policy: 'network-first' }])
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex')
 
 afterAll(async () => {
@@ -23,20 +20,13 @@ async function fixture() {
     roots.push(root)
     const web = path.join(root, 'dist', 'web')
     await mkdir(path.join(web, '.tachyon'), { recursive: true })
-    await writeFile(
-        path.join(web, '.tachyon', 'tac-client.js'),
-        [
-            "document.getElementById('tachyon-view')",
-            'const componentRecords = new Map()',
-            'const ownedEnvironment = {}'
-        ].join('\n')
-    )
+    await writeFile(path.join(web, '.tachyon', 'tac-client.js'), 'export const runtime = true')
     await writeFile(path.join(web, 'index.html'), '<html><body>Home</body></html>')
     await writeFile(path.join(web, 'runtime.js'), 'current-runtime')
-    const assets = { '/': {}, '/index.html': {}, '/runtime.js': {} }
+    const assets = { '/': {}, '/index.html': {}, '/runtime.js': { bodyLimit: 1024 } }
     const source = template
         .replace('__VERSION__', 'original')
-        .replace('__CACHE_RULES__', '[]')
+        .replace('__CACHE_RULES__', networkFirstRules)
         .replace('__PUBLIC_ASSETS__', JSON.stringify(assets))
     const worker = path.join(web, 'tachyon-sw.js')
     await writeFile(worker, source)
@@ -62,33 +52,33 @@ async function patch(root) {
     }
 }
 
-test('patches the verified worker without changing its security guards and refreshes final-byte hashes', async () => {
+test('refreshes final-byte hashes without changing the verified worker', async () => {
     const built = await fixture()
     const result = await patch(built.root)
     expect(result.exitCode, result.stderr).toBe(0)
     const source = await readFile(built.worker, 'utf8')
     const html = await readFile(path.join(built.web, 'index.html'))
-    expect(html.toString()).toContain(
-        '<script type="module" src="/shared/scripts/imports.js"></script>'
-    )
     const manifest = JSON.parse(source.match(/^const ASSETS = (.*)$/m)[1])
     expect(manifest['/']).toEqual({ bytes: html.byteLength, sha256: digest(html) })
     expect(manifest['/index.html']).toEqual(manifest['/'])
-    expect(manifest['/runtime.js']).toEqual({ bytes: 15, sha256: digest('current-runtime') })
+    expect(manifest['/runtime.js']).toEqual({
+        bodyLimit: 1024,
+        bytes: 15,
+        sha256: digest('current-runtime')
+    })
     const normalize = (value) =>
         value.replace(/^const VERSION = .*$/m, 'VERSION').replace(/^const ASSETS = .*$/m, 'ASSETS')
-    expect(normalize(source)).toBe(
-        normalize(built.source.replace(originalDispatch, patchedDispatch))
-    )
+    expect(normalize(source)).toBe(normalize(built.source))
     expect((await patch(built.root)).exitCode).toBe(0)
     expect(await readFile(built.worker, 'utf8')).toBe(source)
 })
 
-test('rejects unknown worker guards and unsafe manifest paths', async () => {
+test('rejects unknown worker guards, cache-first rules and unsafe manifest paths', async () => {
     for (const mutate of [
         (source) => source.replace("request.headers.has('authorization')", 'false'),
-        (source) => source.replace("&& !response.headers.has('vary')", ''),
-        (source) => source.replace('"/runtime.js":{}', '"/../outside.js":{}')
+        (source) => source.replace("(response.headers.get('vary') || '')", "''"),
+        (source) => source.replace('"policy":"network-first"', '"policy":"cache-first"'),
+        (source) => source.replace('"/runtime.js":{', '"/../outside.js":{')
     ]) {
         const built = await fixture()
         const source = mutate(built.source)

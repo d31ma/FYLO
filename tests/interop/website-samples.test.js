@@ -2,29 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import DocsSample from '../../website/client/components/docs/sample/tac.js'
-import Showcase from '../../website/client/components/code/showcase/tac.js'
-import DocsContent from '../../website/client/components/docs/content/tac.js'
+import { sampleCode as renderSample } from '../../website/client/shared/scripts/samples.js'
 import { testFolder } from '../helpers/root.js'
 
 function sampleCode(topic, lang) {
-    const sample = new DocsSample({ topic })
-    sample.$lang = lang
-    return sample.code()
-}
-
-function showcaseCode(tab, lang) {
-    const showcase = new Showcase()
-    showcase.$tab = tab
-    showcase.$lang = lang
-    return showcase.currentCode()
-}
-
-function contentCode(section, lang) {
-    const content = new DocsContent()
-    content.$section = section
-    content.$lang = lang
-    return content.code()
+    return renderSample(lang, topic)
 }
 
 describe('website language samples match the shipped clients', () => {
@@ -45,8 +27,7 @@ describe('website language samples match the shipped clients', () => {
         expect(sampleCode('find-ops', 'go')).toContain(
             'fmt.Println(exact, adults, engineers, privileged)'
         )
-        expect(showcaseCode('sql', 'go')).toContain('import "fmt"')
-        expect(contentCode('sql', 'go')).toContain('import "fmt"')
+        expect(sampleCode('sql', 'go')).toContain('import "fmt"')
     })
 
     test('browser samples resolve cursors and use the escaping sql tag', () => {
@@ -67,7 +48,7 @@ describe('website language samples match the shipped clients', () => {
     })
 
     test('local-only samples create the collection before the first put', () => {
-        for (const code of [showcaseCode('start', 'web'), contentCode('install', 'web')]) {
+        for (const code of [sampleCode('first-write', 'web'), sampleCode('crud', 'web')]) {
             expect(code.indexOf('create()')).toBeGreaterThan(-1)
             expect(code.indexOf('create()')).toBeLessThan(code.indexOf('put('))
         }
@@ -125,8 +106,8 @@ assert(meta.rating === 4 && !('starred' in meta), 'setMeta update and remove')
     }
 
     static async bucketsPage() {
-        globalThis.document ??= { title: '' }
-        const module = await import('../../website/client/pages/docs/buckets/tac.js')
+        globalThis.Service ??= () => undefined
+        const module = await import('../../website/client/services/DocumentationBucketsService.js')
         return new module.default()
     }
 

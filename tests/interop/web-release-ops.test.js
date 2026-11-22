@@ -1179,7 +1179,6 @@ describe('web release operations', () => {
         await execFileAsync('bun', ['run', 'bundle'], { cwd: path.join(root, 'website') })
 
         const homepage = await Bun.file(path.join(root, 'website/dist/web/index.html')).text()
-        const legacyRuntime = Bun.file(path.join(root, 'website/dist/web/.tachyon/islands.js'))
         const clientRuntime = Bun.file(path.join(root, 'website/dist/web/.tachyon/tac-client.js'))
         const serviceWorker = await Bun.file(
             path.join(root, 'website/dist/web/tachyon-sw.js')
@@ -1187,20 +1186,13 @@ describe('web release operations', () => {
         const registration = await Bun.file(
             path.join(root, 'website/dist/web/.tachyon/register-sw.js')
         ).text()
-        const ownershipGuard = "marker.closest('tachyon-island') !== root"
-        if (await legacyRuntime.exists()) {
-            expect((await legacyRuntime.text()).split(ownershipGuard)).toHaveLength(2)
-        } else {
-            expect(await clientRuntime.exists()).toBe(true)
-            const source = await clientRuntime.text()
-            expect(source).toContain("document.getElementById('tachyon-view')")
-            expect(source).toContain('const componentRecords = new Map()')
-            expect(source).toContain('const ownedEnvironment =')
-            expect(source).not.toContain('tachyon-expr[data-tachyon-expression]')
-        }
+        expect(await clientRuntime.exists()).toBe(true)
+        expect(await clientRuntime.text()).not.toContain('tachyon-expr[data-tachyon-expression]')
         expect(homepage.split('/shared/scripts/imports.js')).toHaveLength(2)
-        expect(serviceWorker).toContain('event.respondWith(fromNetwork(request, asset))')
-        expect(serviceWorker).not.toContain('cacheFirst')
+        expect(serviceWorker).toContain(
+            'const RULES = ([{"pattern":"^/[^?]*$","policy":"network-first"}])'
+        )
+        expect(serviceWorker).toContain('fromNetwork(request, asset)')
         expect(serviceWorker).toContain('async function cacheRead(request, asset)')
         expect(serviceWorker).toContain('matchesAsset')
         expect(serviceWorker).toContain('url.origin !== self.location.origin')
@@ -1240,14 +1232,22 @@ describe('web release operations', () => {
         )
 
         const finalPolicy = await Bun.file(config.sites.fylo.finalHeadersPolicy).text()
-        const finalStyleHashes = new Set(
-            [...finalPolicy.matchAll(/'sha256-([^']+)'/g)].map((match) => match[1])
-        )
+        const directiveHashes = (directive) =>
+            new Set(
+                [...(finalPolicy.match(new RegExp(`${directive} [^;]*`))?.[0] ?? '').matchAll(
+                    /'sha256-([^']+)'/g
+                )].map((match) => match[1])
+            )
+        const finalStyleHashes = directiveHashes('style-src')
+        const finalScriptHashes = directiveHashes('script-src')
         const generatedStyleHashes = new Set()
+        const generatedScriptHashes = new Set()
         const htmlFiles = new Bun.Glob('**/*.html')
         for await (const relative of htmlFiles.scan(path.join(root, 'website/dist/web'))) {
             const html = await Bun.file(path.join(root, 'website/dist/web', relative)).text()
-            const inlineScripts = [...html.matchAll(/<script(?![^>]*\bsrc=)([^>]*)>/g)]
+            const inlineScripts = [
+                ...html.matchAll(/<script(?![^>]*\bsrc=)([^>]*)>([\s\S]*?)<\/script>/g)
+            ]
             expect(inlineScripts.length).toBeGreaterThan(0)
             const renderPlans = inlineScripts.filter(
                 (match) =>
@@ -1259,19 +1259,27 @@ describe('web release operations', () => {
             expect(
                 inlineScripts.every(
                     (match) =>
-                        renderPlans.includes(match) || /\btype="speculationrules"/.test(match[1])
+                        renderPlans.includes(match) ||
+                        /\btype="speculationrules"/.test(match[1]) ||
+                        finalScriptHashes.has(
+                            createHash('sha256').update(match[2]).digest('base64')
+                        )
                 )
             ).toBe(true)
             expect(html).not.toMatch(/\son[a-z]+=/i)
             expect(html).not.toMatch(/\sstyle=/i)
+            for (const match of inlineScripts.filter((script) => !/\btype="/.test(script[1]))) {
+                generatedScriptHashes.add(createHash('sha256').update(match[2]).digest('base64'))
+            }
             for (const match of html.matchAll(/<style>([\s\S]*?)<\/style>/g)) {
                 generatedStyleHashes.add(createHash('sha256').update(match[1]).digest('base64'))
             }
         }
         expect(finalStyleHashes).toEqual(generatedStyleHashes)
+        expect(finalScriptHashes).toEqual(generatedScriptHashes)
 
         const transitionPolicy = await Bun.file(config.sites.fylo.headersPolicy).text()
-        for (const hash of generatedStyleHashes) {
+        for (const hash of [...generatedStyleHashes, ...generatedScriptHashes]) {
             expect(transitionPolicy).toContain(`'sha256-${hash}'`)
         }
         expect(transitionPolicy).toContain("'sha256-BFiBhqPWHJntZh+bkcvub23pJ3N2o+3u+92sBneTe5g='")
@@ -1411,6 +1419,8 @@ describe('web release operations', () => {
         const explorerPackage = await Bun.file('explorer/package.json').json()
         const vendorInstaller = await Bun.file('scripts/install-vendor-bins.sh').text()
         const tachyonPatch = await Bun.file('scripts/patch-tachyon-runtime.mjs').text()
+        const siteRunner = await Bun.file('scripts/run-site.mjs').text()
+        const tachyonPin = await Bun.file('scripts/tachyon-pin.mjs').text()
 
         expect(bunVersion).toBe('1.3.11')
         expect(rustToolchain).toContain('channel = "1.97.1"')
@@ -1421,11 +1431,13 @@ describe('web release operations', () => {
         expect(vendorInstaller).toContain("TACHYON_VERSION='v26.36.01'")
         expect(websitePackage.scripts.bundle).toContain('run-site.mjs bundle')
         expect(websitePackage.scripts.bundle).toContain('patch-tachyon-runtime.mjs')
-        expect(tachyonPatch).toContain("marker.closest('tachyon-island') !== root")
         expect(tachyonPatch).toContain("path.join(web, '.tachyon', 'tac-client.js')")
-        expect(tachyonPatch).toContain('refusing to apply the supported nested-island patch')
-        expect(tachyonPatch).toContain('refusing to apply the supported network-first patch')
-        expect(tachyonPatch).toContain('/shared/scripts/imports.js')
+        expect(tachyonPatch).toContain('refusing to refresh its asset manifest')
+        expect(tachyonPatch).toContain('"policy":"network-first"')
+        expect(siteRunner).toContain('spawn(TachyonPin.binary(), [')
+        expect(tachyonPin).toMatch(/static COMMIT = '[0-9a-f]{40}'/)
+        expect(tachyonPin).toMatch(/'macos-arm64': '[0-9a-f]{64}'/)
+        expect(tachyonPin).toMatch(/'linux-arm64': '[0-9a-f]{64}'/)
         expect(explorerPackage.scripts.bundle).toContain('@d31ma/tachyon/src/cli/index.js bundle')
         expect(websitePackage.devDependencies?.['@d31ma/tachyon']).toBeUndefined()
         expect(explorerPackage.devDependencies?.['@d31ma/tachyon']).toContain(
