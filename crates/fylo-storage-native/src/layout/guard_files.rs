@@ -61,10 +61,17 @@ impl GuardFiles {
             .open(path);
         match created {
             Ok(file) => crate::sync_handle(&file).map_err(NativeStorageError::io),
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                Self::require_plain_file(path)
-            }
-            Err(error) => Err(NativeStorageError::io(error)),
+            Err(error) => Self::check_existing_guard(path, error),
+        }
+    }
+
+    fn check_existing_guard(
+        path: &Path,
+        create_error: std::io::Error,
+    ) -> Result<(), NativeStorageError> {
+        match fs::symlink_metadata(path) {
+            Ok(_) => Self::require_plain_file(path),
+            Err(_) => Err(NativeStorageError::io(create_error)),
         }
     }
 
