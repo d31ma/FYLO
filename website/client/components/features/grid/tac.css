@@ -49,3 +49,7 @@
     font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 0.86em;
 }
+
+.home-main {
+    min-height: calc(100vh - 56px);
+}

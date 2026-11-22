@@ -1,13 +1,13 @@
 {
     "name": "FYLO",
     "short_name": "FYLO",
-    "description": "Filesystem-first document store. Query the files you already own.",
+    "description": "FYLO is a document store that ships as a single self-contained binary with language shims for Python, Ruby, Node, Go, C#, Java, PHP, and Dart, plus a local-only browser client. One canonical JSON file per document, zero-payload prefix indexes, git-like version control, and SQL — no server, no network protocol.",
     "start_url": "/",
     "scope": "/",
     "display": "standalone",
     "icons": [
         {
-            "src": "/shared/assets/fylo-mark.svg",
+            "src": "/shared/assets/favicon.svg",
             "sizes": "any",
             "type": "image/svg+xml"
         }
@@ -23,14 +23,30 @@
             "id": "ma.del.fylo.website",
             "version": "26.45.7"
         },
+        "scripts": [
+            "/shared/scripts/imports.js"
+        ],
         "styles": [
             "/shared/assets/duvay/duvay.min.css",
             "/shared/assets/site.css"
         ],
+        "styleSources": {
+            "/shared/assets/duvay/duvay.min.css": {
+                "kind": "vendor",
+                "package": "@d31ma/duvay-css",
+                "version": "26.35.01-1",
+                "license": "MIT",
+                "sha256": "dd0b9a6841313bc3b4bf30da476dc1aa88821a58220d662b679f83873b92c768"
+            },
+            "/shared/assets/site.css": {
+                "kind": "foundation"
+            }
+        },
         "metadata": {
             "defaults": {
                 "siteName": "FYLO",
-                "image": "/shared/assets/fylo-mark.svg"
+                "description": "FYLO is a document store that ships as a single self-contained binary with language shims for Python, Ruby, Node, Go, C#, Java, PHP, and Dart, plus a local-only browser client. One canonical JSON file per document, zero-payload prefix indexes, git-like version control, and SQL — no server, no network protocol.",
+                "image": "/shared/assets/favicon.svg"
             },
             "routes": {
                 "/": {

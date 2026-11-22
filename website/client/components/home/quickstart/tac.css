@@ -1,0 +1,185 @@
+.home-section {
+    padding: clamp(3rem, 6vw, 5rem) 1rem;
+    border-top: 1px solid var(--w-divider);
+}
+
+.home-section-heading {
+    max-width: 46rem;
+    margin: 0 auto 2rem;
+    text-align: center;
+}
+
+.home-section .home-kicker {
+    margin: 0 0 0.8rem;
+    color: var(--w-primary);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.home-section h2 {
+    margin: 0 0 1rem;
+    font-size: clamp(1.75rem, 3.5vw, 2.5rem);
+    letter-spacing: -0.035em;
+    line-height: 1.2;
+}
+
+.home-section p {
+    color: var(--w-text-subtle);
+    line-height: 1.75;
+}
+
+.home-section a {
+    color: var(--w-primary);
+    text-underline-offset: 0.25em;
+}
+
+.home-example-panel,
+.home-config-panel {
+    min-width: 0;
+    border: 1px solid var(--w-border);
+    border-radius: var(--w-radius-md);
+    background: var(--w-surface-container-low);
+    overflow: hidden;
+}
+
+.home-panel-label {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.85rem 1.25rem;
+    border-bottom: 1px solid var(--w-divider);
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.home-panel-label a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+}
+
+.home-panel-tag {
+    color: var(--w-text-subtle);
+    font-weight: 400;
+}
+
+.home-example-panel .doc-sample {
+    min-width: 0;
+    padding: 1rem 1.25rem 1.25rem;
+}
+
+.home-example-panel .code-block {
+    margin: 0;
+    min-height: 16rem;
+    background: var(--w-surface);
+    box-shadow: none;
+}
+
+.home-example-note,
+.home-boundaries {
+    margin: 1.5rem 0 0;
+    text-align: center;
+    font-size: 0.875rem;
+}
+
+.home-config-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: clamp(2rem, 6vw, 5rem);
+    align-items: center;
+}
+
+.home-config-copy {
+    min-width: 0;
+    max-width: 34rem;
+}
+
+.home-config-copy code,
+.home-config-note code {
+    font-size: 0.9em;
+    color: var(--w-text);
+}
+
+.home-text-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    font-weight: 600;
+}
+
+.home-config-panel .code-block {
+    border: 0;
+    border-radius: 0;
+    margin: 0;
+    background: transparent;
+    box-shadow: none;
+    font-size: 0.82rem;
+}
+
+.home-config-note {
+    margin: 0;
+    padding: 0 1.25rem 1.25rem;
+    font-size: 0.8rem;
+}
+
+.home-guide-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1rem;
+}
+
+.home-guide {
+    display: block;
+    padding: 1.5rem;
+    border: 1px solid var(--w-border);
+    border-radius: var(--w-radius-md);
+    text-decoration: none;
+    transition:
+        border-color 160ms ease,
+        background 160ms ease;
+}
+
+.home-guide:hover {
+    border-color: var(--w-primary);
+    background: var(--w-surface-container-low);
+}
+
+.home-guide > span {
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.home-guide h3 {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin: 0.75rem 0;
+    color: var(--w-text);
+    font-size: 1.05rem;
+    line-height: 1.5;
+}
+
+.home-guide p {
+    margin: 0;
+    font-size: 0.9rem;
+}
+
+@media (max-width: 760px) {
+    .home-config-grid,
+        .home-guide-grid {
+            grid-template-columns: minmax(0, 1fr);
+        }
+
+    .home-section {
+            padding-inline: 0;
+        }
+
+    .home-example-panel .doc-sample-langs {
+            margin-inline: 0;
+            padding-inline: 0;
+        }
+}

@@ -1,6 +1,3 @@
-// Browser entry — owns the theme lifecycle and injects favicon + SEO metadata
-// into the generated shell. The site is authored entirely with DuVay's CSS
-// classes (no web components), so only duvay.min.css is needed.
 import { installScrollStrips } from './scroll-strips.js'
 
 const THEME_KEY = 'w-theme'
@@ -40,11 +37,6 @@ if (typeof document !== 'undefined') {
         }
     })
 
-    // Keep every multi-language sample on a docs page on the same language.
-    // Each <docs-sample> owns its own $lang, so the only way to move them
-    // together is to replay the click — which also keeps each component the
-    // single owner of its own state. The guard stops the replay recursing.
-    let syncingLang = false
     const revealInScroller = (active, scroller) => {
         if (!active || !scroller || scroller.scrollWidth <= scroller.clientWidth) return
         const offset =
@@ -59,62 +51,9 @@ if (typeof document !== 'undefined') {
             revealInScroller(strip.querySelector('[aria-pressed="true"]'), strip)
         }
     }
-    document.addEventListener('click', (event) => {
-        const button = event.target.closest('.doc-sample-langs button')
-        if (!button || syncingLang) return
-        const label = button.textContent.trim()
-        syncingLang = true
-        try {
-            // Re-query each round: selecting a language morphs that component's
-            // DOM, which detaches nodes captured before the click.
-            const count = document.querySelectorAll('.doc-sample-langs').length
-            for (let i = 0; i < count; i++) {
-                const strip = document.querySelectorAll('.doc-sample-langs')[i]
-                if (!strip) continue
-                const match = [...strip.querySelectorAll('button')].find(
-                    (candidate) => candidate.textContent.trim() === label
-                )
-                if (match && match.getAttribute('aria-pressed') !== 'true') match.click()
-            }
-        } finally {
-            syncingLang = false
-            requestAnimationFrame(revealLanguageSelections)
-        }
-    })
-    // Keep <title> in sync with the route. SPA navigation doesn't re-run page
-    // constructors, so a page's own `document.title` only fires the first time its
-    // module loads — after that the title would stick. Drive it from here instead.
-    const ROUTE_TITLES = {
-        '/': 'FYLO — Query the files you already own.',
-        '/docs': 'Docs — FYLO',
-        '/docs/concepts': 'Concepts — FYLO',
-        '/docs/clients': 'Language clients — FYLO',
-        '/docs/documents': 'Documents & metadata — FYLO',
-        '/docs/buckets': 'Buckets & raw files — FYLO',
-        '/docs/querying': 'Querying & SQL — FYLO',
-        '/docs/queue': 'Serverless queue — FYLO',
-        '/docs/schemas': 'Schemas & migrations — FYLO',
-        '/docs/security': 'Encryption & access — FYLO',
-        '/docs/versioning': 'Version control — FYLO',
-        '/docs/recovery': 'Recovery & rebuild — FYLO',
-        '/docs/operations': 'Configuration — FYLO',
-        '/docs/replication': 'Backup & sync — FYLO',
-        '/docs/browser': 'Browser & Explorer — FYLO',
-        '/docs/cli': 'CLI reference — FYLO',
-        '/docs/protocol': 'Machine protocol — FYLO',
-        '/docs/errors': 'Error codes — FYLO',
-        '/docs/limitations': 'Limitations — FYLO',
-        '/download': 'Download — FYLO'
-    }
     const currentPath = () => location.pathname.replace(/\/$/, '') || '/'
-    const syncTitle = () => {
-        const t = ROUTE_TITLES[currentPath()]
-        if (t && document.title !== t) document.title = t
-    }
-
     // Highlight the docs sidebar entry for the current route. Delegated from
-    // here rather than bound in the component, so it survives Tac rerenders and
-    // SPA navigations that never re-run a page constructor.
+    // here rather than bound in the component, so it survives Tac rerenders.
     const syncDocNav = () => {
         const here = currentPath()
         for (const link of document.querySelectorAll('.doc-nav-list a')) {
@@ -124,42 +63,6 @@ if (typeof document !== 'undefined') {
             else link.removeAttribute('aria-current')
         }
     }
-    const headingId = (heading, used) => {
-        const base =
-            heading.id ||
-            heading.textContent
-                .trim()
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, '-')
-                .replace(/^-|-$/g, '') ||
-            'section'
-        let id = base
-        let suffix = 2
-        while (used.has(id)) id = `${base}-${suffix++}`
-        used.add(id)
-        heading.id = id
-        return id
-    }
-    const syncDocToc = () => {
-        const toc = document.querySelector('[data-doc-toc-list]')
-        if (!toc) return
-        const used = new Set()
-        const headings = [...document.querySelectorAll('.doc-main .doc-section > h2')].map(
-            (heading) => ({ id: headingId(heading, used), label: heading.textContent.trim() })
-        )
-        const signature = JSON.stringify(headings)
-        if (toc.dataset.signature === signature) return
-        toc.dataset.signature = signature
-        toc.replaceChildren(
-            ...headings.map(({ id, label }) => {
-                const link = document.createElement('a')
-                link.href = `#${id}`
-                link.textContent = label
-                return link
-            })
-        )
-        toc.closest('.doc-toc').hidden = headings.length < 2
-    }
     // On narrow screens the docs sidebar collapses to a horizontal strip, where
     // the current page can sit off-screen with nothing to suggest it exists.
     const revealActive = () => {
@@ -168,14 +71,14 @@ if (typeof document !== 'undefined') {
         revealLanguageSelections()
     }
     const syncRoute = () => {
-        syncTitle()
         syncDocNav()
-        syncDocToc()
         revealActive()
         syncScrollStrips()
     }
-    window.addEventListener('tachyon:navigate', syncRoute)
-    window.addEventListener('popstate', syncRoute)
+    document.addEventListener('tachyon:rendered', syncRoute)
+    document.addEventListener('click', (event) => {
+        if (event.target.closest('.doc-sample-langs button')) requestAnimationFrame(revealLanguageSelections)
+    })
     syncRoute()
 
     // Tac rerenders can rebuild the header (and its [w-theme-icon] span) — keep it in sync.
@@ -193,51 +96,6 @@ if (typeof document !== 'undefined') {
         }
         // A morph can also rebuild the docs sidebar and drop `active`.
         syncDocNav()
-        syncDocToc()
         syncScrollStrips()
     }).observe(document.documentElement, { childList: true, subtree: true })
-
-    // Favicon — the FYLO mark: a document whose contents are a branch history.
-    const faviconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#f89b4b"/><path d="M20 10h18l12 12v28a4 4 0 0 1-4 4H20a4 4 0 0 1-4-4V14a4 4 0 0 1 4-4Z" fill="#171007"/><path d="M38 10v9a3 3 0 0 0 3 3h9" fill="none" stroke="#f89b4b" stroke-width="2.5" stroke-linejoin="round"/><circle cx="26" cy="30" r="3.4" fill="#f89b4b"/><circle cx="26" cy="45" r="3.4" fill="#f89b4b"/><circle cx="39" cy="34" r="3.4" fill="#f89b4b"/><path d="M26 33.4v8.2M39 37.4a10.5 10.5 0 0 1-9.2 7.3" fill="none" stroke="#f89b4b" stroke-width="2.5" stroke-linecap="round"/></svg>`
-    const favicon = document.createElement('link')
-    favicon.rel = 'icon'
-    favicon.type = 'image/svg+xml'
-    favicon.href = 'data:image/svg+xml,' + encodeURIComponent(faviconSVG)
-    document.head.appendChild(favicon)
-
-    const seoMeta = [
-        {
-            name: 'description',
-            content:
-                'FYLO is a document store that ships as a single self-contained binary with language shims for Python, Ruby, Node, Go, C#, Java, PHP, and Dart, plus a local-only browser client. One canonical JSON file per document, zero-payload prefix indexes, git-like version control, and SQL — no server, no network protocol.'
-        },
-        {
-            name: 'keywords',
-            content:
-                'fylo, document store, nosql, filesystem, prefix index, sql, binary, cli, python, go, rust, java, csharp, database'
-        },
-        { name: 'author', content: 'FYLO contributors' },
-        { name: 'robots', content: 'index, follow' },
-        { property: 'og:type', content: 'website' },
-        { property: 'og:title', content: 'FYLO — Query the files you already own.' },
-        {
-            property: 'og:description',
-            content:
-                'One canonical file per document. Zero-payload prefix indexes. No monolithic caches.'
-        },
-        { property: 'og:url', content: 'https://fylo.del.ma' },
-        { property: 'og:site_name', content: 'FYLO' },
-        { name: 'twitter:card', content: 'summary' },
-        { name: 'twitter:title', content: 'FYLO — Query the files you already own.' },
-        {
-            name: 'twitter:description',
-            content:
-                'One canonical file per document. Zero-payload prefix indexes. No monolithic caches.'
-        }
-    ]
-    for (const attrs of seoMeta) {
-        const meta = document.createElement('meta')
-        for (const [k, v] of Object.entries(attrs)) meta.setAttribute(k, v)
-        document.head.appendChild(meta)
-    }
 }

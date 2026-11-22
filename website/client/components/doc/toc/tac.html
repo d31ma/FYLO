@@ -1,4 +1,10 @@
-<aside class="doc-toc" aria-label="On this page">
-    <p class="doc-toc-title">On this page</p>
-    <nav class="doc-toc-list" data-doc-toc-list aria-label="Page sections"></nav>
-</aside>
+<logic :if="outline.showing">
+    <aside class="doc-toc" aria-label="On this page">
+        <p class="doc-toc-title">On this page</p>
+        <nav class="doc-toc-list" aria-label="Page sections">
+            <loop :for="heading of outline.headings">
+                <a :href="heading.link">{heading.label}</a>
+            </loop>
+        </nav>
+    </aside>
+</logic>

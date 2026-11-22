@@ -13,10 +13,10 @@
             <a class="w-btn w-btn-outlined w-btn--lg" href="/download">Download FYLO</a>
         </div>
 
-        <button class="home-install" type="button" on:click="copyInstall()">
+        <button class="home-install" type="button" on:click="installCommand.copy()">
             <span aria-hidden="true">$</span>
-            <code>{installCmd}</code>
-            <span class="home-install-status" aria-live="polite">Copy</span>
+            <code>{installCommand.command}</code>
+            <span class="home-install-status" aria-live="polite">{installCommand.status}</span>
         </button>
     </div>
 </section>

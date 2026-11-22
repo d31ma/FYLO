@@ -1,0 +1,63 @@
+html[w-theme='light'] .w-chip-tonal {
+    background: color-mix(in srgb, var(--w-chip-accent) 22%, var(--w-surface));
+    color: color-mix(in srgb, var(--w-chip-accent) 65%, #000);
+}
+
+.doc-nav-list a.active {
+    color: var(--w-on-primary-container, var(--w-primary));
+    background: var(--w-primary-container);
+    font-weight: 600;
+}
+
+.doc-sample {
+    margin: 0 0 1rem;
+}
+
+.client-language-strip {
+    display: flex;
+    gap: 0.5rem;
+    overflow-x: auto;
+    padding: 0.25rem 0 0.75rem;
+    scrollbar-width: thin;
+}
+
+.client-language-strip .w-chip {
+    flex: 0 0 auto;
+}
+
+.doc-sample-langs {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    position: relative;
+    scrollbar-width: thin;
+    gap: 0.25rem;
+    margin-bottom: 0.6rem;
+}
+
+.doc-sample-langs .w-btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+@media (hover: none) and (pointer: coarse), (max-width: 599.98px) {
+    .doc-sample-langs .w-btn {
+            min-width: 44px;
+            min-height: 44px;
+        }
+}
+
+@media (max-width: 599.98px) {
+    .doc-sample-langs {
+            flex-wrap: nowrap;
+            overflow-x: auto;
+            margin-inline: 0;
+            padding-inline: 0;
+            scroll-padding-inline: 1rem;
+            scrollbar-width: thin;
+        }
+}
+
+.language-strip {
+    margin-bottom: 0.75rem;
+}

@@ -1,0 +1,50 @@
+.doc-toc {
+    position: sticky;
+    top: 56px;
+    align-self: start;
+    height: calc(100dvh - 56px);
+    overflow-y: auto;
+    padding: 2.5rem 0 3rem;
+    box-sizing: border-box;
+}
+
+.doc-toc-title {
+    margin: 0 0 0.6rem;
+    color: var(--w-text-very-subtle);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.doc-toc-list {
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--w-divider);
+}
+
+.doc-toc-list a {
+    margin-left: -1px;
+    padding: 0.35rem 0 0.35rem 0.8rem;
+    border-left: 2px solid transparent;
+    color: var(--w-text-subtle);
+    font-size: 0.78rem;
+    line-height: 1.4;
+    text-decoration: none;
+}
+
+.doc-toc-list a:hover,
+.doc-toc-list a:focus-visible {
+    border-left-color: var(--w-primary);
+    color: var(--w-primary);
+}
+
+.doc-toc[hidden] {
+    display: none;
+}
+
+@media (max-width: 1199.98px) {
+    .doc-toc {
+            display: none;
+        }
+}

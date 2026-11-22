@@ -6,13 +6,13 @@
         </div>
 
         <div class="w-accordion w-accordion--variant-default">
-            <div class="w-expand open" data-faq="rebuild">
+            <div :class="questions.panelClass('rebuild')" data-faq="rebuild">
                 <button
                     id="faq-rebuild-trigger"
                     type="button"
                     class="w-expand-header"
-                    on:click="toggle('rebuild')"
-                    aria-expanded="true"
+                    on:click="questions.toggle('rebuild')"
+                    :aria-expanded="questions.expanded('rebuild')"
                     aria-controls="faq-rebuild-answer"
                 >
                     <span class="w-expand-title">What happens if an index gets corrupted?</span
@@ -29,13 +29,13 @@
                     the canonical document files.
                 </div>
             </div>
-            <div class="w-expand" data-faq="languages">
+            <div :class="questions.panelClass('languages')" data-faq="languages">
                 <button
                     id="faq-languages-trigger"
                     type="button"
                     class="w-expand-header"
-                    on:click="toggle('languages')"
-                    aria-expanded="false"
+                    on:click="questions.toggle('languages')"
+                    :aria-expanded="questions.expanded('languages')"
                     aria-controls="faq-languages-answer"
                 >
                     <span class="w-expand-title">Which languages can I use FYLO from?</span
@@ -54,13 +54,13 @@
                     there is a local-only client that embeds the engine on-device.
                 </div>
             </div>
-            <div class="w-expand" data-faq="environment">
+            <div :class="questions.panelClass('environment')" data-faq="environment">
                 <button
                     id="faq-environment-trigger"
                     type="button"
                     class="w-expand-header"
-                    on:click="toggle('environment')"
-                    aria-expanded="false"
+                    on:click="questions.toggle('environment')"
+                    :aria-expanded="questions.expanded('environment')"
                     aria-controls="faq-environment-answer"
                 >
                     <span class="w-expand-title"
@@ -80,13 +80,13 @@
                     precedence over JSON settings.
                 </div>
             </div>
-            <div class="w-expand" data-faq="explorer">
+            <div :class="questions.panelClass('explorer')" data-faq="explorer">
                 <button
                     id="faq-explorer-trigger"
                     type="button"
                     class="w-expand-header"
-                    on:click="toggle('explorer')"
-                    aria-expanded="false"
+                    on:click="questions.toggle('explorer')"
+                    :aria-expanded="questions.expanded('explorer')"
                     aria-controls="faq-explorer-answer"
                 >
                     <span class="w-expand-title">Can I browse a FYLO database visually?</span
@@ -108,13 +108,13 @@
                     implement real-folder access.
                 </div>
             </div>
-            <div class="w-expand" data-faq="replication">
+            <div :class="questions.panelClass('replication')" data-faq="replication">
                 <button
                     id="faq-replication-trigger"
                     type="button"
                     class="w-expand-header"
-                    on:click="toggle('replication')"
-                    aria-expanded="false"
+                    on:click="questions.toggle('replication')"
+                    :aria-expanded="questions.expanded('replication')"
                     aria-controls="faq-replication-answer"
                 >
                     <span class="w-expand-title">How do I back up or replicate a root?</span
@@ -133,13 +133,13 @@
                     engine.
                 </div>
             </div>
-            <div class="w-expand" data-faq="transactions">
+            <div :class="questions.panelClass('transactions')" data-faq="transactions">
                 <button
                     id="faq-transactions-trigger"
                     type="button"
                     class="w-expand-header"
-                    on:click="toggle('transactions')"
-                    aria-expanded="false"
+                    on:click="questions.toggle('transactions')"
+                    :aria-expanded="questions.expanded('transactions')"
                     aria-controls="faq-transactions-answer"
                 >
                     <span class="w-expand-title">Are there transactions?</span
@@ -156,13 +156,13 @@
                     collections and join them at query time with joinDocs.
                 </div>
             </div>
-            <div class="w-expand" data-faq="encryption">
+            <div :class="questions.panelClass('encryption')" data-faq="encryption">
                 <button
                     id="faq-encryption-trigger"
                     type="button"
                     class="w-expand-header"
-                    on:click="toggle('encryption')"
-                    aria-expanded="false"
+                    on:click="questions.toggle('encryption')"
+                    :aria-expanded="questions.expanded('encryption')"
                     aria-controls="faq-encryption-answer"
                 >
                     <span class="w-expand-title">Is my data encrypted at rest?</span
@@ -182,13 +182,13 @@
                     the database is created, and stays off by default.
                 </div>
             </div>
-            <div class="w-expand" data-faq="vdbx">
+            <div :class="questions.panelClass('vdbx')" data-faq="vdbx">
                 <button
                     id="faq-vdbx-trigger"
                     type="button"
                     class="w-expand-header"
-                    on:click="toggle('vdbx')"
-                    aria-expanded="false"
+                    on:click="questions.toggle('vdbx')"
+                    :aria-expanded="questions.expanded('vdbx')"
                     aria-controls="faq-vdbx-answer"
                 >
                     <span class="w-expand-title">Can a whole database live in one file?</span
@@ -206,13 +206,13 @@
                     by default: encryption is opt-in.
                 </div>
             </div>
-            <div class="w-expand" data-faq="identities">
+            <div :class="questions.panelClass('identities')" data-faq="identities">
                 <button
                     id="faq-identities-trigger"
                     type="button"
                     class="w-expand-header"
-                    on:click="toggle('identities')"
-                    aria-expanded="false"
+                    on:click="questions.toggle('identities')"
+                    :aria-expanded="questions.expanded('identities')"
                     aria-controls="faq-identities-answer"
                 >
                     <span class="w-expand-title">How do I control who can read or write data?</span

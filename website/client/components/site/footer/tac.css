@@ -102,3 +102,9 @@
         min-height: 44px;
     }
 }
+
+.footer-rule {
+    height: 1px;
+    margin: 2rem 0 1.25rem;
+    background: var(--w-divider);
+}

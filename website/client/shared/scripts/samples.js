@@ -1,8 +1,3 @@
-// Multi-language code samples for the documentation pages.
-//
-// The renderer below is copied from components/docs/content — Tachyon
-// components cannot import shared modules, so the duplication is deliberate.
-// Keep the two in sync when a client's method naming changes.
 // Languages with a shipped client shim. `dir` is the folder under clients/,
 // `cmt` the line-comment token used when we annotate a snippet.
 const LANGS = [
@@ -19,73 +14,40 @@ const LANGS = [
 
 const FYLO_BROWSER_LOADER = 'https://d31ma.github.io/FYLO/version/26.45.07/fylo.js'
 
-// Native object/array literal renderers, one per language. Object arguments are
-// built with each language's native container — no JSON strings.
-function pyLit(v) {
-    if (typeof v === 'number') return String(v)
-    if (typeof v === 'string') return `"${v}"`
-    if (Array.isArray(v)) return `[${v.map(pyLit).join(', ')}]`
-    return `{${Object.entries(v)
-        .map(([k, val]) => `"${k}": ${pyLit(val)}`)
-        .join(', ')}}`
+// Native object/array literal syntax, one row per language: quote, list open and close,
+// object open and close, and the text before each value ("%k" is the key). Object
+// arguments are built with each language's native container — no JSON strings.
+// PHP uses single quotes so $keys aren't interpolated; Dart escapes $, which starts
+// interpolation in Dart strings.
+const LITERAL_SYNTAX = {
+    python: ['"', '[', ']', '{', '}', '"%k": '],
+    ruby: ['"', '[', ']', '{ ', ' }', '"%k" => '],
+    js: ["'", '[', ']', '{ ', ' }', '%k: '],
+    php: ["'", '[', ']', '[', ']', "'%k' => "],
+    go: ['"', '[]any{', '}', 'map[string]any{', '}', '"%k": '],
+    java: ['"', 'List.of(', ')', 'Map.of(', ')', '"%k", '],
+    csharp: ['"', 'new object[] { ', ' }', 'new Dictionary<string, object> { ', ' }', '["%k"] = '],
+    dart: ["'", '[', ']', '{', '}', "'%k': "]
 }
-function rubyLit(v) {
+function literal(lang, v) {
+    const [quote, listOpen, listClose, mapOpen, mapClose, pair] = LITERAL_SYNTAX[lang]
+    const text = (s) => (lang === 'dart' ? s.replace(/\$/g, '\\$') : s)
     if (typeof v === 'number') return String(v)
-    if (typeof v === 'string') return `"${v}"`
-    if (Array.isArray(v)) return `[${v.map(rubyLit).join(', ')}]`
-    return `{ ${Object.entries(v)
-        .map(([k, val]) => `"${k}" => ${rubyLit(val)}`)
-        .join(', ')} }`
+    if (typeof v === 'string') return quote + text(v) + quote
+    if (Array.isArray(v)) return listOpen + v.map((item) => literal(lang, item)).join(', ') + listClose
+    const entries = Object.entries(v).map(
+        ([k, val]) => pair.replace('%k', () => text(k)) + literal(lang, val)
+    )
+    return mapOpen + entries.join(', ') + mapClose
 }
-function jsLit(v) {
-    if (typeof v === 'number') return String(v)
-    if (typeof v === 'string') return `'${v}'`
-    if (Array.isArray(v)) return `[${v.map(jsLit).join(', ')}]`
-    return `{ ${Object.entries(v)
-        .map(([k, val]) => `${k}: ${jsLit(val)}`)
-        .join(', ')} }`
-}
-function phpLit(v) {
-    if (typeof v === 'number') return String(v)
-    if (typeof v === 'string') return `'${v}'` // single quotes so $keys aren't interpolated
-    if (Array.isArray(v)) return `[${v.map(phpLit).join(', ')}]`
-    return `[${Object.entries(v)
-        .map(([k, val]) => `'${k}' => ${phpLit(val)}`)
-        .join(', ')}]`
-}
-function goLit(v) {
-    if (typeof v === 'number') return String(v)
-    if (typeof v === 'string') return `"${v}"`
-    if (Array.isArray(v)) return `[]any{${v.map(goLit).join(', ')}}`
-    return `map[string]any{${Object.entries(v)
-        .map(([k, val]) => `"${k}": ${goLit(val)}`)
-        .join(', ')}}`
-}
-function javaLit(v) {
-    if (typeof v === 'number') return String(v)
-    if (typeof v === 'string') return `"${v}"`
-    if (Array.isArray(v)) return `List.of(${v.map(javaLit).join(', ')})`
-    return `Map.of(${Object.entries(v)
-        .flatMap(([k, val]) => [`"${k}"`, javaLit(val)])
-        .join(', ')})`
-}
-function csharpLit(v) {
-    if (typeof v === 'number') return String(v)
-    if (typeof v === 'string') return `"${v}"`
-    if (Array.isArray(v)) return `new object[] { ${v.map(csharpLit).join(', ')} }`
-    return `new Dictionary<string, object> { ${Object.entries(v)
-        .map(([k, val]) => `["${k}"] = ${csharpLit(val)}`)
-        .join(', ')} }`
-}
-function dartLit(v) {
-    const esc = (s) => s.replace(/\$/g, '\\$') // $ starts interpolation in Dart strings
-    if (typeof v === 'number') return String(v)
-    if (typeof v === 'string') return `'${esc(v)}'`
-    if (Array.isArray(v)) return `[${v.map(dartLit).join(', ')}]`
-    return `{${Object.entries(v)
-        .map(([k, val]) => `'${esc(k)}': ${dartLit(val)}`)
-        .join(', ')}}`
-}
+const pyLit = (v) => literal('python', v)
+const rubyLit = (v) => literal('ruby', v)
+const jsLit = (v) => literal('js', v)
+const phpLit = (v) => literal('php', v)
+const goLit = (v) => literal('go', v)
+const javaLit = (v) => literal('java', v)
+const csharpLit = (v) => literal('csharp', v)
+const dartLit = (v) => literal('dart', v)
 
 // Positional argument order for each op's dedicated method.
 const METHODS = {
@@ -626,48 +588,21 @@ function nativeOnlyNote(lang) {
     ].join('\n')
 }
 
-export default class {
-    constructor(props = {}) {
-        Object.assign(this, props)
-    }
+/** @returns {{ key: string, label: string }[]} */
+export function sampleLanguages() {
+    return LANGS.map(({ key, label }) => ({ key, label }))
+}
 
-    hydrate(root) {
-        this.root = root
-        this.renderSelection()
-    }
-    /** @type {string} */
-    topic = 'crud'
-
-    /** @type {string} */
-    $lang = 'python' // sessionStorage-persisted, shared by every sample on the page
-
-    langs = LANGS
-
-    showLang(_event, key) {
-        this.$lang = key
-        this.renderSelection()
-    }
-
-    renderSelection() {
-        for (const button of this.root?.querySelectorAll('[data-lang]') ?? []) {
-            const active = button.dataset.lang === this.$lang
-            button.className = active
-                ? 'w-btn w-btn-tonal w-btn--sm'
-                : 'w-btn w-btn-ghost w-btn--sm'
-            button.setAttribute('aria-pressed', String(active))
-        }
-    }
-
-    activeLabel() {
-        return (LANGS.find((l) => l.key === this.$lang) || LANGS[0]).label
-    }
-
-    code() {
-        const lang = LANGS.find((l) => l.key === this.$lang) ? this.$lang : 'python'
-        if (this.topic === 'configuration') return CONFIGURATION_SAMPLES[lang]
-        const steps = RECIPES[this.topic] || RECIPES.crud
-        const nativeOnly = steps.some((step) => step.nativeOnly)
-        if (nativeOnly && lang === 'web') return nativeOnlyNote(lang)
-        return scaffold(lang, recipeBody(lang, steps), recipeImports(lang, steps))
-    }
+/**
+ * @param {string} requested
+ * @param {string} topic
+ * @returns {string}
+ */
+export function sampleCode(requested, topic) {
+    const lang = LANGS.find((l) => l.key === requested) ? requested : 'python'
+    if (topic === 'configuration') return CONFIGURATION_SAMPLES[lang]
+    const steps = RECIPES[topic] || RECIPES.crud
+    const nativeOnly = steps.some((step) => step.nativeOnly)
+    if (nativeOnly && lang === 'web') return nativeOnlyNote(lang)
+    return scaffold(lang, recipeBody(lang, steps), recipeImports(lang, steps))
 }

@@ -11,82 +11,82 @@
         <div class="doc-sample-langs" role="group" aria-label="Language">
             <button
                 type="button"
-                class="w-btn w-btn-tonal w-btn--sm"
-                aria-pressed="true"
+                :class="language.buttonClass('python')"
+                :aria-pressed="language.pressed('python')"
                 data-lang="python"
-                on:click="showLang('python')"
+                on:click="language.choose('python')"
             >
                 Python
             </button>
             <button
                 type="button"
-                class="w-btn w-btn-ghost w-btn--sm"
-                aria-pressed="false"
+                :class="language.buttonClass('ruby')"
+                :aria-pressed="language.pressed('ruby')"
                 data-lang="ruby"
-                on:click="showLang('ruby')"
+                on:click="language.choose('ruby')"
             >
                 Ruby
             </button>
             <button
                 type="button"
-                class="w-btn w-btn-ghost w-btn--sm"
-                aria-pressed="false"
+                :class="language.buttonClass('node')"
+                :aria-pressed="language.pressed('node')"
                 data-lang="node"
-                on:click="showLang('node')"
+                on:click="language.choose('node')"
             >
                 Node.js
             </button>
             <button
                 type="button"
-                class="w-btn w-btn-ghost w-btn--sm"
-                aria-pressed="false"
+                :class="language.buttonClass('php')"
+                :aria-pressed="language.pressed('php')"
                 data-lang="php"
-                on:click="showLang('php')"
+                on:click="language.choose('php')"
             >
                 PHP
             </button>
             <button
                 type="button"
-                class="w-btn w-btn-ghost w-btn--sm"
-                aria-pressed="false"
+                :class="language.buttonClass('go')"
+                :aria-pressed="language.pressed('go')"
                 data-lang="go"
-                on:click="showLang('go')"
+                on:click="language.choose('go')"
             >
                 Go
             </button>
             <button
                 type="button"
-                class="w-btn w-btn-ghost w-btn--sm"
-                aria-pressed="false"
+                :class="language.buttonClass('csharp')"
+                :aria-pressed="language.pressed('csharp')"
                 data-lang="csharp"
-                on:click="showLang('csharp')"
+                on:click="language.choose('csharp')"
             >
                 C#
             </button>
             <button
                 type="button"
-                class="w-btn w-btn-ghost w-btn--sm"
-                aria-pressed="false"
+                :class="language.buttonClass('java')"
+                :aria-pressed="language.pressed('java')"
                 data-lang="java"
-                on:click="showLang('java')"
+                on:click="language.choose('java')"
             >
                 Java
             </button>
             <button
                 type="button"
-                class="w-btn w-btn-ghost w-btn--sm"
-                aria-pressed="false"
+                :class="language.buttonClass('dart')"
+                :aria-pressed="language.pressed('dart')"
                 data-lang="dart"
-                on:click="showLang('dart')"
+                on:click="language.choose('dart')"
             >
                 Dart
             </button>
             <button
                 type="button"
-                class="w-btn w-btn-ghost w-btn--sm"
-                aria-pressed="false"
+                :class="language.buttonClass('web')"
+                :aria-pressed="language.pressed('web')"
                 data-lang="web"
-                on:click="showLang('web')"
+                on:click="language.choose('web')"
             >
                 JS (Browser)
             </button>
@@ -101,5 +101,5 @@
         </button>
     </div>
 
-    <pre class="code-block" aria-live="polite"><code>{code()}</code></pre>
+    <pre class="code-block" aria-live="polite"><code>{codeSample.code()}</code></pre>
 </div>

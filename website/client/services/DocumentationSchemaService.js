@@ -1,5 +1,5 @@
 @Service
-export default class DocumentationSchemasService {
+export default class DocumentationSchemaService {
     layoutCode = `<fylo.schema>/
   <collection>/
     manifest.json          # { current, versions: [{ v, sha256?, addedAt? }] }

@@ -1,0 +1,91 @@
+.doc-nav {
+    position: sticky;
+    top: 56px;
+    align-self: start;
+    height: calc(100dvh - 56px);
+    overflow-y: auto;
+    padding: 2rem 1rem 3rem 0;
+    box-sizing: border-box;
+}
+
+.doc-nav-group + .doc-nav-group {
+    margin-top: 1.5rem;
+}
+
+.doc-nav-title {
+    margin: 0 0 0.5rem;
+    padding-left: 0.75rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--w-text-very-subtle);
+}
+
+.doc-nav-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+}
+
+.doc-nav-list a {
+    display: block;
+    padding: 0.4rem 0.75rem;
+    border-radius: var(--w-radius-sm);
+    color: var(--w-text-subtle);
+    text-decoration: none;
+    font-size: 0.89rem;
+    line-height: 1.4;
+    transition:
+        color 0.15s ease,
+        background 0.15s ease;
+}
+
+.doc-nav-list a:hover {
+    color: var(--w-text);
+    background: var(--w-surface-container-low);
+}
+
+@media (max-width: 899.98px) {
+    .doc-nav {
+            position: static;
+            height: auto;
+            max-height: none;
+            padding: 0 0 1rem;
+            min-width: 0;
+            border-bottom: 1px solid var(--w-divider);
+        }
+
+    .doc-nav-inner {
+            display: flex;
+            min-width: 0;
+            gap: 1.5rem;
+            overflow-x: auto;
+            padding-inline: clamp(1rem, 4vw, 1.5rem);
+            scrollbar-width: thin;
+        }
+
+    .doc-nav-group {
+            flex: 0 0 auto;
+        }
+
+    .doc-nav-group + .doc-nav-group {
+            margin-top: 0;
+        }
+
+    .doc-nav-list {
+            flex-direction: row;
+            gap: 0.25rem;
+        }
+
+    .doc-nav-list a {
+            display: inline-flex;
+            align-items: center;
+            min-width: 44px;
+            min-height: 44px;
+            white-space: nowrap;
+        }
+}
