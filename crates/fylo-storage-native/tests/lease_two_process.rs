@@ -208,11 +208,13 @@ fn go_wait() -> Duration {
         .map_or(READY_WAIT, Duration::from_secs)
 }
 
-/// Wait until the lease record carries this process's start time. On
-/// Windows the heartbeat thread adds it just after the claim.
+/// Wait until the lease record carries this machine's id and this
+/// process's start time. On Windows the heartbeat thread adds the machine id
+/// just after the claim.
 fn wait_for_identity(record: &Path) {
     let started = Instant::now();
-    while !fs::read_to_string(record).is_ok_and(|text| text.contains("processStart")) {
+    let identified = |text: &str| text.contains("\"machine\"") && text.contains("\"processStart\"");
+    while !fs::read_to_string(record).is_ok_and(|text| identified(text.as_str())) {
         assert!(
             started.elapsed() < READY_WAIT,
             "the lease record never got its identity"
