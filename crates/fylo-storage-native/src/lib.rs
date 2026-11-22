@@ -46,6 +46,7 @@ mod collection_incarnation;
 mod collection_keys;
 mod collection_layout;
 mod collection_stamp;
+mod commit_check_scope;
 #[cfg(not(target_family = "wasm"))]
 mod container_access;
 mod container_allocator;
@@ -672,26 +673,55 @@ impl NativeRoot {
     }
 
     pub(crate) fn assert_profile_owned(&self) -> Result<(), NativeStorageError> {
-        let key = self.reusable_check_key();
-        let verified = key.is_some_and(ReadScope::is_verified);
+        let key = self.owner_check_key();
+        let verified = key.is_some_and(|key| self.check_reused(key));
         self.check_profile_owned_unless(verified)?;
-        key.into_iter().for_each(ReadScope::remember_verified);
+        self.remember_check(key);
         Ok(())
     }
 
-    /// The same root under a writer: every check reads the owner again, and
-    /// no read goes through the temp tier, whose entries a writer's own
-    /// changes would make stale before its next generation read.
+    /// The owner check at a commit point: it reads the owner record even
+    /// inside a [`commit_check_scope::CommitCheckScope`].
+    pub(crate) fn assert_profile_owned_fresh(&self) -> Result<(), NativeStorageError> {
+        commit_check_scope::CommitCheckScope::forget_verified();
+        self.check_profile_owned()?;
+        self.remember_check(self.owner_check_key());
+        Ok(())
+    }
+
+    /// The same root under a writer: a check reads the owner again unless a
+    /// commit check scope already did, and no read goes through the temp
+    /// tier, whose entries a writer's own changes would make stale before its
+    /// next generation read.
     pub(crate) fn without_check_reuse(mut self) -> Self {
         self.reuses_checks = false;
         self.tier = temp_tier::TierLink::default();
         self
     }
 
-    fn reusable_check_key(&self) -> Option<u64> {
-        self.reuses_checks
-            .then(|| self.lease.as_ref().map(|lease| self.check_key(lease)))
-            .flatten()
+    fn owner_check_key(&self) -> Option<u64> {
+        self.lease.as_ref().map(|lease| self.check_key(lease))
+    }
+
+    fn check_reused(&self, key: u64) -> bool {
+        if self.reuses_checks {
+            return ReadScope::is_verified(key);
+        }
+        commit_check_scope::CommitCheckScope::is_verified(key)
+    }
+
+    fn remember_check(&self, key: Option<u64>) {
+        let Some(key) = key else {
+            return;
+        };
+        self.remember_in_scope(key);
+    }
+
+    fn remember_in_scope(&self, key: u64) {
+        if self.reuses_checks {
+            return ReadScope::remember_verified(key);
+        }
+        commit_check_scope::CommitCheckScope::remember_verified(key);
     }
 
     fn check_key(&self, lease: &RootLease) -> u64 {
@@ -1897,7 +1927,7 @@ impl NativeRoot {
         Ok(())
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(all(not(target_family = "wasm"), not(unix)))]
     fn verify_file_identity_with_error(
         &self,
         path: &Path,
@@ -1915,6 +1945,46 @@ impl NativeRoot {
                 "storage path changed while an open file was being read",
             ))
         }
+    }
+
+    /// The same check with one open of the path: an open that refuses a
+    /// link in any component is the path check and the identity at once.
+    #[cfg(unix)]
+    fn verify_file_identity_with_error(
+        &self,
+        path: &Path,
+        (file, mismatch): (&File, NativeStorageErrorCode),
+    ) -> Result<(), NativeStorageError> {
+        let current = self.path_identity(path)?;
+        let opened = Self::unix_identity(&file.metadata().map_err(NativeStorageError::io)?);
+        if opened == current {
+            Ok(())
+        } else {
+            Err(NativeStorageError::new(
+                mismatch,
+                "storage path changed while an open file was being read",
+            ))
+        }
+    }
+
+    /// The device and inode `path` names now. Opening the path, rather than
+    /// asking for its attributes, revalidates them on a network share.
+    #[cfg(unix)]
+    fn path_identity(&self, path: &Path) -> Result<(u64, u64), NativeStorageError> {
+        if let BeneathOpen::Opened(_, metadata) = self.open_beneath(path, ExpectedType::File) {
+            return Ok(Self::unix_identity(&metadata));
+        }
+        self.verify_path(path, ExpectedType::File)?;
+        let file = File::open(path).map_err(NativeStorageError::io)?;
+        Ok(Self::unix_identity(
+            &file.metadata().map_err(NativeStorageError::io)?,
+        ))
+    }
+
+    #[cfg(unix)]
+    fn unix_identity(metadata: &Metadata) -> (u64, u64) {
+        use std::os::unix::fs::MetadataExt;
+        (metadata.dev(), metadata.ino())
     }
 }
 

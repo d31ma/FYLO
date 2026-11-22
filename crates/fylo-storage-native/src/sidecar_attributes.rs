@@ -11,6 +11,7 @@ use serde::de::{MapAccess, Visitor};
 use sha2::{Digest, Sha256};
 
 use crate::verified_manifest::VerifiedManifest;
+use crate::write::CapturedAttribute;
 use crate::{ExpectedType, FileStamp, NativeRoot, NativeStorageError, NativeStorageErrorCode};
 
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
@@ -222,14 +223,53 @@ impl SidecarAttributes {
         checksum: &str,
     ) -> Result<Vec<u8>, NativeStorageError> {
         let [kind_folder, collection, identifier] = Self::record_identity(root, path)?;
-        serde_json::to_vec(&[
-            IDENTITY_FORMAT,
-            kind_folder.as_str(),
-            collection.as_str(),
-            identifier.as_str(),
-            checksum,
-        ])
-        .map_err(|_| corrupt())
+        Self::binding_bytes([&kind_folder, &collection, &identifier], checksum)
+    }
+
+    fn binding_bytes(record: [&str; 3], checksum: &str) -> Result<Vec<u8>, NativeStorageError> {
+        let [kind_folder, collection, identifier] = record;
+        serde_json::to_vec(&[IDENTITY_FORMAT, kind_folder, collection, identifier, checksum])
+            .map_err(|_| corrupt())
+    }
+
+    /// The manifest a write-ahead log step writes for a document: `record`
+    /// (kind folder, collection, id) bound to `payload`, with `attributes` in
+    /// the encoded form a plan carries (ADR 0013, EFS on the log).
+    pub(crate) fn planned_manifest(
+        record: [&str; 3],
+        payload: &[u8],
+        attributes: &[CapturedAttribute],
+    ) -> Result<Vec<u8>, NativeStorageError> {
+        let binding = Self::binding_bytes(record, &crate::sha256_hex(payload))?;
+        let mut encoded: BTreeMap<String, String> = attributes
+            .iter()
+            .map(|attribute| (attribute.name.clone(), attribute.value.clone()))
+            .collect();
+        encoded.insert(IDENTITY_ATTRIBUTE.into(), BASE64.encode(binding));
+        let bytes = serde_json::to_vec(&encoded).map_err(|_| corrupt())?;
+        Self::decode(&bytes)?;
+        Ok(bytes)
+    }
+
+    /// The attributes of manifest `bytes` without the record binding, in
+    /// the encoded form a plan carries.
+    pub(crate) fn planned_attributes(
+        bytes: &[u8],
+    ) -> Result<Vec<CapturedAttribute>, NativeStorageError> {
+        Ok(Self::plan_form(Self::decode(bytes)?))
+    }
+
+    /// Decoded attributes without the record binding, in the encoded form
+    /// a plan carries.
+    pub(crate) fn plan_form(attributes: BTreeMap<String, Vec<u8>>) -> Vec<CapturedAttribute> {
+        attributes
+            .into_iter()
+            .filter(|(name, _)| name != IDENTITY_ATTRIBUTE)
+            .map(|(name, value)| CapturedAttribute {
+                name,
+                value: BASE64.encode(value),
+            })
+            .collect()
     }
 
     pub(crate) fn record_identity(

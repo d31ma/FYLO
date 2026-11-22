@@ -3096,7 +3096,7 @@ impl<'a> Transaction<'a> {
         collection: &'a super::NativeCollection,
         operation: &str,
     ) -> Result<Self, NativeStorageError> {
-        writer.root.assert_profile_owned()?;
+        writer.root.assert_profile_owned_fresh()?;
         let generation = collection.generation()?;
         if generation.state != super::GenerationStatus::Stable {
             return Err(NativeStorageError::new(
@@ -3167,7 +3167,7 @@ impl<'a> Transaction<'a> {
 
     /// Undo a transaction that published its journal but changed nothing.
     fn abandon(&mut self) -> Result<(), NativeStorageError> {
-        self.writer.root.assert_profile_owned()?;
+        self.writer.root.assert_profile_owned_fresh()?;
         if self.finished {
             return Ok(());
         }
@@ -3312,7 +3312,7 @@ impl<'a> Transaction<'a> {
     }
 
     fn commit(&mut self) -> Result<(), NativeStorageError> {
-        self.writer.root.assert_profile_owned()?;
+        self.writer.root.assert_profile_owned_fresh()?;
         failpoint("before-commit-marker")?;
         self.manifest.phase = TransactionPhase::Committed;
         write_json_durable(&self.root.join("transaction.json"), &self.manifest)?;
@@ -3385,7 +3385,7 @@ impl<'a> Transaction<'a> {
     }
 
     fn rollback(&mut self) -> Result<(), NativeStorageError> {
-        self.writer.root.assert_profile_owned()?;
+        self.writer.root.assert_profile_owned_fresh()?;
         if self.finished {
             return Ok(());
         }

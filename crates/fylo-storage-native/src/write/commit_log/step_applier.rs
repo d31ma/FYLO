@@ -104,8 +104,8 @@ impl<'a> StepApplier<'a> {
                 .open(&scratch)
                 .map_err(NativeStorageError::io)?;
             file.write_all(bytes).map_err(NativeStorageError::io)?;
+            Self::finish_file(&file, &scratch, step)?;
             drop(file);
-            Self::finish_file(&scratch, step)?;
             fs::rename(&scratch, path).map_err(NativeStorageError::io)
         })();
         if outcome.is_err() && path_exists_no_follow(&scratch)? {
@@ -119,23 +119,35 @@ impl<'a> StepApplier<'a> {
         step: &UpdateStep,
         bytes: Option<&[u8]>,
     ) -> Result<(), NativeStorageError> {
-        if let Some(bytes) = bytes {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .open(path)
-                .map_err(NativeStorageError::io)?;
-            file.write_all(bytes).map_err(NativeStorageError::io)?;
-        }
-        Self::finish_file(path, step)
+        let mut file = OpenOptions::new()
+            .write(true)
+            .truncate(bytes.is_some())
+            .open(path)
+            .map_err(NativeStorageError::io)?;
+        Self::write_bytes(&mut file, bytes)?;
+        Self::finish_file(&file, path, step)
     }
 
-    fn finish_file(path: &Path, step: &UpdateStep) -> Result<(), NativeStorageError> {
+    fn write_bytes(file: &mut fs::File, bytes: Option<&[u8]>) -> Result<(), NativeStorageError> {
+        bytes.map_or(Ok(()), |bytes| {
+            file.write_all(bytes).map_err(NativeStorageError::io)
+        })
+    }
+
+    /// Attributes, time and ownership, set through the handle that wrote
+    /// the file where the platform allows it, so a network share sees no
+    /// second open. An NFS client flushes written data before it sets a
+    /// file's times, so the time set here is the one the server keeps.
+    fn finish_file(
+        file: &fs::File,
+        path: &Path,
+        step: &UpdateStep,
+    ) -> Result<(), NativeStorageError> {
         if let Some(attributes) = &step.attributes {
             restore_attributes(path, attributes)?;
         }
-        Self::set_modified(path, step.modified_ms)?;
-        Self::set_ownership(path, step)
+        Self::set_modified(file, step.modified_ms)?;
+        Self::set_ownership(file, step)
     }
 
     fn apply_move(&self, rename: &MoveStep) -> Result<(), NativeStorageError> {
@@ -284,12 +296,8 @@ impl<'a> StepApplier<'a> {
         Ok(())
     }
 
-    fn set_modified(path: &Path, modified_ms: u64) -> Result<(), NativeStorageError> {
+    fn set_modified(file: &fs::File, modified_ms: u64) -> Result<(), NativeStorageError> {
         let modified = std::time::UNIX_EPOCH + std::time::Duration::from_millis(modified_ms);
-        let file = OpenOptions::new()
-            .write(true)
-            .open(path)
-            .map_err(NativeStorageError::io)?;
         file.set_times(
             fs::FileTimes::new()
                 .set_accessed(modified)
@@ -299,20 +307,20 @@ impl<'a> StepApplier<'a> {
     }
 
     #[cfg(unix)]
-    fn set_ownership(path: &Path, step: &UpdateStep) -> Result<(), NativeStorageError> {
+    fn set_ownership(file: &fs::File, step: &UpdateStep) -> Result<(), NativeStorageError> {
         use std::os::unix::fs::PermissionsExt;
         if step.uid.is_some() || step.gid.is_some() {
-            std::os::unix::fs::chown(path, step.uid, step.gid).map_err(NativeStorageError::io)?;
+            std::os::unix::fs::fchown(file, step.uid, step.gid).map_err(NativeStorageError::io)?;
         }
         if let Some(mode) = step.mode {
-            fs::set_permissions(path, fs::Permissions::from_mode(mode))
+            file.set_permissions(fs::Permissions::from_mode(mode))
                 .map_err(NativeStorageError::io)?;
         }
         Ok(())
     }
 
     #[cfg(not(unix))]
-    fn set_ownership(_path: &Path, step: &UpdateStep) -> Result<(), NativeStorageError> {
+    fn set_ownership(_file: &fs::File, step: &UpdateStep) -> Result<(), NativeStorageError> {
         if step.uid.is_some() || step.gid.is_some() || step.mode.is_some() {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,

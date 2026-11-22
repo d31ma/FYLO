@@ -52,6 +52,7 @@ mod segment_replay;
 mod segment_schema_commit;
 mod segment_schemas;
 mod segment_verification;
+mod sidecar_file;
 mod step_applier;
 mod update_step;
 

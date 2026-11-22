@@ -18,16 +18,36 @@ pub(crate) struct RecordImage {
 impl RecordImage {
     /// Read the current image, or `None` when the file does not exist.
     pub(crate) fn read(path: &Path) -> Result<Option<Self>, NativeStorageError> {
+        Self::read_with(path, true)
+    }
+
+    /// Read the current image without its extended attributes, for a file
+    /// whose attributes live in a sidecar file the plan images on its own.
+    pub(crate) fn read_plain(path: &Path) -> Result<Option<Self>, NativeStorageError> {
+        Self::read_with(path, false)
+    }
+
+    fn read_with(path: &Path, with_attributes: bool) -> Result<Option<Self>, NativeStorageError> {
         if !path_exists_no_follow(path)? {
             return Ok(None);
         }
         let metadata = fs::symlink_metadata(path).map_err(NativeStorageError::io)?;
         Ok(Some(Self {
             bytes: fs::read(path).map_err(NativeStorageError::io)?,
-            attributes: Some(capture_attributes(path)?),
+            attributes: Self::attributes_of(path, with_attributes)?,
             mode: Self::mode_of(&metadata),
             modified_ms: Self::modified_ms_of(&metadata)?,
         }))
+    }
+
+    fn attributes_of(
+        path: &Path,
+        wanted: bool,
+    ) -> Result<Option<Vec<CapturedAttribute>>, NativeStorageError> {
+        if !wanted {
+            return Ok(None);
+        }
+        Ok(Some(capture_attributes(path)?))
     }
 
     /// An image of bytes and modification time alone, for a commit that

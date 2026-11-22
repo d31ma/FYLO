@@ -37,6 +37,10 @@ impl ReadScopeState {
         }
     }
 
+    pub(crate) fn forget_verified(&mut self) {
+        self.verified.clear();
+    }
+
     pub(crate) fn canonical(&self, path: &Path) -> Option<PathBuf> {
         self.canonical
             .iter()

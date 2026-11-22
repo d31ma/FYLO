@@ -21,6 +21,7 @@ use super::logged_plan::LoggedPlan;
 use super::placed_record::PlacedRecord;
 use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_recovery::SegmentRecovery;
+use crate::commit_check_scope::CommitCheckScope;
 use crate::platform_companion::{remove_companion, remove_emptied_dir};
 use crate::{
     CollectionKind, FilesystemProfile, GenerationState, GenerationStatus, LogPosition,
@@ -38,9 +39,24 @@ impl NativeWriteRoot {
 
     /// Whether this collection's ordinary mutations go through the log.
     pub(crate) fn uses_log(&self, collection: &NativeCollection) -> bool {
-        self.filesystem_profile() == FilesystemProfile::Native
+        self.profile_uses_log()
             && collection.kind == CollectionKind::Document
             && (cfg!(any(unix, windows)) || collection.uses_segments())
+    }
+
+    /// The native profile, and the EFS profile on Unix, whose documents
+    /// keep their attributes in sidecar files the log writes as files.
+    fn profile_uses_log(&self) -> bool {
+        match self.filesystem_profile() {
+            FilesystemProfile::Native => true,
+            FilesystemProfile::EfsSidecarV1 => cfg!(unix),
+        }
+    }
+
+    /// A commit plan for this root's attribute storage.
+    pub(crate) fn new_plan(&self, operation: &str) -> CommitPlan {
+        CommitPlan::new(operation)
+            .with_sidecars(self.filesystem_profile() == FilesystemProfile::EfsSidecarV1)
     }
 
     /// Commit one mutation through the collection's write-ahead log.
@@ -52,6 +68,7 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         mut plan: impl FnMut() -> Result<Planned<T, P>, NativeStorageError>,
     ) -> Result<T, NativeStorageError> {
+        let _checks = CommitCheckScope::enter();
         let queue = CommitQueue::shared(&collection.path);
         let mut state = queue.lock();
         let (placed, plan, value) = loop {
@@ -301,6 +318,7 @@ impl NativeWriteRoot {
         busy: &mut BusyPeriod,
         plan: &P,
     ) -> Result<PlacedRecord, NativeStorageError> {
+        self.root.assert_profile_owned_fresh()?;
         if busy.segment.is_none() {
             busy.segment = Some(Self::create_segment(
                 &self.root,

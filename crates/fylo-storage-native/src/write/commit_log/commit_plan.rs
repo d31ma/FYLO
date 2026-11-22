@@ -13,6 +13,7 @@ use super::logged_plan::LoggedPlan;
 use super::move_step::MoveStep;
 use super::placed_record::PlacedRecord;
 use super::record_image::RecordImage;
+use super::sidecar_file::SidecarFile;
 use super::step_applier::StepApplier;
 use super::update_step::UpdateStep;
 use crate::write::{NativeWriteRoot, failpoint};
@@ -40,6 +41,9 @@ pub(crate) struct CommitPlan {
     index_added: BTreeSet<String>,
     pre_images: Vec<(PathBuf, Option<RecordImage>)>,
     touched: BTreeSet<PathBuf>,
+    /// Whether record attributes live in a `.fylo-attrs` sidecar file (the
+    /// EFS profile) rather than in extended attributes.
+    sidecars: bool,
 }
 
 impl CommitPlan {
@@ -52,7 +56,15 @@ impl CommitPlan {
             index_added: BTreeSet::new(),
             pre_images: Vec::new(),
             touched: BTreeSet::new(),
+            sidecars: false,
         }
+    }
+
+    /// The same plan for a root whose record attributes live in sidecar
+    /// files: each record step also writes, rewrites or moves its sidecar.
+    pub(crate) fn with_sidecars(mut self, sidecars: bool) -> Self {
+        self.sidecars = sidecars;
+        self
     }
 
     /// Create a record file that does not exist yet.
@@ -73,13 +85,14 @@ impl CommitPlan {
                 path: String::new(),
                 create: true,
                 blob: Some(blob),
-                attributes: Some(attributes),
-                mode: ownership.mode,
+                attributes: self.inline_attributes(attributes.clone()),
+                mode: self.record_mode(ownership.mode),
                 uid: ownership.uid,
                 gid: ownership.gid,
                 modified_ms: super::super::now_millis()?,
             },
-        )
+        )?;
+        self.create_sidecar(collection, path, bytes, &attributes)
     }
 
     /// Replace the bytes of an existing record file in place. `before` is
@@ -107,7 +120,9 @@ impl CommitPlan {
                 gid: None,
                 modified_ms: super::super::now_millis()?,
             },
-        )
+        )?;
+        let attributes = self.sidecar_attributes(path)?;
+        self.rewrite_sidecar(collection, path, bytes, &attributes)
     }
 
     /// Replace the attributes, and optionally the ownership, of an existing
@@ -116,24 +131,13 @@ impl CommitPlan {
         &mut self,
         collection: &NativeCollection,
         path: &Path,
-        attributes: Vec<CapturedAttribute>,
+        attributes: &[CapturedAttribute],
         ownership: Ownership,
     ) -> Result<(), NativeStorageError> {
-        let modified_ms = self.capture(path)?.modified_ms;
-        self.push_update(
-            collection,
-            path,
-            UpdateStep {
-                path: String::new(),
-                create: false,
-                blob: None,
-                attributes: Some(attributes),
-                mode: ownership.mode,
-                uid: ownership.uid,
-                gid: ownership.gid,
-                modified_ms,
-            },
-        )
+        let image = self.capture(path)?;
+        self.push_attribute_update(collection, path, (attributes, ownership), image.modified_ms)?;
+        self.capture_sidecar(path)?;
+        self.rewrite_sidecar(collection, path, &image.bytes, attributes)
     }
 
     /// Rename a record file to a destination proven absent.
@@ -143,13 +147,8 @@ impl CommitPlan {
         from: &Path,
         to: &Path,
     ) -> Result<(), NativeStorageError> {
-        self.touched.insert(from.to_owned());
-        self.touched.insert(to.to_owned());
-        self.steps.push(CommitStep::Move(MoveStep {
-            from: Self::relative(collection, from)?,
-            to: Self::relative(collection, to)?,
-        }));
-        Ok(())
+        self.push_move(collection, from, to)?;
+        self.move_sidecar(collection, from, to)
     }
 
     /// Record the index keys the mutation removes and adds.
@@ -245,7 +244,7 @@ impl CommitPlan {
     }
 
     fn capture(&mut self, path: &Path) -> Result<RecordImage, NativeStorageError> {
-        let image = RecordImage::read(path)?.ok_or_else(|| {
+        let image = self.read_image(path)?.ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::NotFound,
                 "record changed before it could be planned",
@@ -253,6 +252,138 @@ impl CommitPlan {
         })?;
         self.pre_images.push((path.to_owned(), Some(image.clone())));
         Ok(image)
+    }
+
+    /// The payload step of an attribute change. With sidecar files the
+    /// payload changes only when its ownership does.
+    fn push_attribute_update(
+        &mut self,
+        collection: &NativeCollection,
+        path: &Path,
+        (attributes, ownership): (&[CapturedAttribute], Ownership),
+        modified_ms: u64,
+    ) -> Result<(), NativeStorageError> {
+        if self.sidecars && ownership == Ownership::default() {
+            return Ok(());
+        }
+        self.push_update(
+            collection,
+            path,
+            UpdateStep {
+                path: String::new(),
+                create: false,
+                blob: None,
+                attributes: self.inline_attributes(attributes.to_vec()),
+                mode: ownership.mode,
+                uid: ownership.uid,
+                gid: ownership.gid,
+                modified_ms,
+            },
+        )
+    }
+
+    fn read_image(&self, path: &Path) -> Result<Option<RecordImage>, NativeStorageError> {
+        if self.sidecars {
+            return RecordImage::read_plain(path);
+        }
+        RecordImage::read(path)
+    }
+
+    fn inline_attributes(
+        &self,
+        attributes: Vec<CapturedAttribute>,
+    ) -> Option<Vec<CapturedAttribute>> {
+        (!self.sidecars).then_some(attributes)
+    }
+
+    /// A new EFS payload gets the private mode the journal path gives it,
+    /// unless the write names one.
+    fn record_mode(&self, mode: Option<u32>) -> Option<u32> {
+        if self.sidecars {
+            return mode.or(Some(SidecarFile::PRIVATE_MODE));
+        }
+        mode
+    }
+
+    fn create_sidecar(
+        &mut self,
+        collection: &NativeCollection,
+        path: &Path,
+        payload: &[u8],
+        attributes: &[CapturedAttribute],
+    ) -> Result<(), NativeStorageError> {
+        if !self.sidecars {
+            return Ok(());
+        }
+        let sidecar = crate::sidecar_path(path);
+        SidecarFile::require_absent(&sidecar)?;
+        let bytes = SidecarFile::manifest(collection, path, payload, attributes)?;
+        let blob = self.add_blob(&bytes);
+        self.pre_images.push((sidecar.clone(), None));
+        self.push_update(collection, &sidecar, SidecarFile::step(blob, true)?)
+    }
+
+    fn capture_sidecar(&mut self, path: &Path) -> Result<Option<RecordImage>, NativeStorageError> {
+        if !self.sidecars {
+            return Ok(None);
+        }
+        self.capture(&crate::sidecar_path(path)).map(Some)
+    }
+
+    fn sidecar_attributes(
+        &mut self,
+        path: &Path,
+    ) -> Result<Vec<CapturedAttribute>, NativeStorageError> {
+        self.capture_sidecar(path)?.map_or_else(
+            || Ok(Vec::new()),
+            |image| SidecarFile::attributes(&image.bytes),
+        )
+    }
+
+    fn rewrite_sidecar(
+        &mut self,
+        collection: &NativeCollection,
+        path: &Path,
+        payload: &[u8],
+        attributes: &[CapturedAttribute],
+    ) -> Result<(), NativeStorageError> {
+        if !self.sidecars {
+            return Ok(());
+        }
+        let sidecar = crate::sidecar_path(path);
+        let bytes = SidecarFile::manifest(collection, path, payload, attributes)?;
+        let blob = self.add_blob(&bytes);
+        self.push_update(collection, &sidecar, SidecarFile::step(blob, false)?)
+    }
+
+    fn move_sidecar(
+        &mut self,
+        collection: &NativeCollection,
+        from: &Path,
+        to: &Path,
+    ) -> Result<(), NativeStorageError> {
+        if !self.sidecars {
+            return Ok(());
+        }
+        let (from, to) = (crate::sidecar_path(from), crate::sidecar_path(to));
+        SidecarFile::require_present(&from)?;
+        SidecarFile::require_absent(&to)?;
+        self.push_move(collection, &from, &to)
+    }
+
+    fn push_move(
+        &mut self,
+        collection: &NativeCollection,
+        from: &Path,
+        to: &Path,
+    ) -> Result<(), NativeStorageError> {
+        self.touched.insert(from.to_owned());
+        self.touched.insert(to.to_owned());
+        self.steps.push(CommitStep::Move(MoveStep {
+            from: Self::relative(collection, from)?,
+            to: Self::relative(collection, to)?,
+        }));
+        Ok(())
     }
 
     fn push_update(

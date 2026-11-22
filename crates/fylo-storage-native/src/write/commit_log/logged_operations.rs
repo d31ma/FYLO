@@ -15,8 +15,9 @@ use super::super::{
 use super::commit_plan::{CommitPlan, Ownership};
 use super::logged_writer::Planned;
 use super::record_image::RecordImage;
+use crate::sidecar_attributes::SidecarAttributes;
 use crate::{
-    ExpectedType, NativeCollection, NativeStorageError, NativeStorageErrorCode,
+    ExpectedType, FilesystemProfile, NativeCollection, NativeStorageError, NativeStorageErrorCode,
     path_exists_no_follow,
 };
 
@@ -54,7 +55,7 @@ impl NativeWriteRoot {
             }
             self.verify_parent(&target)?;
             let attributes = Self::initial_attributes(metadata)?;
-            let mut plan = CommitPlan::new("put-document");
+            let mut plan = self.new_plan("put-document");
             plan.create(
                 collection,
                 &target,
@@ -88,7 +89,7 @@ impl NativeWriteRoot {
         bodies: &[Option<Vec<u8>>],
     ) -> Result<(), NativeStorageError> {
         self.commit_logged(collection, || {
-            let mut plan = CommitPlan::new("write-documents");
+            let mut plan = self.new_plan("write-documents");
             for (write, body) in writes.iter().zip(bodies) {
                 let identifier = write.identifier();
                 match (write, body) {
@@ -173,7 +174,7 @@ impl NativeWriteRoot {
             let before = Self::document_keys(collection.word_fields(), identifier, &stored.bytes)?;
             let after = Self::document_keys(collection.word_fields(), identifier, &canonical)?;
             let image = RecordImage::contents(stored.bytes, stored.modified_millis);
-            let mut plan = CommitPlan::new("patch-document");
+            let mut plan = self.new_plan("patch-document");
             plan.overwrite(collection, &stored.path, image, &canonical)?;
             plan.index_delta(&before, &after);
             Ok((Some(plan), ()))
@@ -192,7 +193,7 @@ impl NativeWriteRoot {
             let stored = collection.read_document(identifier)?;
             let target = deleted_document_path(collection, identifier);
             Self::require_no_tombstone(&target)?;
-            let mut plan = CommitPlan::new("delete-document");
+            let mut plan = self.new_plan("delete-document");
             plan.rename(collection, &stored.path, &target)?;
             plan.index_delta(
                 &Self::document_keys(collection.word_fields(), identifier, &stored.bytes)?,
@@ -218,7 +219,7 @@ impl NativeWriteRoot {
                 .join("docs")
                 .join(crate::shard_of(identifier, collection.shard_width()))
                 .join(format!("{identifier}.json"));
-            let mut plan = CommitPlan::new("restore-document");
+            let mut plan = self.new_plan("restore-document");
             plan.rename(collection, &deleted.path, &target)?;
             plan.index_delta(
                 &BTreeSet::new(),
@@ -246,7 +247,7 @@ impl NativeWriteRoot {
                 }
             }
             let updated_at = next_meta_updated_at(&self.root, &target)?;
-            let mut attributes = Self::attribute_map(capture_attributes(&target)?);
+            let mut attributes = Self::attribute_map(self.planned_record_attributes(&target)?);
             for (name, value) in &record {
                 Self::set_metadata_attribute(&mut attributes, name, value)?;
             }
@@ -254,11 +255,11 @@ impl NativeWriteRoot {
                 crate::META_UPDATED_XATTR.into(),
                 BASE64.encode(updated_at.to_string()),
             );
-            let mut plan = CommitPlan::new("set-metadata");
+            let mut plan = self.new_plan("set-metadata");
             plan.set_attributes(
                 collection,
                 &target,
-                Self::attribute_list(attributes),
+                &Self::attribute_list(attributes),
                 Ownership::default(),
             )?;
             Ok((Some(plan), ()))
@@ -277,7 +278,7 @@ impl NativeWriteRoot {
         self.commit_logged(collection, || {
             policy.restart();
             let documents = matching_documents(collection, query, policy)?;
-            let mut plan = CommitPlan::new("update-many");
+            let mut plan = self.new_plan("update-many");
             let mut identifiers = Vec::with_capacity(documents.len());
             for mut document in documents {
                 let stored = collection.read_document(&document.identifier)?;
@@ -321,7 +322,7 @@ impl NativeWriteRoot {
         }
         self.commit_logged(collection, || {
             let documents = matching_documents(collection, query, codec)?;
-            let mut plan = CommitPlan::new("delete-many");
+            let mut plan = self.new_plan("delete-many");
             let mut identifiers = Vec::with_capacity(documents.len());
             for document in documents {
                 let target = deleted_document_path(collection, &document.identifier);
@@ -430,6 +431,19 @@ impl NativeWriteRoot {
         let encoded = serde_json::to_vec(value).map_err(|error| json_error(&error))?;
         attributes.insert(attribute, BASE64.encode(encoded));
         Ok(())
+    }
+
+    /// A record's attributes as a plan carries them: its extended
+    /// attributes, or on the EFS profile its verified sidecar file.
+    fn planned_record_attributes(
+        &self,
+        target: &Path,
+    ) -> Result<Vec<CapturedAttribute>, NativeStorageError> {
+        if self.filesystem_profile() != FilesystemProfile::EfsSidecarV1 {
+            return capture_attributes(target);
+        }
+        let attributes = SidecarAttributes::read_path(&self.root, target)?;
+        Ok(SidecarAttributes::plan_form(attributes))
     }
 
     fn attribute_map(attributes: Vec<CapturedAttribute>) -> BTreeMap<String, String> {
