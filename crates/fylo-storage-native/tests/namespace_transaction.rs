@@ -601,3 +601,44 @@ fn a_long_namespace_log_is_settled_by_the_writer() {
     assert_eq!(fixture.count("alpha"), 4_100);
     fixture.index_matches_rebuild("alpha");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_sidecar_root_commits_and_recovers_over_two_collections() {
+    use fylo_storage_native::FilesystemProfile;
+    let path = fylo_test_support::TestFolder::path().join(format!(
+        "fylo-txn2-sidecar-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    fs::create_dir(&path).unwrap();
+    let fixture = Fixture(fs::canonicalize(&path).unwrap());
+    let lease =
+        RootLease::acquire_with_profile(&fixture.0, FilesystemProfile::EfsSidecarV1).unwrap();
+    let options = RootOpenOptions::new(&fixture.0)
+        .with_profile(FilesystemProfile::EfsSidecarV1)
+        .with_lease(lease.clone());
+    let writer = NativeWriteRoot::open_profiled(options).unwrap();
+    for name in ["alpha", "beta"] {
+        writer
+            .create_collection(name, CollectionKind::Document, None)
+            .unwrap();
+    }
+    commit(&writer, &two_collection_batches(100, "sidecar"));
+    assert!(fixture.namespace_log().is_file());
+    NativeWriteRoot::close_logs_under(writer.path()).unwrap();
+    assert!(!fixture.namespace_log().exists());
+    let reader = NativeRoot::open_profiled(
+        RootOpenOptions::new(&fixture.0)
+            .with_profile(FilesystemProfile::EfsSidecarV1)
+            .with_lease(lease),
+    )
+    .unwrap();
+    for (name, count) in [("alpha", 1), ("beta", 2)] {
+        let ids = reader.collection(name).unwrap().document_ids().unwrap();
+        assert_eq!(ids.len(), count, "{name}");
+    }
+}
