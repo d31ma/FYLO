@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, MutexGuard};
@@ -19,6 +19,7 @@ use super::log_checkpoint::LogCheckpoint;
 use super::log_origin::LogOrigin;
 use super::log_segment::LogSegment;
 use super::logged_plan::LoggedPlan;
+use super::namespace_log::NamespaceLog;
 use super::placed_record::PlacedRecord;
 use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_recovery::SegmentRecovery;
@@ -83,6 +84,7 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         mut plan: impl FnMut() -> Result<Planned<T, P>, NativeStorageError>,
     ) -> Result<T, NativeStorageError> {
+        self.settle_namespace_once()?;
         let _checks = CommitCheckScope::enter();
         let queue = CommitQueue::shared(&collection.path);
         let mut state = queue.lock();
@@ -189,6 +191,7 @@ impl NativeWriteRoot {
     }
 
     fn close_logs_matching(selected: impl Fn(&Path) -> bool) -> Result<(), NativeStorageError> {
+        let mut roots = BTreeMap::new();
         for queue in CommitQueue::all() {
             let origin = queue.lock().origin.clone();
             let Some(origin) = origin.filter(|origin| selected(origin.root())) else {
@@ -198,8 +201,30 @@ impl NativeWriteRoot {
                 Err(error) if fs::metadata(origin.root()).is_ok() => return Err(error),
                 _ => {}
             }
+            roots.entry(origin.root().to_owned()).or_insert(origin);
+        }
+        for origin in roots.values() {
+            match Self::close_namespace_log(origin) {
+                Err(error) if fs::metadata(origin.root()).is_ok() => return Err(error),
+                _ => {}
+            }
         }
         Ok(())
+    }
+
+    /// Settle and remove a root's namespace log once its collections are
+    /// checkpointed, so a closing process leaves nothing to recover.
+    fn close_namespace_log(origin: &LogOrigin) -> Result<(), NativeStorageError> {
+        if fs::metadata(origin.root()).is_ok_and(|metadata| metadata.is_file()) {
+            return Ok(());
+        }
+        if !NamespaceLog::exists(origin.root())? {
+            return Ok(());
+        }
+        let Some(writer) = origin.reopen()? else {
+            return Ok(());
+        };
+        writer.recover_namespace().map(drop)
     }
 
     fn close_log(origin: &LogOrigin) -> Result<(), NativeStorageError> {
@@ -221,7 +246,10 @@ impl NativeWriteRoot {
         Ok(())
     }
 
-    fn begin_busy(&self, collection: &NativeCollection) -> Result<BusyPeriod, NativeStorageError> {
+    pub(super) fn begin_busy(
+        &self,
+        collection: &NativeCollection,
+    ) -> Result<BusyPeriod, NativeStorageError> {
         let lock = CollectionWriteLock::acquire_for(&self.root, collection, "collection.lock")?;
         self.require_no_pending_migration(collection)?;
         let mut stored = collection.stored_generation()?;
@@ -380,7 +408,7 @@ impl NativeWriteRoot {
         Ok(placed)
     }
 
-    fn create_segment(
+    pub(super) fn create_segment(
         root: &crate::NativeRoot,
         collection: &NativeCollection,
         generation: u64,
@@ -612,7 +640,7 @@ impl NativeWriteRoot {
     /// The busy period is consumed first, so its segment handle is closed
     /// before a checkpoint removes the log: Windows cannot remove a directory
     /// that holds an open file.
-    fn end_busy(
+    pub(super) fn end_busy(
         collection: &NativeCollection,
         mut busy: BusyPeriod,
     ) -> Result<(), NativeStorageError> {

@@ -9,6 +9,8 @@ use super::checkpoint_manifest::CheckpointManifest;
 use super::commit_manifest::CommitManifest;
 use super::log_checkpoint::LogCheckpoint;
 use super::log_segment::LogSegment;
+use super::namespace_part::NamespacePart;
+use super::namespace_recovery::NamespaceRecovery;
 use super::step_applier::StepApplier;
 use crate::{
     GenerationState, NativeCollection, NativeStorageError, NativeStorageErrorCode,
@@ -29,20 +31,61 @@ impl LogRecovery {
         collection: &NativeCollection,
         stored: &GenerationState,
     ) -> Result<(), NativeStorageError> {
-        let scan = LogSegment::scan(&collection.log_segment_path())?;
-        let checkpoint = scan.as_ref().and_then(Self::opening_checkpoint);
-        let mut generation = stored.generation;
-        match (&scan, checkpoint) {
-            (Some(scan), Some(checkpoint)) => {
-                generation = generation.max(Self::replay(writer, collection, scan, &checkpoint)?);
-            }
-            _ => Self::require_untouched_index(writer, collection, scan.as_ref())?,
+        let (replayed, index_trusted, log_valid) = Self::replay_own_log(writer, collection)?;
+        let covered = Self::covered(collection, stored)?;
+        let parts = NamespaceRecovery::missing_parts(writer.path(), collection.name(), covered)?;
+        let applied = Self::apply_parts(collection, writer, &parts, index_trusted && log_valid)?;
+        if !index_trusted || (!parts.is_empty() && !log_valid) {
+            writer.rebuild_index(collection)?;
         }
+        let generation = stored.generation.max(replayed).max(applied);
         let stable = generation + 2 - generation % 2;
         LogCheckpoint::run(collection, stable)?;
         let state = LogCheckpoint::state_path(collection)?;
         let fenced = collection.generation_fenced(stored);
         write_json_durable(&state, &GenerationRecord::stable(stable).fenced(fenced))
+    }
+
+    /// Replay the collection's own log. Returns the highest generation it
+    /// replayed, whether the index log can be trusted, and whether the log
+    /// had a valid opening checkpoint.
+    fn replay_own_log(
+        writer: &NativeWriteRoot,
+        collection: &NativeCollection,
+    ) -> Result<(u64, bool, bool), NativeStorageError> {
+        let scan = LogSegment::scan(&collection.log_segment_path())?;
+        let checkpoint = scan.as_ref().and_then(Self::opening_checkpoint);
+        if let (Some(scan), Some(checkpoint)) = (&scan, checkpoint) {
+            let (replayed, trusted) = Self::replay(writer, collection, scan, &checkpoint)?;
+            return Ok((replayed, trusted, true));
+        }
+        Self::require_untouched_index(writer, collection, scan.as_ref())?;
+        Ok((0, true, false))
+    }
+
+    /// The highest generation durable in the collection's own files and
+    /// log: a v1 state, the generation its segment opened at, and its
+    /// commit records.
+    pub(crate) fn covered(
+        collection: &NativeCollection,
+        stored: &GenerationState,
+    ) -> Result<u64, NativeStorageError> {
+        let durable_state = if stored.log.is_none() {
+            stored.generation
+        } else {
+            0
+        };
+        let Some(scan) = LogSegment::scan(&collection.log_segment_path())? else {
+            return Ok(durable_state);
+        };
+        let records = scan
+            .records
+            .iter()
+            .filter(|(_, record)| record.kind == LogRecordKind::Commit)
+            .map(|(_, record)| record.generation)
+            .max()
+            .unwrap_or(0);
+        Ok(durable_state.max(Self::opened_at(&scan)).max(records))
     }
 
     /// The checkpoint record every segment opens with, if the segment got
@@ -77,7 +120,7 @@ impl LogRecovery {
         collection: &NativeCollection,
         scan: &LogScan,
         checkpoint: &CheckpointManifest,
-    ) -> Result<u64, NativeStorageError> {
+    ) -> Result<(u64, bool), NativeStorageError> {
         let index_trusted = Self::cut_index_back(collection, checkpoint)?;
         let aborted = Self::aborted(scan)?;
         let applier = StepApplier::replay(&writer.root, &collection.path);
@@ -104,8 +147,35 @@ impl LogRecovery {
             }
             generation = generation.max(record.generation);
         }
-        if !index_trusted {
-            writer.rebuild_index(collection)?;
+        Ok((generation, index_trusted))
+    }
+
+    /// The generation a segment was opened at: everything at or below it
+    /// was checkpointed into the collection's files.
+    fn opened_at(scan: &LogScan) -> u64 {
+        scan.records
+            .first()
+            .map_or(0, |(_, record)| record.generation)
+    }
+
+    /// Apply the namespace parts this collection's log lost, after every
+    /// record of the log. Returns the highest generation they publish.
+    fn apply_parts(
+        collection: &NativeCollection,
+        writer: &NativeWriteRoot,
+        parts: &[(NamespacePart, Vec<u8>)],
+        append_index: bool,
+    ) -> Result<u64, NativeStorageError> {
+        let applier = StepApplier::replay(&writer.root, &collection.path);
+        let mut generation = 0;
+        for (part, blobs) in parts {
+            for step in &part.commit.steps {
+                applier.apply(step, blobs)?;
+            }
+            if append_index {
+                Self::append_delta(collection, &part.commit)?;
+            }
+            generation = generation.max(part.generation);
         }
         Ok(generation)
     }

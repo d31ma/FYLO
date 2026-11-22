@@ -3,6 +3,8 @@
 - Status: **Accepted** (approved by Samuel, 2026-10-28)
 - Date: **2026-10-28**
 - To be amended by [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md) (accepted, not yet built): a client's one-collection transaction (`storeTransaction`, `transactionBegin`/`Commit`) commits as one log record.
+- Amended by the namespace log for transactions over several collections
+  (Amendment "Several collections", FYLO-TXN2, review pending).
 - Owners: **FYLO maintainers**
 - Amends: the collection transaction journal described in `README.md`
   ("`.fylo-transactions`") for ordinary record mutations. The journal stays for
@@ -414,6 +416,202 @@ source of truth, and the durability promise above.
   access and move failpoints covered.
 - **Setting.** The setting is `fylo.durability` in `application.json`:
   `"process"` (the default) or `"power-loss"`.
+
+## Amendment: one commit over several collections (FYLO-TXN2, 2026-11-21)
+
+- Review: **pending (FYLO BC)**
+- Asked for by: the user ("Yes, several"), for TACHYON and Mesail: one
+  commit per user action, such as a message and its outbox entry. Mesail's
+  largest action (a chat send) writes 6 to 8 collections and about 25
+  documents in one namespace.
+- Contract: ADR 0035, Amendment "Several collections".
+
+### Problem
+
+Every collection has its own log, and one commit is one record in one
+collection's log. A transaction over collections A and B therefore needs one
+point at which all of its writes become durable together, and a recovery
+that never applies only part of it. On a network share (Mesail's production
+data on ATLAS) each flush costs about 30 to 230 ms, so the number of flushes
+per commit decides the cost.
+
+### Options compared
+
+| | (i) One record in a namespace log | (ii) Parts in each collection log, then one commit marker |
+| --- | --- | --- |
+| Commit point | one append and **one flush** of the namespace log | each part appended to its collection log and **flushed** (N flushes, they may run in parallel), then a marker appended and flushed (one more) |
+| Flushes per commit (N collections) | 1, plus one per collection whose log segment is new since its last checkpoint | N + 1 |
+| Where a part lives until checkpoint | the namespace record; a copy is appended to the collection log without a flush | the collection log, flushed |
+| Recovery | each collection replays its own log as today, then applies the parts of namespace records it lacks, after its last record | recovery must read the marker log first; a prepared part with no marker is skipped in every collection, so each collection's replay depends on another file |
+| Undecided parts | none: a part exists in a collection log only after the commit point | a prepared part sits in a collection log between its flush and the marker; a single-collection commit after it must not be blocked or re-ordered by it, and a checkpoint must not fold an undecided part into the files |
+| Checkpoints | unchanged, plus one mark record in the namespace log before a collection removes its log | a checkpoint must wait for, or roll back, every undecided part it covers |
+| Locks | collection locks in name order, namespace log mutex last | the same |
+| Readers during apply | every collection is `writing` from before the commit point to after its apply | the same |
+| New files | one log per namespace, created on the first multi-collection commit, removed when settled | one marker log per namespace |
+| L1-3b | lives in the namespace folder under the namespace lease; does not use L1-3b's undo journal, which costs about 10 durable writes per operation | the same |
+
+**Decision: (i).** It is the only option with one flush per action, and
+each collection's own replay stays independent of the namespace file except
+for one final step. (ii) costs N + 1 flushes (8 to 9 for Mesail's chat send,
+about 0.3 to 2 s on ATLAS) and adds undecided state to every collection log.
+Building on L1-3b's namespace journal (the undo journal for catalog
+operations) was also rejected: an undo journal needs before-images and
+flushes per step, which is what ADR 0013 replaced.
+
+### Files
+
+```text
+<namespace root>/.fylo-transactions/.namespace/log/segment.log
+```
+
+The segment format, record frame and checksums are ADR 0013's. The segment
+opens with a checkpoint record whose manifest is
+`{"format": "fylo.log-namespace-mark.v1", "collection": null}`. Record
+kinds:
+
+- **commit**, manifest `fylo.log-namespace-commit.v1`: a list of parts. A
+  part names its collection, the generation it publishes in that collection,
+  its blob range inside the record, and the collection's own commit manifest
+  (`fylo.log-commit.v1` steps and index delta).
+- **abort** (`fylo.log-abort.v1`): a commit whose apply was rolled back.
+- **checkpoint mark** (`fylo.log-namespace-mark.v1` with a collection): that
+  collection checkpointed its own log at a generation; every part of it at
+  or below that generation is durable in its files.
+
+A transaction that writes one collection never touches the namespace log.
+
+### Commit protocol
+
+1. Lock every collection in **collection-name order**: its in-process
+   commit queue exclusively (other writers of this process wait), then its
+   collection lock file. Recovery of a collection runs here, as today.
+2. Plan each collection's part with the same planners as a one-collection
+   batch. Check the index room and the record limit (64 MiB in all).
+3. From here on, work in **request order** (the order of each collection's
+   first write). Publish `writing` in each collection's `state.json`,
+   creating its log segment if it has none.
+4. Append the one record to the namespace log and flush it once
+   (`F_FULLFSYNC` with `durability: "power-loss"`). **Commit point.**
+5. Apply each part, in request order.
+6. Append each part to its collection's log as an ordinary commit record,
+   without a flush. A segment created in step 3 is flushed once here, so its
+   name is durable before a later commit relies on it.
+7. Publish `stable` in each collection, in request order, and release the
+   locks.
+
+A failure before step 4 writes nothing. A failed apply in step 5 undoes
+every part from its in-memory pre-image, in reverse order, and appends an
+abort record (one more flush). If the undo or the abort fails, every
+collection stays `writing` and recovery completes the committed write, as
+ADR 0013 section 6 does for one collection.
+
+### Why the unflushed copy is safe
+
+The copy of a part enters a collection's log under that collection's lock,
+before any later commit to the collection. A later commit flushes the whole
+log file, which makes the earlier copy durable too. So after a crash, a part
+missing from a collection's log is never followed by a durable record in
+that log: applying it after the log's last record is the commit order.
+
+### Recovery order
+
+A collection's recovery (unchanged triggers: `writing`, a log longer than
+`state.json` records, a leftover log):
+
+1. Replay the collection's own log (ADR 0013 section 7).
+2. Compute what is durable in the collection: a v1 `state.json`, the
+   generation its segment opened at, its replayed records, and the highest
+   checkpoint mark for it in the namespace log. A v2 `state.json` is never
+   trusted for this, because it is published without a flush.
+3. Apply every part of a namespace commit record (not aborted), in LSN
+   order, whose generation is above that. Append its index delta when the
+   index log is trusted; otherwise rebuild the index from documents.
+4. Checkpoint and publish `stable`, as today.
+
+**Namespace settling.** A power cut can lose the `writing` state of a
+collection whose part is only in the namespace log; nothing would then
+trigger step 1. So before the first write of a process takes any collection
+lock, the process settles the namespace once: when a namespace log exists,
+it locks every collection the log names (name order), recovers each one that
+lacks a part and checkpoints the others, then removes the log, unless a newer
+commit arrived meanwhile. A clean close (`close_logs`) does the same, so a
+closed namespace has no namespace log and opens in an older release.
+
+### Checkpoints
+
+A collection checkpoint is unchanged except for one step: after its files
+are flushed and before its log is removed, when the namespace log names the
+collection, it appends a checkpoint mark and flushes it. Without the mark, a
+later segment of that collection lost in a power cut would let recovery
+re-apply an old part over newer writes. The namespace log itself is removed
+only by settling (above).
+
+### Locks
+
+Collection locks are taken in name order by every transaction, and a
+one-collection writer takes one lock, so no cycle can form. The namespace
+log's mutex is held only for an append and its flush, and is always the last
+lock taken. Two transactions over disjoint collections serialize only on
+that flush; they do not group-commit with each other in this version.
+
+### Readers during apply
+
+- There is **no read snapshot across collections.** A reader without the
+  transaction handle may see collection A's new state before collection B's.
+- Every collection of the transaction is `writing` from step 3 until its own
+  `stable` in step 7, and readers of a `writing` collection wait, as today.
+- **Order guarantee:** parts are applied and collections become `stable` in
+  the order of each collection's first write in the request, not the lock
+  order. An application that writes its pointer last (an outbox entry, a
+  head row) can rely on this: once a reader sees the pointer, every
+  collection it points into has its new state or is still `writing`, where
+  the reader waits. It never finds the pointed-to document missing.
+
+### Limits (answers for Mesail and TACHYON)
+
+- **Collections per transaction:** no limit of its own. The transaction's
+  limits bound it: 1,000 writes, 8 MiB of documents, and one record of at
+  most 64 MiB. Each extra collection costs two `state.json` renames and one
+  unflushed append (plus one flush the first time after its checkpoint).
+- **Time limit of an open handle:** the same for any number of collections:
+  default 30,000 ms, at most 300,000 ms. Writes are held in memory until
+  commit; locks are taken only at commit. Other writes to a collection the
+  handle has written, in the same session, answer `ETXNBUSY`.
+- **`createCollection` inside a transaction:** not allowed (`ETXNSCOPE`).
+  It is a journal operation with its own catalog update and checkpoint, so
+  joining it to the record is not cheap. Create collections before `begin`.
+
+### Windows
+
+- The namespace log uses the same segment code, flush and directory flush as
+  collection logs; Windows runs it in the Windows lane.
+- A segment handle is closed before its folder is removed (Windows cannot
+  remove a folder holding an open file): settling drops the namespace log's
+  handle before removing it, as `end_busy` does for collection logs.
+- A reader that loses the race with a `state.json` rename sees access
+  denied on Windows; this is already read as "the generation moved" and
+  retried.
+
+### Failpoints and tests
+
+New failpoints: `before-namespace-log-sync`, `after-namespace-log-sync`,
+`after-namespace-apply-part`, `before-namespace-collection-append`. The crash
+matrix gains a namespace transaction scenario that reaches each of them.
+Tests in `crates/fylo-storage-native/tests/namespace_transaction.rs`: two
+and three collections, a failing write writes nothing, raw-file and repeated
+collections refused, a part lost from a collection log is recovered,
+overlapping transactions in three threads never deadlock, a crash at each
+failpoint in a child process leaves all or nothing, a checkpoint mark stops
+an old part from returning, and a reader that follows the last write never
+finds its target missing.
+
+### Costs
+
+- A namespace log appears on the first multi-collection commit and stays
+  until settling or a clean close.
+- A clean close of a namespace with a namespace log flushes one mark per
+  collection it names before removing it.
+- Recovery reads the namespace log once per collection it recovers.
 
 ## Consequences
 

@@ -101,6 +101,35 @@ impl LogSegment {
         }))
     }
 
+    /// Open the log segment at `path` for appending after its last valid
+    /// record, cutting off a torn tail. `None` when it is missing or its
+    /// header never became valid.
+    pub(crate) fn open_log_at_end(path: &Path) -> Result<Option<Self>, NativeStorageError> {
+        let Some(scan) = Self::scan(path)? else {
+            return Ok(None);
+        };
+        let Some(file) = FileSegment::open(path)? else {
+            return Ok(None);
+        };
+        file.truncate(scan.valid_length)?;
+        let last_lsn = scan
+            .records
+            .last()
+            .map_or(scan.header.first_lsn, |(_, record)| record.lsn);
+        Ok(Some(Self {
+            kind: LogSegmentKind::WriteAheadLog,
+            handle: Arc::new(file),
+            bodies: Arc::new(PlainBody),
+            log_path: Some(path.to_owned()),
+            max_bytes: Self::MAX_LOG_BYTES,
+            nonce: scan.header.sequence,
+            length: scan.valid_length,
+            next_lsn: last_lsn + 1,
+            records: scan.records.len().saturating_sub(1) as u64,
+            fresh: false,
+        }))
+    }
+
     /// Open a document segment whose valid length a recovery scan found.
     pub(crate) fn open_scanned(
         medium: &dyn SegmentMedium,
@@ -135,6 +164,17 @@ impl LogSegment {
         checkpoint: &CheckpointManifest,
         generation: u64,
     ) -> Result<Self, NativeStorageError> {
+        let manifest = serde_json::to_vec(checkpoint).map_err(|error| json_error(&error))?;
+        Self::create_opened_by(path, manifest, generation)
+    }
+
+    /// Create a log segment whose opening checkpoint record carries
+    /// `manifest`. Nothing is flushed.
+    pub(crate) fn create_opened_by(
+        path: &Path,
+        manifest: Vec<u8>,
+        generation: u64,
+    ) -> Result<Self, NativeStorageError> {
         let directory = path.parent().ok_or_else(|| {
             NativeStorageError::new(NativeStorageErrorCode::UnsafePath, "log has no directory")
         })?;
@@ -143,7 +183,6 @@ impl LogSegment {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(NativeStorageError::io(error)),
         }
-        let manifest = serde_json::to_vec(checkpoint).map_err(|error| json_error(&error))?;
         let opening = SegmentOpening {
             kind: LogSegmentKind::WriteAheadLog,
             sequence: Self::random_nonce()?,
@@ -292,6 +331,11 @@ impl LogSegment {
                 .and_then(Path::parent)
                 .map(Path::to_owned),
         }
+    }
+
+    /// Whether the segment was created and no flush has covered its name.
+    pub(crate) fn is_fresh(&self) -> bool {
+        self.fresh
     }
 
     /// The new directory entries are durable once a flush covered them.

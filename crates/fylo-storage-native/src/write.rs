@@ -36,6 +36,7 @@ const LOCK_TTL_MILLIS: u64 = 5 * 60 * 1000;
 const DEFAULT_ACCESS_MODE: u32 = 0o600;
 
 mod access_admin;
+mod collection_writes;
 mod commit_log;
 mod document_codec;
 mod document_write;
@@ -52,6 +53,7 @@ pub use commit_log::{
 pub(crate) use commit_log::{CopiedHook, SegmentCompactor};
 pub(crate) mod version;
 
+pub use collection_writes::CollectionWrites;
 use document_codec::DocumentPolicy;
 pub use document_codec::{DocumentCodec, PlainDocumentCodec, schema_violations};
 pub use document_write::DocumentWrite;
@@ -181,6 +183,16 @@ impl NativeWriteRoot {
     }
 
     fn lock_collection(
+        &self,
+        collection: &super::NativeCollection,
+    ) -> Result<commit_log::CollectionGuard, NativeStorageError> {
+        self.settle_namespace_once()?;
+        self.lock_collection_unsettled(collection)
+    }
+
+    /// Lock a collection without first settling the namespace log; only
+    /// that settling itself locks this way.
+    fn lock_collection_unsettled(
         &self,
         collection: &super::NativeCollection,
     ) -> Result<commit_log::CollectionGuard, NativeStorageError> {
@@ -669,6 +681,25 @@ impl NativeWriteRoot {
         codec: &dyn DocumentCodec,
     ) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
+        Self::check_batch_identifiers(writes)?;
+        let collection = self.document_collection(collection_name, "commit_document_writes")?;
+        if !self.uses_log(&collection) {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "a batch of document writes needs the collection's commit log",
+            ));
+        }
+        if writes.is_empty() {
+            return Ok(());
+        }
+        let policy = self.policy(&collection, codec);
+        let outcome = Self::batch_bodies(&policy, collection_name, writes)
+            .and_then(|bodies| self.commit_document_writes_to(&collection, writes, &bodies));
+        policy.finish(outcome)
+    }
+
+    /// Every identifier of a batch is a valid TTID, and none repeats.
+    fn check_batch_identifiers(writes: &[DocumentWrite]) -> Result<(), NativeStorageError> {
         let mut seen = BTreeSet::new();
         for write in writes {
             match write {
@@ -687,32 +718,26 @@ impl NativeWriteRoot {
                 ));
             }
         }
-        let collection = self.document_collection(collection_name, "commit_document_writes")?;
-        if !self.uses_log(&collection) {
-            return Err(NativeStorageError::new(
-                NativeStorageErrorCode::Unsupported,
-                "a batch of document writes needs the collection's commit log",
-            ));
+        Ok(())
+    }
+
+    /// The canonical body of each write of a batch, built through `policy`
+    /// (`None` for a delete).
+    fn batch_bodies(
+        policy: &DocumentPolicy<'_>,
+        collection_name: &str,
+        writes: &[DocumentWrite],
+    ) -> Result<Vec<Option<Vec<u8>>>, NativeStorageError> {
+        let mut bodies = Vec::with_capacity(writes.len());
+        for write in writes {
+            bodies.push(match write {
+                DocumentWrite::Put { fields, .. } | DocumentWrite::Replace { fields, .. } => Some(
+                    canonical_body(&policy.encode(collection_name, fields.clone())?)?,
+                ),
+                DocumentWrite::Delete { .. } => None,
+            });
         }
-        if writes.is_empty() {
-            return Ok(());
-        }
-        let policy = self.policy(&collection, codec);
-        let outcome = (|| {
-            let mut bodies = Vec::with_capacity(writes.len());
-            for write in writes {
-                bodies.push(match write {
-                    DocumentWrite::Put { fields, .. } | DocumentWrite::Replace { fields, .. } => {
-                        Some(canonical_body(
-                            &policy.encode(collection_name, fields.clone())?,
-                        )?)
-                    }
-                    DocumentWrite::Delete { .. } => None,
-                });
-            }
-            self.commit_document_writes_to(&collection, writes, &bodies)
-        })();
-        policy.finish(outcome)
+        Ok(bodies)
     }
 
     /// Create one raw file at an explicitly supplied TTID.
@@ -5523,7 +5548,7 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), NativeStorageError> {
 /// The list is the contract the crash matrix enumerates, so a new failpoint
 /// must be declared here to be injectable — which is also what stops it from
 /// being added without coverage.
-pub const FAILPOINTS: [&str; 34] = [
+pub const FAILPOINTS: [&str; 38] = [
     "before-file-write",
     "after-file-rename",
     "after-file-sync",
@@ -5543,6 +5568,10 @@ pub const FAILPOINTS: [&str; 34] = [
     "before-log-sync",
     "after-log-sync",
     "after-log-apply-step",
+    "before-namespace-log-sync",
+    "after-namespace-log-sync",
+    "after-namespace-apply-part",
+    "before-namespace-collection-append",
     "after-checkpoint-flush",
     "after-checkpoint-remove",
     "after-schema-file",

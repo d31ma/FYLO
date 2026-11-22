@@ -250,8 +250,8 @@ pub use write::{
     RecordAccessGroup, RecordAccessMigration, RootAccessReport, SalvageReport, SegmentVerification,
 };
 pub use write::{
-    DocumentCodec, DocumentWrite, NativeWriteRoot, PlainDocumentCodec, PutDocumentOptions,
-    PutRawFileOptions, schema_violations,
+    CollectionWrites, DocumentCodec, DocumentWrite, NativeWriteRoot, PlainDocumentCodec,
+    PutDocumentOptions, PutRawFileOptions, schema_violations,
 };
 pub use write::{SqlMutationResult, SqlMutationResultKind, unix_millis};
 

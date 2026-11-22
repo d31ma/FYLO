@@ -273,6 +273,58 @@ Additive; no existing operation, request or result changes.
    collection and for a sidecar-store root on Windows (`api/store/v1`,
    "Profiles and layouts").
 
+### Amendment (FYLO-TXN2, 2026-11-21, review pending): one transaction over several collections of one namespace
+
+The user answered "Yes, several": one transaction may write several
+collections of the same namespace, all or nothing, in the coordinated
+release. TACHYON and Mesail want one commit per user action (for example a
+message and its outbox entry), which removes their repair code for
+half-saved actions. On a network share each commit costs about 30-230 ms, so
+one flush per action matters. This replaces "one collection" in section 5
+and the "Transactions across collections" row of the rejected routes.
+
+1. **Scope.** `save`, `patch`, `deleteById` and `delete(query)` on any
+   document collections of **one namespace** commit together or not at all.
+   Each write in `storeTransaction` may carry its own `collection` (default:
+   the frame's `collection`). After `transactionBegin`, a Store operation
+   with the handle may name any collection of the begin frame's namespace.
+2. **One record, one flush.** A transaction over two or more collections
+   commits as one record in the namespace's own log
+   (`.fylo-transactions/.namespace/log/segment.log`, the ADR 0013 record
+   format, manifest `fylo.log-namespace-commit.v1`) with one flush. Each
+   collection then applies its part and gets a copy of it in its own log
+   without a flush; a later flush or checkpoint of that log makes the copy
+   durable, and a checkpoint records a mark in the namespace log first.
+   Recovery applies a part only when the collection's own durable state is
+   older than it, and only after every record of the collection's log. A
+   transaction over one collection is unchanged (no namespace log).
+3. **No deadlock.** The collections are locked in name order, under each
+   collection's in-process commit queue and file lock; the namespace log's
+   mutex is always taken last.
+4. **Limits** stay per transaction, over all its collections: 1,000 writes,
+   8 MiB of documents (`ETXNLIMIT`), and the time limit. `ETXNBUSY` covers
+   every collection the transaction writes.
+5. **Refused** (the transaction rolls back, `error.details.collection`
+   names the collection): a collection of another namespace with
+   `ETXNSCOPE`; a raw-file collection, a segment collection, or any
+   collection whose documents do not go through the commit log
+   (`NativeWriteRoot::collection_uses_log` is false) with `ETXNLAYOUT`.
+6. **Reads.** There is **no read snapshot across collections**: a reader
+   without the handle may see one collection's new state before another's.
+   Each collection's readers wait while it is `writing`, as today. The
+   collections are applied and become `stable` in the order of each one's
+   first write in the transaction, so a pointer written last (an outbox
+   entry, a head row) never points at a document a reader finds missing.
+   No limit on the number of collections; `createCollection` stays out
+   (`ETXNSCOPE`, create before `begin`). Storage design: ADR 0013,
+   Amendment "one commit over several collections".
+7. **Capability.** The handshake reports
+   `capabilities.store.multiCollectionTransactions: true`.
+
+Additive: no existing request changes meaning, except that a second
+collection inside a transaction of the same namespace is now accepted
+instead of `ETXNSCOPE`. `api/store/v1` and `api/machine/v2` carry it.
+
 ## Consequences
 
 - **Breaking Changes** (CHANGELOG of the next release): machine protocol v2;
@@ -296,4 +348,4 @@ Additive; no existing operation, request or result changes.
 | Drop SQL | breaks `fylo sql`, `executeSQL` and TACHYON's documented SQL datasource on FYLO |
 | A new SQL engine (GlueSQL, DataFusion, SQLite virtual tables) | swaps one large third-party engine for another; `unsafe` or size problems |
 | Keep the old operations one more release | the user chose to remove them with the SDK (Q5) |
-| Transactions across collections | the user chose one collection only (Q6) |
+| Transactions across namespaces | each namespace has its own lease and log (ADR 0033, N9); a cross-namespace commit would need both leases and a second commit point |

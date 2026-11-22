@@ -11,6 +11,7 @@ use super::super::{
 use super::commit_manifest::CommitManifest;
 use super::commit_step::CommitStep;
 use super::log_segment::LogSegment;
+use super::namespace_log::NamespaceLog;
 use crate::index_limit::IndexLimit;
 use crate::{NativeCollection, NativeStorageError, NativeStorageErrorCode, path_exists_no_follow};
 
@@ -35,6 +36,7 @@ impl LogCheckpoint {
         Self::compact_index(collection)?;
         Self::full_flush(&collection.log_segment_path())?;
         failpoint("after-checkpoint-flush")?;
+        NamespaceLog::mark_checkpoint(&collection.root, collection.name(), generation)?;
         let state = Self::state_path(collection)?;
         let fenced = collection.generation_fenced(&collection.stored_generation()?);
         write_json_durable(&state, &GenerationRecord::stable(generation).fenced(fenced))?;

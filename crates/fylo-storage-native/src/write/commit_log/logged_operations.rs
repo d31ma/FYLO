@@ -27,8 +27,9 @@ use crate::{
 /// the same order, with the same errors.
 impl NativeWriteRoot {
     /// Largest blob area a plan may build before falling back to the journal.
-    const LOG_BLOB_BUDGET: usize = LogRecord::MAX_BODY_BYTES - 1024 * 1024;
-    const OVER_BUDGET: &'static str = "mutation exceeds the write-ahead log record limit";
+    pub(super) const LOG_BLOB_BUDGET: usize = LogRecord::MAX_BODY_BYTES - 1024 * 1024;
+    pub(super) const OVER_BUDGET: &'static str =
+        "mutation exceeds the write-ahead log record limit";
 
     pub(crate) fn put_document_logged(
         &self,
@@ -89,74 +90,80 @@ impl NativeWriteRoot {
         bodies: &[Option<Vec<u8>>],
     ) -> Result<(), NativeStorageError> {
         self.commit_logged(collection, || {
-            let mut plan = self.new_plan("write-documents");
-            for (write, body) in writes.iter().zip(bodies) {
-                let identifier = write.identifier();
-                match (write, body) {
-                    (DocumentWrite::Put { .. }, Some(canonical)) => {
-                        let target = collection
-                            .path
-                            .join("docs")
-                            .join(crate::shard_of(identifier, collection.shard_width()))
-                            .join(format!("{identifier}.json"));
-                        if path_exists_no_follow(&target)? {
-                            return Err(NativeStorageError::new(
-                                NativeStorageErrorCode::DocumentExists,
-                                "document identifier already exists",
-                            ));
-                        }
-                        self.verify_parent(&target)?;
-                        let attributes = Self::initial_attributes(&BTreeMap::new())?;
-                        plan.create(
-                            collection,
-                            &target,
-                            (canonical, attributes),
-                            Ownership::default(),
-                        )?;
-                        plan.index_delta(
-                            &BTreeSet::new(),
-                            &Self::document_keys(collection.word_fields(), identifier, canonical)?,
-                        );
-                    }
-                    (DocumentWrite::Replace { .. }, Some(canonical)) => {
-                        let stored = collection.read_document(identifier)?;
-                        let before = Self::document_keys(
-                            collection.word_fields(),
-                            identifier,
-                            &stored.bytes,
-                        )?;
-                        let image = RecordImage::contents(stored.bytes, stored.modified_millis);
-                        plan.overwrite(collection, &stored.path, image, canonical)?;
-                        plan.index_delta(
-                            &before,
-                            &Self::document_keys(collection.word_fields(), identifier, canonical)?,
-                        );
-                    }
-                    (DocumentWrite::Delete { .. }, None) => {
-                        let stored = collection.read_document(identifier)?;
-                        let target = deleted_document_path(collection, identifier);
-                        Self::require_no_tombstone(&target)?;
-                        plan.rename(collection, &stored.path, &target)?;
-                        plan.index_delta(
-                            &Self::document_keys(
-                                collection.word_fields(),
-                                identifier,
-                                &stored.bytes,
-                            )?,
-                            &BTreeSet::new(),
-                        );
-                    }
-                    _ => {
-                        return Err(NativeStorageError::new(
-                            NativeStorageErrorCode::CorruptDocument,
-                            "a batch write is missing its body",
-                        ));
-                    }
-                }
-                Self::require_within_budget(&plan)?;
-            }
+            let plan = self.plan_document_writes(collection, writes, bodies)?;
             Ok((Some(plan), ()))
         })
+    }
+
+    /// Plan a batch of document writes to one collection as one commit,
+    /// with each body already in canonical form (`bodies[i]` for
+    /// `writes[i]`, `None` for a delete).
+    pub(crate) fn plan_document_writes(
+        &self,
+        collection: &NativeCollection,
+        writes: &[DocumentWrite],
+        bodies: &[Option<Vec<u8>>],
+    ) -> Result<CommitPlan, NativeStorageError> {
+        let mut plan = self.new_plan("write-documents");
+        for (write, body) in writes.iter().zip(bodies) {
+            let identifier = write.identifier();
+            match (write, body) {
+                (DocumentWrite::Put { .. }, Some(canonical)) => {
+                    let target = collection
+                        .path
+                        .join("docs")
+                        .join(crate::shard_of(identifier, collection.shard_width()))
+                        .join(format!("{identifier}.json"));
+                    if path_exists_no_follow(&target)? {
+                        return Err(NativeStorageError::new(
+                            NativeStorageErrorCode::DocumentExists,
+                            "document identifier already exists",
+                        ));
+                    }
+                    self.verify_parent(&target)?;
+                    let attributes = Self::initial_attributes(&BTreeMap::new())?;
+                    plan.create(
+                        collection,
+                        &target,
+                        (canonical, attributes),
+                        Ownership::default(),
+                    )?;
+                    plan.index_delta(
+                        &BTreeSet::new(),
+                        &Self::document_keys(collection.word_fields(), identifier, canonical)?,
+                    );
+                }
+                (DocumentWrite::Replace { .. }, Some(canonical)) => {
+                    let stored = collection.read_document(identifier)?;
+                    let before =
+                        Self::document_keys(collection.word_fields(), identifier, &stored.bytes)?;
+                    let image = RecordImage::contents(stored.bytes, stored.modified_millis);
+                    plan.overwrite(collection, &stored.path, image, canonical)?;
+                    plan.index_delta(
+                        &before,
+                        &Self::document_keys(collection.word_fields(), identifier, canonical)?,
+                    );
+                }
+                (DocumentWrite::Delete { .. }, None) => {
+                    let stored = collection.read_document(identifier)?;
+                    let target = deleted_document_path(collection, identifier);
+                    Self::require_no_tombstone(&target)?;
+                    plan.rename(collection, &stored.path, &target)?;
+                    plan.index_delta(
+                        &Self::document_keys(collection.word_fields(), identifier, &stored.bytes)?,
+                        &BTreeSet::new(),
+                    );
+                }
+                _ => {
+                    return Err(NativeStorageError::new(
+                        NativeStorageErrorCode::CorruptDocument,
+                        "a batch write is missing its body",
+                    ));
+                }
+            }
+            Self::require_within_budget(&plan)?;
+        }
+        Ok(plan)
     }
 
     pub(crate) fn patch_document_logged(
