@@ -29,6 +29,16 @@ impl<'root> Collections<'root> {
         }
     }
 
+    /// The names of the root's collections, sorted. It reads only the
+    /// catalog and the collection folders, never a document.
+    ///
+    /// # Errors
+    ///
+    /// A stable error for a corrupt descriptor or unreadable storage.
+    pub fn list(&self) -> Result<Vec<String>, Error> {
+        Ok(self.root.reader()?.collection_names()?)
+    }
+
     /// Create the document collection `name`; answers `false` when it
     /// already existed.
     ///

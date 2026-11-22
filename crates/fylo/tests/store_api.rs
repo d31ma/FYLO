@@ -207,6 +207,15 @@ fn plain_json_documents_and_a_custom_id_field_work_too() {
 }
 
 #[test]
+fn collections_list_their_names_sorted() {
+    let fixture = Fixture::new();
+    let database = fixture.open();
+    database.collections().create("audit").unwrap();
+    let names = database.collections().list().unwrap();
+    assert_eq!(names, ["audit", Fixture::COLLECTION]);
+}
+
+#[test]
 fn a_bad_query_answers_its_code() {
     let fixture = Fixture::new();
     let database = fixture.open();
