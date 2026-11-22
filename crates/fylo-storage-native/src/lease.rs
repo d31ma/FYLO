@@ -12,9 +12,11 @@ mod machine_identity;
 mod root_lease;
 mod root_lease_inner;
 mod root_turn;
+mod weak_root_lease;
 
 pub use lease_timing::LeaseTiming;
 pub use root_lease::RootLease;
+pub(crate) use weak_root_lease::WeakRootLease;
 
 #[cfg(test)]
 mod tests;

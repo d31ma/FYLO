@@ -230,7 +230,7 @@ fn efs_patch_metadata_delete_and_restore_round_trip_through_the_log() {
     put(&writer, 3);
     let id = identifier(3);
     writer
-        .patch_document("items", &id, br#"{"extra":true}"#)
+        .patch_document("items", &id, br#"{"n":3,"extra":true}"#)
         .unwrap();
     assert_eq!(fixture.read(&id), json!({ "n": 3, "extra": true }));
     let Value::Object(record) = json!({ "source": "second" }) else {
@@ -321,4 +321,19 @@ fn efs_crash_child() {
     let root = PathBuf::from(root);
     let writer = NativeWriteRoot::open_profiled(efs_options(&root, efs_lease(&root))).unwrap();
     put(&writer, 7);
+}
+
+#[test]
+fn recovery_does_not_bring_back_an_efs_document_a_later_record_deleted() {
+    let fixture = Fixture::create();
+    let writer = fixture.writer();
+    put(&writer, 8);
+    let live = fixture.document_path(&identifier(8));
+    writer.delete_document("items", &identifier(8)).unwrap();
+    fixture.mark_writing();
+    assert!(writer.recover_collection("items").unwrap());
+    assert!(!live.exists());
+    assert!(!sidecar(&live).exists());
+    writer.restore_document("items", &identifier(8)).unwrap();
+    assert_eq!(fixture.read(&identifier(8)), json!({ "n": 8 }));
 }

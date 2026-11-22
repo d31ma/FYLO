@@ -22,6 +22,7 @@ mod index_growth;
 mod layout_migration;
 mod layout_migration_report;
 mod log_checkpoint;
+mod log_origin;
 mod log_recovery;
 mod log_segment;
 mod logged_operations;

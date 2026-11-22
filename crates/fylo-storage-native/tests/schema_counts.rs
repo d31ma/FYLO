@@ -399,12 +399,8 @@ fn a_crash_on_the_log_leaves_the_count_right_or_stale() {
 
 #[cfg(unix)]
 #[test]
-fn a_crash_on_the_journal_leaves_the_count_right_or_stale() {
-    for failpoint in [
-        "after-capture",
-        "before-commit-marker",
-        "after-commit-marker",
-    ] {
+fn a_crash_on_the_log_with_sidecars_leaves_the_count_right_or_stale() {
+    for failpoint in ["after-log-append", "after-log-sync", "after-log-apply-step"] {
         crash_and_recover(true, "patch", failpoint);
         crash_and_recover(true, "delete", failpoint);
     }

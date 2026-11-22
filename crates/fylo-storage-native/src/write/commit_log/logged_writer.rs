@@ -16,6 +16,7 @@ use super::checkpoint_manifest::CheckpointManifest;
 use super::commit_plan::CommitPlan;
 use super::commit_queue::{BusyPeriod, CommitQueue, QueueState, SchemaFence};
 use super::log_checkpoint::LogCheckpoint;
+use super::log_origin::LogOrigin;
 use super::log_segment::LogSegment;
 use super::logged_plan::LoggedPlan;
 use super::placed_record::PlacedRecord;
@@ -46,7 +47,7 @@ impl NativeWriteRoot {
 
     /// The native profile, and the EFS profile on Unix, whose documents
     /// keep their attributes in sidecar files the log writes as files.
-    fn profile_uses_log(&self) -> bool {
+    pub(crate) fn profile_uses_log(&self) -> bool {
         match self.filesystem_profile() {
             FilesystemProfile::Native => true,
             FilesystemProfile::EfsSidecarV1 => cfg!(unix),
@@ -81,7 +82,7 @@ impl NativeWriteRoot {
                 state = queue.wait(state);
             }
             if state.busy.is_none() {
-                state.origin = Some((self.path().to_owned(), collection.name().to_owned()));
+                state.origin = Some(LogOrigin::of(self, collection.name()));
                 state.busy = Some(self.begin_busy(collection)?);
             }
             let (planned, value) = match plan() {
@@ -176,24 +177,26 @@ impl NativeWriteRoot {
     fn close_logs_matching(selected: impl Fn(&Path) -> bool) -> Result<(), NativeStorageError> {
         for queue in CommitQueue::all() {
             let origin = queue.lock().origin.clone();
-            let Some((root, name)) = origin.filter(|(root, _)| selected(root)) else {
+            let Some(origin) = origin.filter(|origin| selected(origin.root())) else {
                 continue;
             };
-            match Self::close_log(&root, &name) {
-                Err(error) if fs::metadata(&root).is_ok() => return Err(error),
+            match Self::close_log(&origin) {
+                Err(error) if fs::metadata(origin.root()).is_ok() => return Err(error),
                 _ => {}
             }
         }
         Ok(())
     }
 
-    fn close_log(root: &Path, name: &str) -> Result<(), NativeStorageError> {
+    fn close_log(origin: &LogOrigin) -> Result<(), NativeStorageError> {
         // A `.vdbx` database keeps no write-ahead log beside its segments.
-        if fs::metadata(root).is_ok_and(|metadata| metadata.is_file()) {
+        if fs::metadata(origin.root()).is_ok_and(|metadata| metadata.is_file()) {
             return Ok(());
         }
-        let writer = Self::open(root)?;
-        let Some(collection) = writer.collection_if_present(name)? else {
+        let Some(writer) = origin.reopen()? else {
+            return Ok(());
+        };
+        let Some(collection) = writer.collection_if_present(origin.collection())? else {
             return Ok(());
         };
         if !path_exists_no_follow(&collection.log_directory())? {

@@ -2218,14 +2218,29 @@ impl NativeWriteRoot {
         collection: &super::NativeCollection,
     ) -> Result<bool, NativeStorageError> {
         self.require_no_pending_migration(collection)?;
-        let log_recovered = if self.filesystem_profile() == super::FilesystemProfile::Native {
+        let log_recovered = if self.profile_uses_log() {
             self.settle_log(collection)?
         } else {
             false
         };
         let journal_recovered = self.recover_journal_locked(collection)?;
+        let settled = self.settle_log_after_journal(collection, journal_recovered)?;
         let index_compacted = commit_log::LogCheckpoint::compact_index(collection)?;
-        Ok(log_recovered || journal_recovered || index_compacted)
+        Ok(log_recovered || journal_recovered || settled || index_compacted)
+    }
+
+    /// A journal recovery leaves the collection stable, so a log the
+    /// recovery found unsettled is checkpointed now, and a second recovery
+    /// finds nothing left to do.
+    fn settle_log_after_journal(
+        &self,
+        collection: &super::NativeCollection,
+        journal_recovered: bool,
+    ) -> Result<bool, NativeStorageError> {
+        if !journal_recovered || !self.profile_uses_log() {
+            return Ok(false);
+        }
+        self.settle_log(collection)
     }
 
     /// Finish a layout migration a crash interrupted. The caller's view of

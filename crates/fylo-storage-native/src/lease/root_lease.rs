@@ -12,6 +12,15 @@ pub struct RootLease {
 }
 
 impl RootLease {
+    pub(super) fn from_inner(inner: Arc<RootLeaseInner>) -> Self {
+        Self { inner }
+    }
+
+    /// This lease, named without keeping it alive.
+    pub(crate) fn downgrade(&self) -> super::WeakRootLease {
+        super::WeakRootLease::of(&self.inner)
+    }
+
     /// # Errors
     ///
     /// Returns an error if the root cannot be initialized, locked, or recorded.

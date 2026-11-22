@@ -22,9 +22,8 @@ pub(crate) struct CommitQueue {
 pub(crate) struct QueueState {
     pub(crate) exclusive: Option<ThreadId>,
     pub(crate) busy: Option<BusyPeriod>,
-    /// Root path and collection name, so a closing process can checkpoint
-    /// without this registry holding a root (and its lease) open.
-    pub(crate) origin: Option<(PathBuf, String)>,
+    /// Where the log belongs, so a closing process can checkpoint it.
+    pub(crate) origin: Option<super::log_origin::LogOrigin>,
 }
 
 /// Shared state while at least one log writer is between its plan and its

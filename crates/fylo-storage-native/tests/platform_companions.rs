@@ -536,12 +536,8 @@ fn an_interrupted_logged_write_recovers_among_companions() {
 
 #[cfg(unix)]
 #[test]
-fn an_interrupted_journaled_write_rolls_back_among_companions() {
-    for failpoint in [
-        "after-capture",
-        "before-commit-marker",
-        "after-commit-marker",
-    ] {
+fn an_interrupted_sidecar_write_recovers_among_companions() {
+    for failpoint in ["after-log-append", "after-log-sync", "after-log-apply-step"] {
         for operation in ["patch", "delete", "put"] {
             crash_and_recover(true, operation, failpoint);
         }
