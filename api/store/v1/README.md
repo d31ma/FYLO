@@ -204,11 +204,11 @@ One collection only (ADR 0035 section 5).
 - **Profiles and layouts:** transactions need a document collection whose
   writes go through the commit log, which writes all of a transaction's
   writes in one log record with one durable flush. The native filesystem
-  profile always has it. A raw-file collection, or a root whose filesystem
-  profile keeps no commit log (`efs-sidecar-v1`, an explicit override under
-  ADR 0033, until its documents move to the log), answers `ETXNLAYOUT` to
-  `storeTransaction` and `transactionBegin`. Both layouts (files and
-  segments) and `.vdbx` databases take transactions.
+  profile always has it, and so does the `efs-sidecar-v1` profile on Unix
+  (ADR 0013 Amendment 2). A raw-file collection, or a sidecar-store root on
+  Windows, where its documents do not go through the log, answers
+  `ETXNLAYOUT` to `storeTransaction` and `transactionBegin`. Both layouts
+  (files and segments) and `.vdbx` databases take transactions.
 
 ## Error codes
 

@@ -231,9 +231,10 @@
   `ETXNBUSY`, `ETXNLIMIT`, `ETXNLAYOUT`, plus `EQUERYLIMIT`, `EPAGESIZE` and
   `ECURSOR`.
   Transactions need a document collection that writes through the commit
-  log (the native profile): a commit is one log record with one durable
-  flush, however many writes it holds. A raw-file collection, or a profile
-  without a commit log such as `efs-sidecar-v1`, answers `ETXNLAYOUT`.
+  log (the native profile, and `efs-sidecar-v1` on Unix): a commit is one
+  log record with one durable flush, however many writes it holds. A
+  raw-file collection, or a sidecar-store root on Windows, answers
+  `ETXNLAYOUT`.
 - **Temp cache folder (ADR 0030, slice S2).** A new `capabilities.tempCache`
   in every handshake, the options `--temp-cache <off|auto|on>`,
   `--temp-cache-bytes <n>` and `--temp-cache-dir <path>` (and

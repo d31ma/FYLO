@@ -680,3 +680,48 @@ fn a_raw_file_collection_cannot_hold_a_transaction() {
     let batch = json!({ "op": "storeTransaction", "collection": "files", "writes": [{ "deleteById": FIRST }] });
     assert_eq!(fixture.error_code(batch), json!("ETXNLAYOUT"));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_sidecar_store_root_holds_transactions_on_unix() {
+    let folder = fylo_test_support::TestFolder::path().join(format!(
+        "fylo-machine-store-efs-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+    ));
+    let root = folder.join("root");
+    fs::create_dir_all(&root).unwrap();
+    let options = fylo_storage_native::RootOpenOptions::new(&root)
+        .with_profile(fylo_storage_native::FilesystemProfile::EfsSidecarV1);
+    let requests = [
+        json!({ "op": "createCollection", "collection": "tickets" }),
+        json!({ "op": "storeTransaction", "collection": "tickets", "writes": [
+            { "save": { "id": FIRST, "title": "alpha" } },
+        ] }),
+        json!({ "op": "transactionBegin", "collection": "tickets" }),
+    ];
+    let input = requests
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let mut output = Vec::new();
+    fylo_machine::serve_profiled(
+        (&mut Cursor::new(input.into_bytes()), &mut output),
+        options,
+        ApplicationConfig::default(),
+        (FrameLimits::default(), false, true),
+    )
+    .unwrap();
+    let frames: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let _ = fs::remove_dir_all(&folder);
+    assert_eq!(frames[1]["ok"], json!(true), "{frames:?}");
+    assert_eq!(frames[1]["result"], json!([{ "id": FIRST, "title": "alpha" }]));
+    assert_eq!(frames[2]["ok"], json!(true), "{frames:?}");
+    assert!(frames[2]["result"]["transaction"].is_string(), "{frames:?}");
+}
