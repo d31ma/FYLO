@@ -519,7 +519,7 @@ owner is never read as gone. The two unsafe calls are listed in
 
 ## Amendment 2 (2026-11-21): one engine, two metadata stores
 
-Review: pending (FYLO Build Coordinator). FYLO-PERF1.
+Accepted 2026-11-21 (FYLO Build Coordinator). FYLO-PERF1.
 
 **Context.** ADR 0033 decided that the write-ahead log is FYLO's one engine,
 and that a record's metadata is stored where the file-system probe (L1-4)
