@@ -173,10 +173,10 @@ impl SegmentStore {
         (segment, start, span_end): (u64, u64, u64),
         end: u64,
     ) -> bool {
-        let covered = end <= span_end;
-        let extends = location.offset <= span_end + Self::MAX_GAP_BYTES
-            && end - start <= Self::MAX_SPAN_BYTES;
-        location.segment == segment && (covered || extends)
+        location.segment == segment
+            && (end <= span_end
+                || (location.offset <= span_end + Self::MAX_GAP_BYTES
+                    && end - start <= Self::MAX_SPAN_BYTES))
     }
 
     fn read_group(
