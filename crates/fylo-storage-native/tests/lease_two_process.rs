@@ -24,9 +24,17 @@ const TEST_PROFILE: &str = "FYLO_LEASE_TEST_PROFILE";
 const MACHINE: &str = "FYLO_TEST_LEASE_MACHINE";
 const ITEMS: &str = "items";
 const HEARTBEAT_SECONDS: &str = "0.05";
+// On Windows a taker reads the owner's start time through PowerShell, which
+// can take seconds on a busy VM, so "at once" needs more room there.
+#[cfg(not(windows))]
 const TAKEOVER_SECONDS: &str = "3";
+#[cfg(windows)]
+const TAKEOVER_SECONDS: &str = "15";
 const HEARTBEAT: Duration = Duration::from_millis(50);
+#[cfg(not(windows))]
 const TAKEOVER: Duration = Duration::from_secs(3);
+#[cfg(windows)]
+const TAKEOVER: Duration = Duration::from_secs(15);
 const READY_WAIT: Duration = Duration::from_mins(1);
 
 struct Scratch {
@@ -164,6 +172,19 @@ fn wait_for(path: &Path) {
     }
 }
 
+/// Wait until the lease record carries this process's start time. On
+/// Windows the heartbeat thread adds it just after the claim.
+fn wait_for_identity(record: &Path) {
+    let started = Instant::now();
+    while !fs::read_to_string(record).is_ok_and(|text| text.contains("processStart")) {
+        assert!(
+            started.elapsed() < READY_WAIT,
+            "the lease record never got its identity"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[cfg(unix)]
 fn signal(child: &Child, name: &str) {
     let status = Command::new("kill")
@@ -201,6 +222,7 @@ fn lease_child() {
         lease.drop_kernel_lock_for_test();
     }
     let writer = writer(&root, lease);
+    wait_for_identity(&folder.join(".db.fylo-root-owner.lock.json"));
     fs::write(folder.join("ready"), std::process::id().to_string()).unwrap();
     wait_for(&folder.join("go"));
     let outcome = put(&writer, 1).map_or_else(
@@ -317,10 +339,21 @@ fn a_crash_after_the_claim_file_waits_then_skips_the_stale_claim() {
     assert!(!scratch.claim_exists(before + 1));
 }
 
+#[cfg(not(windows))]
 #[test]
 fn a_crash_after_the_record_on_this_machine_is_taken_at_once() {
     let (waited, scratch, before) = crash_then_take("lease-after-record", None);
     assert!(waited < TAKEOVER, "waited {waited:?}");
+    assert_eq!(scratch.generation(), before + 2);
+}
+
+/// On Windows the claim leaves the machine id and process start to the
+/// heartbeat thread, so a crash right after the claim is waited out.
+#[cfg(windows)]
+#[test]
+fn a_crash_right_after_the_claim_on_windows_waits_the_takeover_time() {
+    let (waited, scratch, before) = crash_then_take("lease-after-record", None);
+    assert!(waited >= TAKEOVER, "waited only {waited:?}");
     assert_eq!(scratch.generation(), before + 2);
 }
 

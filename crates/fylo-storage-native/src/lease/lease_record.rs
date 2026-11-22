@@ -50,11 +50,50 @@ impl LeaseRecord {
             state: LeaseState::Held,
             heartbeat_millis: Self::millis(timing.heartbeat()),
             takeover_millis: Self::millis(timing.takeover()),
-            machine: MachineIdentity::current(),
-            process_start: crate::write::own_process_identity(),
+            machine: Self::eager_machine(),
+            process_start: Self::eager_process_start(),
             host: Self::host_name(),
             pid: crate::process_id(),
         }
+    }
+
+    /// Whether the machine id and the process start are still missing:
+    /// on Windows the claim leaves them to the heartbeat thread.
+    pub(super) fn needs_identity(&self) -> bool {
+        self.machine.is_none() || self.process_start.is_none()
+    }
+
+    /// The record with this machine's id and this process's start time.
+    pub(super) fn identified(&self) -> Self {
+        let mut next = self.clone();
+        next.machine = MachineIdentity::current();
+        next.process_start = crate::write::own_process_identity();
+        next
+    }
+
+    /// Reading the process start takes a PowerShell call on Windows, which
+    /// can take seconds on a busy machine. A claim must stay fast, so there
+    /// the heartbeat thread adds both values right after the claim
+    /// ([`LeaseRecord::identified`]). Until it has, a crash waits the
+    /// takeover time.
+    #[cfg(not(windows))]
+    fn eager_machine() -> Option<String> {
+        MachineIdentity::current()
+    }
+
+    #[cfg(windows)]
+    fn eager_machine() -> Option<String> {
+        None
+    }
+
+    #[cfg(not(windows))]
+    fn eager_process_start() -> Option<String> {
+        crate::write::own_process_identity()
+    }
+
+    #[cfg(windows)]
+    fn eager_process_start() -> Option<String> {
+        None
     }
 
     pub(super) fn generation(&self) -> u64 {

@@ -64,13 +64,32 @@ impl LeaseHeartbeat {
         stopped: &mpsc::Receiver<()>,
         lost: &AtomicBool,
     ) {
-        let mut current = Some(record);
+        let mut current = Self::first_beat(path, record, stopped, lost);
         while let Some(record) = current
             .take()
             .filter(|_| Self::keep_beating(stopped, interval))
         {
             current = Self::beat(path, record, lost);
         }
+    }
+
+    /// Add the machine id and process start the claim left out (Windows),
+    /// and publish them at once, unless the owner is already stopping.
+    fn first_beat(
+        path: &std::path::Path,
+        record: LeaseRecord,
+        stopped: &mpsc::Receiver<()>,
+        lost: &AtomicBool,
+    ) -> Option<LeaseRecord> {
+        let identify = record.needs_identity() && Self::still_running(stopped);
+        if !identify {
+            return Some(record);
+        }
+        Self::beat(path, record.identified(), lost)
+    }
+
+    fn still_running(stopped: &mpsc::Receiver<()>) -> bool {
+        matches!(stopped.try_recv(), Err(mpsc::TryRecvError::Empty))
     }
 
     fn keep_beating(stopped: &mpsc::Receiver<()>, interval: Duration) -> bool {

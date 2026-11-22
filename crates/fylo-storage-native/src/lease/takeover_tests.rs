@@ -12,7 +12,12 @@ struct TakeoverFixture {
 
 impl TakeoverFixture {
     const HEARTBEAT: Duration = Duration::from_millis(20);
+    // On Windows a taker reads the owner's start time through PowerShell,
+    // which can take seconds on a busy VM, so "at once" needs more room.
+    #[cfg(not(windows))]
     const TAKEOVER: Duration = Duration::from_secs(2);
+    #[cfg(windows)]
+    const TAKEOVER: Duration = Duration::from_secs(15);
     const OTHER_MACHINE: &str = "ffffffffffffffffffffffffffffffff";
     const OTHER_OWNER: &str = "0123456789abcdef0123456789abcdef";
     const RECORD_NAME: &str = ".db.fylo-root-owner.lock.json";
