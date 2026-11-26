@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use fylo_machine::{
-    ApplicationConfig, FrameLimits, FrameSession, serve_configured, serve_exclusive,
+    ApplicationConfig, FrameLimits, FrameSession, NamespaceSeparation, serve_configured,
+    serve_exclusive,
 };
 use fylo_storage_native::RootConfig;
 use serde_json::{Value, json};
@@ -302,6 +303,7 @@ fn scroll_answers_content_and_a_cursor_until_the_end() {
 
 #[test]
 fn a_scroll_cursor_works_only_in_the_namespace_that_made_it() {
+    NamespaceSeparation::enable_for_tests();
     let fixture = Fixture::new();
     fixture.seed();
     let query = json!({ "orderBy": [{ "field": "title" }] });
