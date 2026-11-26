@@ -17,7 +17,7 @@ impl KernelFileLock {
     }
 
     /// Take the exclusive lock, waiting while another process holds it.
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_family = "wasm")))]
     pub(crate) fn lock(file: &File) -> io::Result<()> {
         file.lock()
     }

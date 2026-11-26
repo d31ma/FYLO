@@ -1,8 +1,9 @@
 use super::namespaces_lock::NamespacesLock;
+#[cfg(not(target_family = "wasm"))]
+use crate::FilesystemProbe;
 use crate::layout::{AppFolder, GuardFiles, NamespaceMarker, NamespaceName, RootLayout};
 use crate::{
-    FilesystemProbe, FilesystemProfile, LeaseTiming, NativeStorageError, NativeStorageErrorCode,
-    RootLease,
+    FilesystemProfile, LeaseTiming, NativeStorageError, NativeStorageErrorCode, RootLease,
 };
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -38,7 +39,18 @@ impl NamespaceAdmin {
         forced: Option<FilesystemProfile>,
     ) -> Result<PathBuf, NativeStorageError> {
         AppFolder::prepare(layout, created_by, |folder| {
-            FilesystemProbe::run(folder, forced)
+            #[cfg(not(target_family = "wasm"))]
+            {
+                FilesystemProbe::run(folder, forced)
+            }
+            #[cfg(target_family = "wasm")]
+            {
+                let _ = (folder, forced);
+                Ok(crate::layout::ProbeRecord::new(
+                    crate::layout::MetadataStore::SidecarFiles,
+                    false,
+                ))
+            }
         })?;
         let _lock = NamespacesLock::take(layout)?;
         Self::sweep_trash(layout);

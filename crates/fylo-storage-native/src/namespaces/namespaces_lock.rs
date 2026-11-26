@@ -2,6 +2,7 @@ use crate::NativeStorageError;
 use crate::layout::RootLayout;
 use crate::lease::KernelFileLock;
 use fylo_vfs::{File, OpenOptions};
+#[cfg(not(target_family = "wasm"))]
 use std::io::ErrorKind;
 
 /// The short app-wide lock `<app>/.fylo/namespaces.lock`, held only while a
@@ -22,10 +23,12 @@ impl NamespacesLock {
             .truncate(false)
             .open(layout.namespaces_lock_path())
             .map_err(NativeStorageError::io)?;
+        #[cfg(not(target_family = "wasm"))]
         Self::lock_unless_unsupported(&file)?;
         Ok(Self { file })
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn lock_unless_unsupported(file: &File) -> Result<(), NativeStorageError> {
         match KernelFileLock::lock(file) {
             Err(error) if error.kind() != ErrorKind::Unsupported => {
