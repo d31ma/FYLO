@@ -65,8 +65,8 @@ assert(
     'response schema protocol version drift'
 )
 assert(
-    schema.$defs.request.properties.op.enum.length === 64,
-    'machine protocol v2 registry must have 64 operations'
+    schema.$defs.request.properties.op.enum.length === 67,
+    'machine protocol v2 registry must have 67 operations'
 )
 // The v1 document operations still answer until slice SDK-10 removes them
 // (ADR 0035), so they must stay implemented and are listed apart.

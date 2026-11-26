@@ -96,7 +96,8 @@ maps; v2 answers entities with the id under `idField`.
 
 Every other v1 operation keeps its v1 request and result shape:
 `handshake` (plus the fields above), `executeSQL` (plus `parameters`),
-`createCollection`, `dropCollection`, `inspectCollection`,
+`createCollection`, `dropCollection`, `createNamespace`, `dropNamespace`,
+`listNamespaces`, `inspectCollection`,
 `rebuildCollection`, `setWordFields`, `reshardCollection`, `migrateLayout`,
 `compactCollection`, `verifyCollection`, `getFileData`, `getMeta`, `setMeta`,
 `findDeletedDocs`, `changes`, `restoreDoc`, `joinDocs`, `importBulkData`,
