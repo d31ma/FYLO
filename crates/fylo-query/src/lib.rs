@@ -360,6 +360,7 @@ pub struct StructuredQuery {
     created: Option<TimestampRange>,
     updated: Option<TimestampRange>,
     limit: Option<usize>,
+    offset: Option<usize>,
     sort: Option<SortOrder>,
     after: Option<SortPosition>,
 }
@@ -460,6 +461,7 @@ impl StructuredQuery {
         let created = parse_timestamp_range(object.get("$created"))?;
         let updated = parse_timestamp_range(object.get("$updated"))?;
         let limit = parse_limit(object)?;
+        let offset = parse_offset(object)?;
         let sort = SortOrder::parse(object)?;
         let after = parse_after(object.get("$after"), sort.as_ref())?;
         Ok(Self {
@@ -467,6 +469,7 @@ impl StructuredQuery {
             created,
             updated,
             limit,
+            offset,
             sort,
             after,
         })
@@ -506,8 +509,14 @@ impl StructuredQuery {
     #[must_use]
     pub fn filter<'a>(&self, rows: impl IntoIterator<Item = QueryRow<'a>>) -> Vec<QueryRow<'a>> {
         let mut output = Vec::new();
+        let mut skipped = 0usize;
+        let offset = self.offset.unwrap_or(0);
         for row in rows {
             if !self.matches(row.document, row.created_at, row.updated_at) {
+                continue;
+            }
+            if skipped < offset {
+                skipped += 1;
                 continue;
             }
             output.push(row);
@@ -527,6 +536,12 @@ impl StructuredQuery {
     #[must_use]
     pub const fn limit(&self) -> Option<usize> {
         self.limit
+    }
+
+    /// Configured result offset: the number of matching rows to skip.
+    #[must_use]
+    pub const fn offset(&self) -> Option<usize> {
+        self.offset
     }
 
     /// The same query with no `$limit`: it matches exactly the documents
@@ -699,6 +714,18 @@ fn matches_operand(value: FieldValue<'_>, operators: &Map<String, Value>) -> boo
                     .any(|item| loose_equal(FieldValue::Present(item), expected)),
                 _ => false,
             },
+            "$in" => match expected {
+                Value::Array(values) => values.iter().any(|item| loose_equal(value, item)),
+                _ => false,
+            },
+            "$isnull" => {
+                matches!(value, FieldValue::Missing)
+                    || matches!(value, FieldValue::Present(Value::Null))
+            }
+            "$isnotnull" => {
+                !matches!(value, FieldValue::Missing)
+                    && !matches!(value, FieldValue::Present(Value::Null))
+            }
             _ => true,
         };
         if !matches {
@@ -736,6 +763,36 @@ fn parse_limit(object: &Map<String, Value>) -> Result<Option<usize>, QueryError>
         ));
     }
     Ok(limit)
+}
+
+fn parse_offset(object: &Map<String, Value>) -> Result<Option<usize>, QueryError> {
+    let offset =
+        match object.get("$offset") {
+            None => None,
+            Some(Value::Number(number)) => number
+                .as_u64()
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| {
+                    QueryError::new(
+                        QueryErrorCode::InvalidQuery,
+                        "$offset exceeds this platform's address space",
+                    )
+                })?,
+            Some(_) => {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidQuery,
+                    "$offset must be a non-negative integer",
+                ));
+            }
+        };
+    if object.contains_key("$offset") && offset.is_none() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidQuery,
+            "$offset must be a non-negative integer",
+        ));
+    }
+    Ok(offset)
 }
 
 fn parse_after(
@@ -1024,6 +1081,9 @@ pub enum QueryErrorCode {
     /// A Store scroll cursor did not parse or belongs to another query.
     #[serde(rename = "ECURSOR")]
     Cursor,
+    /// A SQL statement or clause is outside the `api/sql/v1` subset.
+    #[serde(rename = "EUNSUPPORTEDSQL")]
+    UnsupportedSql,
 }
 
 impl QueryErrorCode {
@@ -1046,6 +1106,7 @@ impl QueryErrorCode {
             Self::QueryLimit => "EQUERYLIMIT",
             Self::PageSize => "EPAGESIZE",
             Self::Cursor => "ECURSOR",
+            Self::UnsupportedSql => "EUNSUPPORTEDSQL",
         }
     }
 }

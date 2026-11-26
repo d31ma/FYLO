@@ -262,11 +262,22 @@ fn operation(token: Option<&Token>) -> Result<SqlOperation, QueryError> {
         Some(TokenKind::Insert) => Ok(SqlOperation::Insert),
         Some(TokenKind::Update) => Ok(SqlOperation::Update),
         Some(TokenKind::Delete) => Ok(SqlOperation::Delete),
+        Some(TokenKind::Begin) => Err(unsupported_sql("BEGIN")),
+        Some(TokenKind::Commit) => Err(unsupported_sql("COMMIT")),
+        Some(TokenKind::Alter) => Err(unsupported_sql("ALTER")),
         _ => Err(QueryError::new(
             QueryErrorCode::InvalidQuery,
             "unsupported or missing SQL operation",
         )),
     }
+}
+
+/// A statement or clause outside the `api/sql/v1` subset.
+fn unsupported_sql(clause: &str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::UnsupportedSql,
+        format!("SQL clause `{clause}` is outside the api/sql/v1 subset"),
+    )
 }
 
 fn access_paths(value: &Value, limits: QueryLimits) -> Result<Vec<AccessPath>, QueryError> {
@@ -350,6 +361,27 @@ enum TokenKind {
     GreaterEqual,
     LessEqual,
     Like,
+    Order,
+    Offset,
+    Count,
+    In,
+    Is,
+    Not,
+    Asc,
+    Desc,
+    Having,
+    Begin,
+    Commit,
+    Alter,
+    Index,
+    View,
+    Distinct,
+    Union,
+    Exists,
+    As,
+    Transaction,
+    Parameter(Option<usize>),
+    NamedParameter(String),
     Identifier(String),
     String(String),
     Number(String),
@@ -502,6 +534,38 @@ impl Lexer {
                 self.position += 1;
                 Some(TokenKind::NotEquals)
             }
+            '?' => {
+                let start = self.position;
+                while self
+                    .current()
+                    .is_some_and(|character| character.is_ascii_digit())
+                {
+                    self.position += 1;
+                }
+                let index = if self.position > start {
+                    self.input[start..self.position]
+                        .iter()
+                        .collect::<String>()
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|number| *number > 0)
+                } else {
+                    None
+                };
+                Some(TokenKind::Parameter(index))
+            }
+            ':' | '$' => {
+                let start = self.position;
+                while self
+                    .current()
+                    .is_some_and(|character| character.is_ascii_alphanumeric() || character == '_')
+                {
+                    self.position += 1;
+                }
+                Some(TokenKind::NamedParameter(
+                    self.input[start..self.position].iter().collect(),
+                ))
+            }
             _ => None,
         }
     }
@@ -532,6 +596,25 @@ fn keyword_or_identifier(value: String) -> TokenKind {
         "AND" => TokenKind::And,
         "OR" => TokenKind::Or,
         "LIKE" => TokenKind::Like,
+        "ORDER" => TokenKind::Order,
+        "OFFSET" => TokenKind::Offset,
+        "COUNT" => TokenKind::Count,
+        "IN" => TokenKind::In,
+        "IS" => TokenKind::Is,
+        "NOT" => TokenKind::Not,
+        "ASC" => TokenKind::Asc,
+        "DESC" => TokenKind::Desc,
+        "HAVING" => TokenKind::Having,
+        "BEGIN" => TokenKind::Begin,
+        "COMMIT" => TokenKind::Commit,
+        "ALTER" => TokenKind::Alter,
+        "INDEX" => TokenKind::Index,
+        "VIEW" => TokenKind::View,
+        "DISTINCT" => TokenKind::Distinct,
+        "UNION" => TokenKind::Union,
+        "EXISTS" => TokenKind::Exists,
+        "AS" => TokenKind::As,
+        "TRANSACTION" => TokenKind::Transaction,
         "TRUE" => TokenKind::Boolean(true),
         "FALSE" => TokenKind::Boolean(false),
         "NULL" => TokenKind::Null,
@@ -543,6 +626,7 @@ struct SqlParser {
     tokens: Vec<Token>,
     position: usize,
     limits: QueryLimits,
+    next_bare_parameter: usize,
 }
 
 impl SqlParser {
@@ -551,6 +635,7 @@ impl SqlParser {
             tokens,
             position: 0,
             limits,
+            next_bare_parameter: 1,
         }
     }
 
@@ -598,6 +683,12 @@ impl SqlParser {
 
     fn parse_collection_ddl(&mut self, operation: &TokenKind) -> Result<Value, QueryError> {
         self.expect(operation)?;
+        if matches!(self.current(), TokenKind::Index) {
+            return Err(unsupported_sql("CREATE INDEX"));
+        }
+        if matches!(self.current(), TokenKind::View) {
+            return Err(unsupported_sql("CREATE VIEW"));
+        }
         if matches!(self.current(), TokenKind::Identifier(_)) {
             self.advance();
         }
@@ -607,8 +698,27 @@ impl SqlParser {
 
     fn parse_select(&mut self) -> Result<Value, QueryError> {
         self.expect(&TokenKind::Select)?;
-        let columns = self.parse_columns()?;
+        if matches!(self.current(), TokenKind::Distinct) {
+            return Err(unsupported_sql("SELECT DISTINCT"));
+        }
+        let count = if matches!(self.current(), TokenKind::Count) {
+            self.advance();
+            self.expect(&TokenKind::LeftParenthesis)?;
+            self.expect(&TokenKind::Asterisk)?;
+            self.expect(&TokenKind::RightParenthesis)?;
+            true
+        } else {
+            false
+        };
+        let columns = if count {
+            Vec::new()
+        } else {
+            self.parse_columns()?
+        };
         self.expect(&TokenKind::From)?;
+        if matches!(self.current(), TokenKind::LeftParenthesis) {
+            return Err(unsupported_sql("sub-query"));
+        }
         let collection = self.identifier()?;
         if matches!(
             self.current(),
@@ -622,16 +732,20 @@ impl SqlParser {
         }
         let mut query = Map::new();
         query.insert("$collection".into(), Value::String(collection));
-        if !columns.iter().any(|column| column == "*") {
+        if count {
+            query.insert("$count".into(), Value::Bool(true));
+        } else {
+            if !columns.iter().any(|column| column == "*") {
+                query.insert(
+                    "$select".into(),
+                    Value::Array(columns.iter().cloned().map(Value::String).collect()),
+                );
+            }
             query.insert(
-                "$select".into(),
-                Value::Array(columns.iter().cloned().map(Value::String).collect()),
+                "$onlyIds".into(),
+                Value::Bool(columns.iter().any(|column| column == "_id")),
             );
         }
-        query.insert(
-            "$onlyIds".into(),
-            Value::Bool(columns.iter().any(|column| column == "_id")),
-        );
         if matches!(self.current(), TokenKind::Where) {
             query.insert("$ops".into(), Value::Array(self.parse_where()?));
         }
@@ -640,11 +754,45 @@ impl SqlParser {
             self.expect(&TokenKind::By)?;
             query.insert("$groupby".into(), Value::String(self.identifier()?));
         }
+        if matches!(self.current(), TokenKind::Order) {
+            self.advance();
+            self.expect(&TokenKind::By)?;
+            query.insert("$sort".into(), self.parse_order_by()?);
+        }
+        if matches!(self.current(), TokenKind::Having) {
+            return Err(unsupported_sql("HAVING"));
+        }
         if matches!(self.current(), TokenKind::Limit) {
             self.advance();
             query.insert("$limit".into(), Value::Number(self.limit_number()?));
         }
+        if matches!(self.current(), TokenKind::Offset) {
+            self.advance();
+            query.insert("$offset".into(), Value::Number(self.limit_number()?));
+        }
         Ok(Value::Object(query))
+    }
+
+    /// Parse `ORDER BY <f> [ASC|DESC]` into a single-field `$sort` object.
+    /// The `id` tie-breaker is already carried by the index sort keys, so
+    /// only the named field and its direction are recorded here.
+    fn parse_order_by(&mut self) -> Result<Value, QueryError> {
+        let field = self.identifier()?;
+        let direction = if matches!(self.current(), TokenKind::Asc) {
+            self.advance();
+            "asc"
+        } else if matches!(self.current(), TokenKind::Desc) {
+            self.advance();
+            "desc"
+        } else {
+            "asc"
+        };
+        if matches!(self.current(), TokenKind::Comma) {
+            return Err(unsupported_sql("ORDER BY with more than one field"));
+        }
+        let mut sort = Map::new();
+        sort.insert(field, Value::String(direction.into()));
+        Ok(Value::Object(sort))
     }
 
     fn parse_columns(&mut self) -> Result<Vec<String>, QueryError> {
@@ -654,7 +802,11 @@ impl SqlParser {
         }
         let mut columns = Vec::new();
         loop {
-            columns.push(self.identifier()?);
+            let column = self.identifier()?;
+            if matches!(self.current(), TokenKind::LeftParenthesis) {
+                return Err(unsupported_sql("function"));
+            }
+            columns.push(column);
             if columns.len() > self.limits.max_queries {
                 return Err(QueryError::new(
                     QueryErrorCode::TooManyQueries,
@@ -837,8 +989,7 @@ impl SqlParser {
         let mut conjunction = Map::new();
         loop {
             let field = self.identifier()?;
-            let operator = self.parse_operator(true)?;
-            let value = self.parse_value()?;
+            let (operator, value) = self.parse_predicate()?;
             let operand = conjunction
                 .entry(field)
                 .or_insert_with(|| Value::Object(Map::new()));
@@ -868,6 +1019,55 @@ impl SqlParser {
         Ok(disjunction)
     }
 
+    /// Parse one predicate's operator and value, after its field is known.
+    /// Handles `IN (...)`, `IS [NOT] NULL`, and the comparison operators.
+    fn parse_predicate(&mut self) -> Result<(&'static str, Value), QueryError> {
+        match self.current() {
+            TokenKind::In => {
+                self.advance();
+                self.expect(&TokenKind::LeftParenthesis)?;
+                if matches!(self.current(), TokenKind::Select) {
+                    return Err(unsupported_sql("sub-query"));
+                }
+                let mut values = Vec::new();
+                loop {
+                    values.push(self.parse_value()?);
+                    if values.len() > 100 {
+                        return Err(QueryError::new(
+                            QueryErrorCode::QueryLimit,
+                            "SQL IN clause has more than 100 values",
+                        ));
+                    }
+                    if !matches!(self.current(), TokenKind::Comma) {
+                        break;
+                    }
+                    self.advance();
+                }
+                self.expect(&TokenKind::RightParenthesis)?;
+                Ok(("$in", Value::Array(values)))
+            }
+            TokenKind::Is => {
+                self.advance();
+                let negated = if matches!(self.current(), TokenKind::Not) {
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
+                self.expect(&TokenKind::Null)?;
+                Ok((
+                    if negated { "$isnotnull" } else { "$isnull" },
+                    Value::Bool(true),
+                ))
+            }
+            _ => {
+                let operator = self.parse_operator(true)?;
+                let value = self.parse_value()?;
+                Ok((operator, value))
+            }
+        }
+    }
+
     fn parse_operator(&mut self, allow_like: bool) -> Result<&'static str, QueryError> {
         let operator = match self.current() {
             TokenKind::Equals => "$eq",
@@ -889,6 +1089,20 @@ impl SqlParser {
     }
 
     fn parse_value(&mut self) -> Result<Value, QueryError> {
+        if let TokenKind::Parameter(index) = self.current() {
+            let index = (*index).unwrap_or_else(|| {
+                let next = self.next_bare_parameter;
+                self.next_bare_parameter += 1;
+                next
+            });
+            self.advance();
+            return Ok(parameter_marker(index));
+        }
+        if let TokenKind::NamedParameter(name) = self.current() {
+            let name = name.clone();
+            self.advance();
+            return Ok(named_parameter_marker(&name));
+        }
         let value = match self.current() {
             TokenKind::String(value) => Value::String(value.clone()),
             TokenKind::Number(value) => Value::Number(parse_number(value)?),
@@ -941,6 +1155,25 @@ fn object<const N: usize>(entries: [(&str, Value); N]) -> Value {
             .map(|(key, value)| (key.to_owned(), value))
             .collect(),
     )
+}
+
+/// The AST marker for a positional placeholder (`?` or `?NNN`), resolved to
+/// its 1-based index. The machine binds the value before execution.
+fn parameter_marker(index: usize) -> Value {
+    let mut inner = Map::new();
+    inner.insert("positional".into(), Value::from(index as u64));
+    let mut marker = Map::new();
+    marker.insert("$param".into(), Value::Object(inner));
+    Value::Object(marker)
+}
+
+/// The AST marker for a named placeholder (`:name` or `$name`).
+fn named_parameter_marker(name: &str) -> Value {
+    let mut inner = Map::new();
+    inner.insert("named".into(), Value::String(name.to_owned()));
+    let mut marker = Map::new();
+    marker.insert("$param".into(), Value::Object(inner));
+    Value::Object(marker)
 }
 
 #[cfg(test)]
@@ -1083,5 +1316,122 @@ mod tests {
         };
         let oversized = prepare_sql("SELECT * FROM users", limits).unwrap_err();
         assert_eq!(oversized.code(), QueryErrorCode::InputTooLarge);
+    }
+
+    #[test]
+    fn parses_order_by_offset_and_count() {
+        let ordered = prepare_sql(
+            "SELECT name FROM users ORDER BY score DESC LIMIT 5 OFFSET 2",
+            QueryLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            ordered.ast,
+            json!({
+                "$collection": "users",
+                "$select": ["name"],
+                "$onlyIds": false,
+                "$sort": {"score": "desc"},
+                "$limit": 5,
+                "$offset": 2
+            })
+        );
+
+        let count = prepare_sql(
+            "SELECT COUNT(*) FROM users WHERE active = true",
+            QueryLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            count.ast,
+            json!({
+                "$collection": "users",
+                "$count": true,
+                "$ops": [{"active": {"$eq": true}}]
+            })
+        );
+    }
+
+    #[test]
+    fn parses_in_and_is_null_predicates() {
+        let plan = prepare_sql(
+            "SELECT * FROM users WHERE status IN ('a', 'b') AND note IS NOT NULL",
+            QueryLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.ast,
+            json!({
+                "$collection": "users",
+                "$onlyIds": false,
+                "$ops": [
+                    {
+                        "status": {"$in": ["a", "b"]},
+                        "note": {"$isnotnull": true}
+                    }
+                ]
+            })
+        );
+
+        let isnull = prepare_sql(
+            "SELECT * FROM users WHERE note IS NULL",
+            QueryLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(isnull.ast["$ops"], json!([{"note": {"$isnull": true}}]));
+    }
+
+    #[test]
+    fn parses_parameter_markers() {
+        let positional = prepare_sql(
+            "SELECT * FROM users WHERE age > ?1 AND name = ?2",
+            QueryLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            positional.ast["$ops"],
+            json!([
+                {
+                    "age": {"$gt": {"$param": {"positional": 1}}},
+                    "name": {"$eq": {"$param": {"positional": 2}}}
+                }
+            ])
+        );
+
+        let named = prepare_sql(
+            "SELECT * FROM users WHERE age > :min AND name = $name",
+            QueryLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            named.ast["$ops"],
+            json!([
+                {
+                    "age": {"$gt": {"$param": {"named": "min"}}},
+                    "name": {"$eq": {"$param": {"named": "name"}}}
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn rejects_out_of_subset_statements_with_unsupported_sql() {
+        for (sql, _clause) in [
+            ("SELECT * FROM users HAVING count > 1", "HAVING"),
+            ("BEGIN", "BEGIN"),
+            ("COMMIT", "COMMIT"),
+            ("ALTER TABLE users ADD x", "ALTER"),
+            ("CREATE INDEX i ON users", "CREATE INDEX"),
+            ("SELECT DISTINCT name FROM users", "SELECT DISTINCT"),
+            ("SELECT * FROM (SELECT * FROM users)", "sub-query"),
+            ("SELECT SUM(score) FROM users", "function"),
+        ] {
+            let error = prepare_sql(sql, QueryLimits::default()).unwrap_err();
+            assert_eq!(
+                error.code(),
+                QueryErrorCode::UnsupportedSql,
+                "expected EUNSUPPORTEDSQL for: {sql}"
+            );
+        }
     }
 }

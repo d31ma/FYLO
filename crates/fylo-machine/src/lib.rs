@@ -1967,9 +1967,10 @@ impl Session {
     /// executes it and adds the elapsed time and the result.
     fn execute_sql(&self, request: &Value) -> Result<Value, MachineError> {
         let statement = require_string(request, "sql")?;
-        let plan = prepare_sql(statement, QueryLimits::default())
-            .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))?;
+        let mut plan = prepare_sql(statement, QueryLimits::default())
+            .map_err(|error| sql_machine_error(&error))?;
         validate_sql_parameters(request, &scan_parameters(&plan.sql))?;
+        bind_sql_parameters(&mut plan, request)?;
         if !plan.explain {
             return self.execute_sql_plan(request, &plan);
         }
@@ -4281,6 +4282,19 @@ fn require_string<'a>(request: &'a Value, field: &str) -> Result<&'a str, Machin
         })
 }
 
+/// Map a portable SQL planning error to the machine error code it names:
+/// `EUNSUPPORTEDSQL` for a statement outside the `api/sql/v1` subset,
+/// `EQUERYLIMIT` for a limit the contract caps, and `EQUERY_INVALID` for
+/// every other malformed input.
+fn sql_machine_error(error: &fylo_query::QueryError) -> MachineError {
+    let code = match error.code() {
+        QueryErrorCode::UnsupportedSql => "EUNSUPPORTEDSQL",
+        QueryErrorCode::QueryLimit => "EQUERYLIMIT",
+        _ => "EQUERY_INVALID",
+    };
+    MachineError::new(code, error.to_string())
+}
+
 /// Validate `executeSQL`'s optional `parameters` field against the
 /// placeholders its statement names (ADR 0035, `api/sql/v1`).
 ///
@@ -4385,6 +4399,76 @@ fn validate_sql_parameters(request: &Value, params: &SqlParameters) -> Result<()
         }
     }
     Ok(())
+}
+
+/// Bind `executeSQL`'s `parameters` into the parsed plan AST, replacing each
+/// `$param` marker (positional `?`/`?NNN` or named `:name`/`$name`) with its
+/// value. Validation has already matched placeholders to values.
+fn bind_sql_parameters(plan: &mut SqlPlan, request: &Value) -> Result<(), MachineError> {
+    let Some(parameters) = request.get("parameters") else {
+        return Ok(());
+    };
+    bind_ast_value(&mut plan.ast, parameters)
+}
+
+fn bind_ast_value(value: &mut Value, parameters: &Value) -> Result<(), MachineError> {
+    match value {
+        Value::Object(map) => {
+            if let Some(marker) = map.get("$param").cloned() {
+                let bound = bound_parameter(&marker, parameters)?;
+                *value = bound;
+                return Ok(());
+            }
+            for inner in map.values_mut() {
+                bind_ast_value(inner, parameters)?;
+            }
+        }
+        Value::Array(list) => {
+            for inner in list {
+                bind_ast_value(inner, parameters)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn bound_parameter(marker: &Value, parameters: &Value) -> Result<Value, MachineError> {
+    let Some(object) = marker.as_object() else {
+        return Err(MachineError::new(
+            "EQUERY_INVALID",
+            "SQL parameter marker is malformed",
+        ));
+    };
+    if let Some(index) = object.get("positional").and_then(Value::as_u64) {
+        let list = parameters.as_array().ok_or_else(|| {
+            MachineError::new(
+                "EQUERY_INVALID",
+                "SQL statement uses \"?\" placeholders but \"parameters\" is not a list",
+            )
+        })?;
+        return list
+            .get(usize::try_from(index.saturating_sub(1)).unwrap_or(usize::MAX))
+            .cloned()
+            .ok_or_else(|| {
+                MachineError::new(
+                    "EQUERY_INVALID",
+                    format!("SQL placeholder \"?{index}\" has no value"),
+                )
+            });
+    }
+    if let Some(name) = object.get("named").and_then(Value::as_str) {
+        return parameters.get(name).cloned().ok_or_else(|| {
+            MachineError::new(
+                "EQUERY_INVALID",
+                format!("SQL placeholder \":{name}\" has no value"),
+            )
+        });
+    }
+    Err(MachineError::new(
+        "EQUERY_INVALID",
+        "SQL parameter marker is malformed",
+    ))
 }
 
 /// Whether a JSON value is a valid SQL parameter: a string, a finite number,

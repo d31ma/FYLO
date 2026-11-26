@@ -10,6 +10,10 @@
             "retryable": false
         },
         {
+            "code": "EUNSUPPORTEDSQL",
+            "retryable": false
+        },
+        {
             "code": "EUNKNOWN",
             "retryable": false
         },
