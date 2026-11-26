@@ -457,7 +457,11 @@ async function runScenario(label, binary, root) {
                 { record: false }
             )
             assert(exists?.exists === true, 'Rust collectionExists did not find records')
-            const listed = await request('list-collections', { op: 'listCollections' }, { record: false })
+            const listed = await request(
+                'list-collections',
+                { op: 'listCollections' },
+                { record: false }
+            )
             assert(
                 listed?.collections?.includes('records'),
                 'Rust listCollections did not list records'
