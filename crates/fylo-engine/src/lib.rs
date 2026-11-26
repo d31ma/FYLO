@@ -1863,6 +1863,14 @@ impl ReadOnlyEngine {
         let query = StructuredQuery::from_value(&plan.ast, QueryLimits::default())
             .map_err(EngineError::query)?;
         let records = self.find(&plan.collection, &query)?;
+        if plan
+            .ast
+            .get("$count")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(Value::from(records.len() as u64));
+        }
         Ok(shape_select_results(records, &plan.ast))
     }
 
