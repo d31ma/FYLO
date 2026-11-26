@@ -76,27 +76,26 @@ impl LeaseHeartbeat {
         interval: Duration,
         stopped: &mpsc::Receiver<()>,
     ) {
-        let mut current = Self::first_beat(target, record, stopped);
-        while let Some(record) = current
-            .take()
-            .filter(|_| Self::keep_beating(stopped, interval))
-        {
-            current = target.beat(record);
+        let mut current = Self::first_beat(record, stopped);
+        while Self::keep_beating(stopped, interval) {
+            let Some(next) = target.beat(current) else {
+                break;
+            };
+            current = next;
         }
     }
 
     /// Add the machine id and process start the claim left out (Windows),
-    /// and publish them at once, unless the owner is already stopping.
-    fn first_beat(
-        target: &HeartbeatTarget,
-        record: LeaseRecord,
-        stopped: &mpsc::Receiver<()>,
-    ) -> Option<LeaseRecord> {
+    /// and let the first regular beat publish them. Publishing here, at once,
+    /// raced a concurrent reader over the record, so the identity is folded
+    /// into the record the thread beats with next.
+    fn first_beat(record: LeaseRecord, stopped: &mpsc::Receiver<()>) -> LeaseRecord {
         let identify = record.needs_identity() && Self::still_running(stopped);
-        if !identify {
-            return Some(record);
+        if identify {
+            record.identified()
+        } else {
+            record
         }
-        target.beat(record.identified())
     }
 
     fn still_running(stopped: &mpsc::Receiver<()>) -> bool {
