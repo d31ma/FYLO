@@ -171,9 +171,12 @@ segments, identities, verify and rebuild.
   `createCollection` and `dropCollection` inside a transaction (all
   `ETXNSCOPE`); savepoints, nesting, isolation levels, cross-process and
   cross-root transactions.
-- The segments layout commits a transaction only if it can write the batch as
-  one record; otherwise it refuses with `ETXNLAYOUT` (SDK-3 decides, and
-  amends this section).
+- **Layouts (decided in SDK-3):** a transaction commits only on a document
+  collection whose writes go through the commit log, which writes the whole
+  batch as one record with one durable flush. The files layout, the segments
+  layout and `.vdbx` all do this, so all three take transactions. `ETXNLAYOUT`
+  stays only for a collection whose documents do not go through the commit
+  log: a raw-file collection, or a sidecar-store root on Windows.
 
 ### 6. Clients: TACHYON's languages
 
