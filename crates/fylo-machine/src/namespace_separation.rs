@@ -47,6 +47,13 @@ impl NamespaceSeparation {
         Self::test_override().store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Turn separation off again in this process, for the tests of the
+    /// refusal path. Only builds with the `test-support` feature have it.
+    #[cfg(feature = "test-support")]
+    pub fn disable_for_tests() {
+        Self::test_override().store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
     fn enabled() -> bool {
         Self::ENABLED || Self::enabled_by_tests()
     }

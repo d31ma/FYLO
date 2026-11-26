@@ -47,6 +47,11 @@ mod tests {
     use super::RequestNamespace;
     use fylo_storage_native::layout::NamespaceName;
     use serde_json::json;
+    use std::sync::Mutex;
+
+    /// The separation switch is one process-wide flag, so the tests that
+    /// toggle it must run one at a time.
+    static SEPARATION: Mutex<()> = Mutex::new(());
 
     #[test]
     fn a_request_without_the_field_uses_public() {
@@ -56,6 +61,7 @@ mod tests {
 
     #[test]
     fn a_request_without_the_field_uses_the_session_default() {
+        let _guard = SEPARATION.lock().unwrap();
         crate::NamespaceSeparation::enable_for_tests();
         let default = NamespaceName::parse("slice-12").unwrap();
         let namespace =
@@ -65,6 +71,7 @@ mod tests {
 
     #[test]
     fn the_field_wins_over_the_session_default() {
+        let _guard = SEPARATION.lock().unwrap();
         crate::NamespaceSeparation::enable_for_tests();
         let default = NamespaceName::parse("slice-12").unwrap();
         let request = json!({"op": "getDoc", "namespace": "billing"});
@@ -97,6 +104,8 @@ mod tests {
 
     #[test]
     fn another_namespace_is_refused_while_separation_is_off() {
+        let _guard = SEPARATION.lock().unwrap();
+        crate::NamespaceSeparation::disable_for_tests();
         let refused =
             RequestNamespace::resolve(&json!({"namespace": "tenant-b"}), None).unwrap_err();
         assert_eq!(refused.code, "ENAMESPACEUNSUPPORTED");
