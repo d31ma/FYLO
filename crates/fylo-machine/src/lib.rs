@@ -190,6 +190,13 @@ impl MachineError {
         self.details = Some(Box::new(json!({ "index": index })));
         self
     }
+
+    /// The same error, naming the collection it is about (`api/store/v1`,
+    /// "Error codes": `error.details.collection`).
+    fn naming_collection(mut self, collection: &str) -> Self {
+        self.details = Some(Box::new(json!({ "collection": collection })));
+        self
+    }
 }
 
 /// Outcome of one frame, so the caller can honour terminate-versus-resume.
@@ -1125,10 +1132,7 @@ impl Session {
                     Value::Bool(false)
                 },
             ),
-            (
-                "store".into(),
-                Value::from(store::StoreOperations::CAPABILITY_VERSION),
-            ),
+            ("store".into(), store::StoreOperations::capability()),
             ("sql".into(), Value::from(1u32)),
             ("hotSet".into(), self.hot_set_capability()),
             ("tempCache".into(), self.temp_cache.capability()),

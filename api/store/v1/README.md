@@ -168,19 +168,24 @@ Every Store operation takes:
 
 ## Transactions
 
-One collection only (ADR 0035 section 5).
+One or several collections of **one namespace** (ADR 0035, Amendment on
+several collections). A transaction over one collection is ADR 0035 section
+5; over several, all its writes commit together or not at all.
 
 - **Batch:** `storeTransaction { collection, writes }` where each write is one
   of `{ "save": entity }`, `{ "patch": { "id", "fields" } }`,
-  `{ "deleteById": id }`, `{ "delete": query }`. The answer is the list of
-  results in order (as the single operations answer). All writes commit as one
-  log record, or none does. A failing write answers its own error code, with
-  `error.details.index` set to its position; nothing is written.
+  `{ "deleteById": id }`, `{ "delete": query }`, each with an optional
+  `collection` (default: the frame's `collection`). Every write is in the
+  batch frame's namespace. The answer is the list of results in order (as the
+  single operations answer). All writes commit as one transaction, or none
+  does. A failing write answers its own error code, with `error.details.index`
+  set to its position; nothing is written.
 - **Begin / commit / rollback:** `transactionBegin { collection, timeoutMs? }`
-  answers `{ "transaction": "<handle>" }`. Every Store operation then takes
-  `transaction: "<handle>"`. `transactionCommit { transaction }` answers
-  `{ "committed": true, "writes": n }`; `transactionRollback { transaction }`
-  answers `{ "rolledBack": true }`.
+  answers `{ "transaction": "<handle>" }` and binds the namespace of its
+  frame. Every Store operation then takes `transaction: "<handle>"` and may
+  name any collection of that namespace. `transactionCommit { transaction }`
+  answers `{ "committed": true, "writes": n }`; `transactionRollback {
+  transaction }` answers `{ "rolledBack": true }`.
 - **Handle:** an opaque string, valid only in the `fylo` process that gave
   it. After that process ends, or for any other string: `ETXNUNKNOWN`.
 - **Time limit:** `timeoutMs` from begin, default 30,000, maximum 300,000
@@ -188,19 +193,21 @@ One collection only (ADR 0035 section 5).
   back; the next call with its handle answers `ETXNEXPIRED`. TACHYON passes
   the rest of its own store-time budget, so a transaction ends before TACHYON
   stops `fylo`.
-- **Size limits:** 1,000 writes, 8 MiB of documents: `ETXNLIMIT`, and the
-  transaction rolls back.
+- **Size limits:** 1,000 writes, 8 MiB of documents, over every collection of
+  the transaction: `ETXNLIMIT`, and the transaction rolls back.
 - **Reads** with the handle see the transaction's writes; reads without it
-  see committed state only.
-- **Other writes** to the same collection in the same process wait for the
-  transaction up to its time limit, then fail with `ETXNBUSY`. Writes to
-  other collections do not wait.
+  see committed state only. There is no read snapshot across collections: a
+  reader without the handle may see one collection's new state before
+  another's.
+- **Other writes** to a collection the transaction has written, in the same
+  process, wait for the transaction up to its time limit, then fail with
+  `ETXNBUSY`. Writes to collections it has not written do not wait.
 - **A process that ends before commit** (exit, kill, crash) wrote nothing.
   The next open needs no recovery for it. A crash during commit leaves the
   state before or after, never a mix.
 - **Refused inside a transaction** with `ETXNSCOPE` (and the transaction
-  rolls back): a write to another collection; queue operations; schema
-  operations; `createCollection`, `dropCollection`.
+  rolls back): a write to a collection of another namespace; queue
+  operations; schema operations; `createCollection`, `dropCollection`.
 - **Profiles and layouts:** transactions need a document collection whose
   writes go through the commit log, which writes all of a transaction's
   writes in one log record with one durable flush. The native filesystem
@@ -208,7 +215,9 @@ One collection only (ADR 0035 section 5).
   (ADR 0013 Amendment 2). A raw-file collection, or a sidecar-store root on
   Windows, where its documents do not go through the log, answers
   `ETXNLAYOUT` to `storeTransaction` and `transactionBegin`. Both layouts
-  (files and segments) and `.vdbx` databases take transactions.
+  (files and segments) and `.vdbx` databases take a one-collection
+  transaction; a transaction over several collections refuses a segment
+  collection with `ETXNLAYOUT` (`error.details.collection` names it).
 
 ## Error codes
 

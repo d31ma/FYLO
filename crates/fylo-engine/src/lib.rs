@@ -34,11 +34,11 @@ use fylo_query::{
     SqlPlan, StructuredQuery, index_entries_for_document,
 };
 use fylo_storage_native::{
-    CollectionKind, CollectionLayout, DocumentCodec, DocumentWrite, GenerationState,
-    GenerationStatus, IndexVerification, NativeCollection, NativeRoot, NativeStorageError,
-    NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RepositoryHistory, RootConfig,
-    RootOpenOptions, SqlMutationResult, StoredBytes, StoredRawFile, ValidationMode,
-    VersionVerification,
+    CollectionKind, CollectionLayout, CollectionWrites, DocumentCodec, DocumentWrite,
+    GenerationState, GenerationStatus, IndexVerification, NativeCollection, NativeRoot,
+    NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions,
+    RepositoryHistory, RootConfig, RootOpenOptions, SqlMutationResult, StoredBytes, StoredRawFile,
+    ValidationMode, VersionVerification,
 };
 use hot_set::HotReader;
 pub use hot_set::{HotSet, HotSetStatistics};
@@ -338,6 +338,29 @@ impl WriteEngine {
         let outcome = self
             .writer
             .commit_document_writes_with(collection, writes, &codec);
+        codec.finish(outcome)
+    }
+
+    /// Commit writes to several collections of one namespace as one
+    /// transaction (ADR 0035, Amendment on several collections; ADR 0013,
+    /// Amendment 3). Each batch names one collection and its writes, in the
+    /// order of each collection's first write; the collections become
+    /// `stable` in that order. A transaction over one collection commits
+    /// through [`Self::commit_document_writes`].
+    ///
+    /// # Errors
+    ///
+    /// As `NativeWriteRoot::commit_collection_writes_with`, plus missing
+    /// encryption credentials.
+    pub fn commit_collection_writes(
+        &self,
+        batches: &[CollectionWrites],
+    ) -> Result<(), EngineError> {
+        for batch in batches {
+            self.record_encrypted_fields(&batch.collection)?;
+        }
+        let codec = EngineDocumentCodec::new(self);
+        let outcome = self.writer.commit_collection_writes_with(batches, &codec);
         codec.finish(outcome)
     }
 

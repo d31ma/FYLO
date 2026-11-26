@@ -41,6 +41,16 @@ impl StoreOperations {
     /// The handshake's `capabilities.store` version.
     pub(crate) const CAPABILITY_VERSION: u32 = 1;
 
+    /// The handshake's `capabilities.store`: the contract version, plus the
+    /// flag that a transaction may span several collections of one namespace
+    /// (ADR 0035, Amendment on several collections).
+    pub(crate) fn capability() -> Value {
+        json!({
+            "version": Self::CAPABILITY_VERSION,
+            "multiCollectionTransactions": true,
+        })
+    }
+
     pub(crate) fn is_write(operation: &str) -> bool {
         Self::WRITE_NAMES.contains(&operation)
     }
@@ -77,8 +87,8 @@ impl Session {
     }
 
     /// An operation inside the transaction `handle`: a write is held in the
-    /// transaction until it commits. A write past a limit, or to another
-    /// collection, ends the transaction.
+    /// transaction until it commits. A write past a limit, to another
+    /// namespace, or to a collection that cannot join the transaction ends it.
     fn store_in_transaction(
         &self,
         operation: &str,
@@ -86,6 +96,11 @@ impl Session {
         handle: &str,
     ) -> Result<Value, MachineError> {
         let mut transactions = self.store_transactions.borrow_mut();
+        if StoreOperations::is_write(operation)
+            && transactions.holds_other(store.collection(), handle)
+        {
+            return Err(StoreTransactions::busy(store.collection()));
+        }
         let result = self.store_inside(operation, store, transactions.live(handle)?);
         if result.as_ref().is_err_and(StoreFailure::ends_transaction) {
             transactions.abandon(handle);
@@ -99,15 +114,25 @@ impl Session {
         store: &StoreRequest<'_>,
         transaction: &mut StoreTransaction,
     ) -> Result<Value, MachineError> {
-        StoreFailure::require_scope(transaction.collection(), store.collection())?;
-        let engine = self.engine(transaction.target())?;
-        let outcome = self.store_outcome(
-            operation,
-            store,
-            &StoreView::new(engine.clone(), transaction.overlay()),
+        let namespace = self.request_namespace(store.frame())?;
+        StoreFailure::require_scope(
+            transaction.namespace(),
+            namespace.as_str(),
+            store.collection(),
         )?;
-        Self::store_hold(transaction, outcome.change())?;
-        outcome.answer(&StoreView::new(engine, transaction.overlay()), store)
+        if StoreOperations::is_write(operation) {
+            self.store_require_log(store)?;
+        }
+        let engine = self.engine(transaction.target())?;
+        let empty = StoreOverlay::default();
+        let before = StoreView::new(
+            engine.clone(),
+            transaction.overlay(store.collection(), &empty),
+        );
+        let outcome = self.store_outcome(operation, store, &before)?;
+        Self::store_hold(transaction, store.collection(), outcome.change())?;
+        let after = StoreView::new(engine, transaction.overlay(store.collection(), &empty));
+        outcome.answer(&after, store)
     }
 
     /// Writes to a collection wait for its open transaction; one machine
@@ -294,8 +319,9 @@ impl Session {
 
     fn store_hold(
         transaction: &mut StoreTransaction,
+        collection: &str,
         change: Option<&StoreChange>,
     ) -> Result<(), MachineError> {
-        change.map_or(Ok(()), |change| transaction.hold(change))
+        change.map_or(Ok(()), |change| transaction.hold(collection, change))
     }
 }

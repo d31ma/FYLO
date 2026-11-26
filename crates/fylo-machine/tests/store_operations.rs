@@ -142,7 +142,10 @@ impl Drop for Fixture {
 fn the_handshake_reports_the_store_capability() {
     let fixture = Fixture::new();
     let handshake = fixture.result(json!({ "op": "handshake" }));
-    assert_eq!(handshake["capabilities"]["store"], json!(1));
+    assert_eq!(
+        handshake["capabilities"]["store"],
+        json!({ "version": 1, "multiCollectionTransactions": true })
+    );
 }
 
 #[test]
@@ -538,7 +541,8 @@ fn a_rollback_changes_nothing_and_ends_the_handle() {
 }
 
 #[test]
-fn another_collection_or_a_queue_operation_is_out_of_scope_and_rolls_back() {
+fn a_write_to_another_namespace_is_out_of_scope_and_rolls_back() {
+    NamespaceSeparation::enable_for_tests();
     let fixture = Fixture::new();
     let mut live = Live::new(&fixture);
     let handle = live.begin();
@@ -546,20 +550,113 @@ fn another_collection_or_a_queue_operation_is_out_of_scope_and_rolls_back() {
         "storeSave",
         json!({ "transaction": handle, "entity": { "id": FIRST, "title": "alpha" } }),
     ));
-    let other = json!({ "op": "storeSave", "collection": "others", "transaction": handle, "entity": { "title": "x" } });
+    let other = json!({
+        "op": "storeSave",
+        "collection": Fixture::COLLECTION,
+        "namespace": "slice-12",
+        "transaction": handle,
+        "entity": { "title": "x" }
+    });
     assert_eq!(live.code(other), json!("ETXNSCOPE"));
     assert_eq!(
         live.code(op("transactionCommit", json!({ "transaction": handle }))),
         json!("ETXNUNKNOWN")
     );
-    let second = live.begin();
-    let queue = json!({ "op": "queueStats", "transaction": second, "topic": "jobs" });
+    assert_eq!(live.result(in_tickets("storeCount", json!({}))), json!(0));
+}
+
+#[test]
+fn a_queue_operation_inside_a_transaction_is_out_of_scope_and_rolls_back() {
+    let fixture = Fixture::new();
+    let mut live = Live::new(&fixture);
+    let handle = live.begin();
+    let queue = json!({ "op": "queueStats", "transaction": handle, "topic": "jobs" });
     assert_eq!(live.code(queue), json!("ETXNSCOPE"));
     assert_eq!(
-        live.code(op("transactionRollback", json!({ "transaction": second }))),
+        live.code(op("transactionRollback", json!({ "transaction": handle }))),
         json!("ETXNUNKNOWN")
     );
     assert_eq!(live.result(in_tickets("storeCount", json!({}))), json!(0));
+}
+
+#[test]
+fn a_transaction_commits_over_two_collections_of_the_namespace() {
+    let fixture = Fixture::new();
+    fixture.result(json!({ "op": "createCollection", "collection": "outbox" }));
+    let mut live = Live::new(&fixture);
+    let handle = live.begin();
+    live.result(in_tickets(
+        "storeSave",
+        json!({ "transaction": handle, "entity": { "id": FIRST, "title": "alpha" } }),
+    ));
+    live.result(op(
+        "storeSave",
+        json!({
+            "collection": "outbox",
+            "transaction": handle,
+            "entity": { "id": FIRST, "title": "queued" },
+        }),
+    ));
+    let committed = live.result(op("transactionCommit", json!({ "transaction": handle })));
+    assert_eq!(committed, json!({ "committed": true, "writes": 2 }));
+    assert_eq!(
+        live.result(in_tickets("storeFindById", json!({ "id": FIRST }))),
+        json!({ "id": FIRST, "title": "alpha" })
+    );
+    assert_eq!(
+        live.result(op(
+            "storeFindById",
+            json!({ "collection": "outbox", "id": FIRST })
+        )),
+        json!({ "id": FIRST, "title": "queued" })
+    );
+}
+
+#[test]
+fn a_batch_commits_over_two_collections_named_per_write() {
+    let fixture = Fixture::new();
+    fixture.result(json!({ "op": "createCollection", "collection": "outbox" }));
+    let results = fixture.result(op(
+        "storeTransaction",
+        json!({
+            "collection": Fixture::COLLECTION,
+            "writes": [
+                { "save": { "id": FIRST, "title": "alpha" } },
+                { "save": { "id": FIRST, "title": "queued" }, "collection": "outbox" },
+            ],
+        }),
+    ));
+    assert_eq!(results.as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        fixture.result(in_tickets("storeFindById", json!({ "id": FIRST }))),
+        json!({ "id": FIRST, "title": "alpha" })
+    );
+    assert_eq!(
+        fixture.result(op(
+            "storeFindById",
+            json!({ "collection": "outbox", "id": FIRST })
+        )),
+        json!({ "id": FIRST, "title": "queued" })
+    );
+}
+
+#[test]
+fn a_segment_collection_cannot_join_a_multi_collection_transaction() {
+    let fixture = Fixture::database();
+    fixture.result(json!({ "op": "createCollection", "collection": "outbox" }));
+    let batch = op(
+        "storeTransaction",
+        json!({
+            "collection": Fixture::COLLECTION,
+            "writes": [
+                { "save": { "id": FIRST, "title": "alpha" } },
+                { "save": { "id": FIRST, "title": "queued" }, "collection": "outbox" },
+            ],
+        }),
+    );
+    let frame = fixture.call(batch);
+    assert_eq!(frame["error"]["code"], json!("ETXNLAYOUT"));
+    assert_eq!(frame["error"]["details"]["collection"], json!("tickets"));
 }
 
 #[test]

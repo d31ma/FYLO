@@ -46,4 +46,28 @@ impl StoreChange {
             Self::Delete { ids } => ids.len(),
         }
     }
+
+    /// How many writes the change makes: one for a put, one per document
+    /// deleted. This is what the transaction's 1,000-write limit counts.
+    #[must_use]
+    pub fn write_count(&self) -> usize {
+        match self {
+            Self::Put { .. } => 1,
+            Self::Delete { ids } => ids.len(),
+        }
+    }
+
+    /// The byte size of the documents the change writes, which the
+    /// transaction's 8 MiB limit counts. A deletion writes no bytes; a put
+    /// counts its serialized fields, or the maximum when serialization fails
+    /// (so the write is refused rather than silently accepted).
+    #[must_use]
+    pub fn byte_size(&self) -> usize {
+        match self {
+            Self::Put { fields, .. } => {
+                serde_json::to_vec(fields).map_or(usize::MAX, |bytes| bytes.len())
+            }
+            Self::Delete { .. } => 0,
+        }
+    }
 }

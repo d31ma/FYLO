@@ -60,6 +60,26 @@ impl NativeWriteRoot {
         Ok(self.uses_log(&collection))
     }
 
+    /// Whether `collection` can join a transaction over several collections
+    /// of its namespace (ADR 0035, Amendment on several collections; ADR
+    /// 0013, Amendment 3): a document collection whose writes go through the
+    /// commit log, but not a segment collection, which commits through its
+    /// own segment plan. A single-collection transaction keeps the broader
+    /// [`Self::collection_uses_log`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the collection cannot be opened.
+    pub fn collection_joins_namespace_transaction(
+        &self,
+        collection_name: &str,
+    ) -> Result<bool, NativeStorageError> {
+        let collection = self.writable_collection(collection_name)?;
+        Ok(collection.kind == CollectionKind::Document
+            && self.uses_log(&collection)
+            && !collection.uses_segments())
+    }
+
     /// The native profile, and the EFS profile on Unix, whose documents
     /// keep their attributes in sidecar files the log writes as files.
     pub(crate) fn profile_uses_log(&self) -> bool {

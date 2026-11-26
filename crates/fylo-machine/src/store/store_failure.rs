@@ -56,14 +56,25 @@ impl StoreFailure {
         Ok(())
     }
 
-    /// A transaction covers one collection; any other is out of its scope.
-    pub(crate) fn require_scope(held: &str, asked: &str) -> Result<(), MachineError> {
+    /// A transaction covers one namespace; any other is out of its scope
+    /// (ADR 0035, Amendment on several collections).
+    pub(crate) fn require_scope(
+        held: &str,
+        asked: &str,
+        collection: &str,
+    ) -> Result<(), MachineError> {
         if held == asked {
             return Ok(());
         }
-        Err(Self::scope(&format!(
-            "the transaction covers collection {held}, not {asked}; it was rolled back"
-        )))
+        Err(Self::scope_for(
+            collection,
+            &format!("the transaction covers namespace {held}, not {asked}; it was rolled back"),
+        ))
+    }
+
+    /// An out-of-scope frame that names a collection: the error also names it.
+    pub(crate) fn scope_for(collection: &str, message: &str) -> MachineError {
+        MachineError::new(Self::SCOPE, message).naming_collection(collection)
     }
 
     pub(crate) fn scope(message: &str) -> MachineError {
@@ -77,8 +88,28 @@ impl StoreFailure {
         )
     }
 
+    /// A collection refused from a transaction over several collections
+    /// (ADR 0035, Amendment on several collections).
+    pub(crate) fn layout_for(collection: &str) -> MachineError {
+        MachineError::new(
+            Self::LAYOUT,
+            format!(
+                "collection {collection} cannot join a transaction over several collections; only a document collection whose writes go through the commit log (not a raw-file or segment collection) can"
+            ),
+        )
+        .naming_collection(collection)
+    }
+
+    /// A transaction that passes its shared write or byte limit.
+    pub(crate) fn limit() -> MachineError {
+        MachineError::new(
+            Self::LIMIT,
+            "a transaction holds at most 1,000 writes and 8 MiB of documents; it was rolled back",
+        )
+    }
+
     /// Whether a failure inside a transaction rolls it back.
     pub(crate) fn ends_transaction(error: &MachineError) -> bool {
-        error.code == Self::SCOPE || error.code == Self::LIMIT
+        error.code == Self::SCOPE || error.code == Self::LIMIT || error.code == Self::LAYOUT
     }
 }

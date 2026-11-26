@@ -32,13 +32,18 @@ ignore unknown result fields. Every response carries `protocolVersion: 2`.
 `{ "op": "handshake" }` answers, beside the v1 fields:
 
 - `protocolVersion: 2`;
-- `capabilities.store: 1` (this contract and `api/store/v1`);
+- `capabilities.store: { "version": 1, "multiCollectionTransactions": true }`
+  (this contract and `api/store/v1`; a transaction may span several
+  collections of one namespace);
 - `capabilities.sql: 1` (`api/sql/v1`);
 - the ADR 0033 fields (`storage.layout`, `storage.volume`).
 
 A client that needs the Store checks `protocolVersion == 2` and
-`capabilities.store >= 1`, and refuses an older `fylo` with its own error
-naming the needed version (TACHYON: a TY error).
+`capabilities.store.version >= 1`, and refuses an older `fylo` with its own
+error naming the needed version (TACHYON: a TY error). A client that opens a
+transaction over several collections checks
+`capabilities.store.multiCollectionTransactions == true`.
+
 
 ## Common request fields
 

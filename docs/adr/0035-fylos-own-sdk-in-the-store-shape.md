@@ -273,7 +273,7 @@ Additive; no existing operation, request or result changes.
    collection and for a sidecar-store root on Windows (`api/store/v1`,
    "Profiles and layouts").
 
-### Amendment (FYLO-TXN2, 2026-11-21, review pending): one transaction over several collections of one namespace
+### Amendment (FYLO-TXN2, 2026-11-21, Accepted): one transaction over several collections of one namespace
 
 The user answered "Yes, several": one transaction may write several
 collections of the same namespace, all or nothing, in the coordinated

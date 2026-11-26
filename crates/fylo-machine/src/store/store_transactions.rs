@@ -58,13 +58,22 @@ impl StoreTransactions {
         self.open.remove(handle);
     }
 
-    /// Whether an open transaction holds `collection`, so another write to
-    /// it would interleave with the transaction.
+    /// Whether an open transaction holds `collection` (has reserved or
+    /// written it), so another write to it would interleave with the
+    /// transaction.
     pub(crate) fn holds(&mut self, collection: &str) -> bool {
         self.expire_due(Instant::now());
         self.open
             .values()
-            .any(|transaction| transaction.collection() == collection)
+            .any(|transaction| transaction.holds(collection))
+    }
+
+    /// Whether an open transaction other than `handle` holds `collection`.
+    pub(crate) fn holds_other(&mut self, collection: &str, handle: &str) -> bool {
+        self.expire_due(Instant::now());
+        self.open
+            .iter()
+            .any(|(held, transaction)| held != handle && transaction.holds(collection))
     }
 
     pub(crate) fn busy(collection: &str) -> MachineError {

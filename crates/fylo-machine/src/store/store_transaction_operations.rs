@@ -59,11 +59,17 @@ impl Session {
         self.store_require_log(&store)?;
         let timeout = Self::store_timeout(request)?;
         self.store_require_collection(&store)?;
+        let namespace = self.request_namespace(store.frame())?;
         let mut transactions = self.store_transactions.borrow_mut();
         if transactions.holds(store.collection()) {
             return Err(StoreTransactions::busy(store.collection()));
         }
-        let transaction = StoreTransaction::new(store.collection(), store.target(), timeout);
+        let transaction = StoreTransaction::new(
+            namespace.as_str(),
+            store.collection(),
+            store.target(),
+            timeout,
+        );
         Ok(json!({ "transaction": transactions.begin(transaction) }))
     }
 
@@ -80,16 +86,21 @@ impl Session {
         Ok(json!({ "rolledBack": true }))
     }
 
-    /// `storeTransaction`: every write in order, then one commit. A failing
-    /// write answers its own code with `details.index`, and nothing is
-    /// written.
+    /// `storeTransaction`: every write in order, then one commit. Each write
+    /// may name its own `collection` of the batch's namespace (default: the
+    /// frame's `collection`). A failing write answers its own code with
+    /// `details.index`, and nothing is written.
     fn store_batch(&self, request: &Value) -> Result<Value, MachineError> {
         let store = StoreRequest::parse(request)?;
-        self.store_require_log(&store)?;
-        self.store_refuse_busy("storeSave", store.collection())?;
+        let namespace = self.request_namespace(store.frame())?;
         let writes = Self::store_batch_writes(request)?;
         let timeout = Duration::from_millis(Self::BATCH_TIMEOUT_MS);
-        let mut transaction = StoreTransaction::new(store.collection(), store.target(), timeout);
+        let mut transaction = StoreTransaction::new(
+            namespace.as_str(),
+            store.collection(),
+            store.target(),
+            timeout,
+        );
         let mut results = Vec::with_capacity(writes.len());
         for (index, write) in writes.iter().enumerate() {
             let result = self.store_batch_write(request, &mut transaction, write);
@@ -107,6 +118,7 @@ impl Session {
     ) -> Result<Value, MachineError> {
         let (operation, frame) = StoreBatchWrite::frame(batch, write)?;
         let store = StoreRequest::parse(&frame)?;
+        self.store_refuse_busy(operation, store.collection())?;
         self.store_inside(operation, &store, transaction)
     }
 
@@ -133,15 +145,27 @@ impl Session {
     }
 
     fn store_commit(&self, transaction: &StoreTransaction) -> Result<(), MachineError> {
+        let batches = transaction.collection_writes();
+        if batches.len() > 1 {
+            let writer = self.writer(transaction.target())?;
+            for batch in &batches {
+                let joins = writer
+                    .collection_joins_namespace_transaction(&batch.collection)
+                    .map_err(|error| storage_error(&error))?;
+                if !joins {
+                    return Err(StoreFailure::layout_for(&batch.collection));
+                }
+            }
+        }
         self.write_engine(transaction.target())?
-            .store_commit(transaction.collection(), transaction.pending())
+            .commit_collection_writes(&batches)
             .map_err(|error| StoreFailure::engine(&error))
     }
 
     /// A transaction needs a collection whose documents go through the
     /// commit log; storage decides which do, so a profile that gains a log
     /// gains transactions.
-    fn store_require_log(&self, store: &StoreRequest<'_>) -> Result<(), MachineError> {
+    pub(crate) fn store_require_log(&self, store: &StoreRequest<'_>) -> Result<(), MachineError> {
         let uses_log = self
             .writer(store.frame())?
             .collection_uses_log(store.collection())
