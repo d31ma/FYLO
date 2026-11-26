@@ -159,6 +159,7 @@ impl SidecarAttributes {
 
     /// Bind `attributes` to the payload bytes about to be written, without
     /// reading the payload file.
+    #[allow(dead_code)] // its only caller (record_metadata) is native-only; wasm has none yet
     pub(crate) fn bind_payload_bytes(
         root: &NativeRoot,
         path: &Path,

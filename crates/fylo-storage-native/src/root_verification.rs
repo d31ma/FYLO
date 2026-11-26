@@ -52,6 +52,9 @@ impl<'a> RootVerification<'a> {
             .collect()
     }
 
+    // `FileType::is_dir` takes `self` on the browser target but `&self` on
+    // wasi/native, so the closure is only redundant on the browser target.
+    #[allow(clippy::redundant_closure_for_method_calls)]
     fn folder_names(folder: &Path) -> Vec<String> {
         let Ok(entries) = fylo_vfs::read_dir(folder) else {
             return Vec::new();

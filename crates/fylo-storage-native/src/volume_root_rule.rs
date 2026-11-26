@@ -6,9 +6,11 @@
 /// keeps its test roots in `<mount>/slice-<id>/<app>`, one folder below the
 /// mount point, and the rule would refuse them. While it is off, only the
 /// system-disk rule of ADR 0032 applies. L1-5 turns it on.
+#[allow(dead_code)] // never constructed until L1-5 turns the rule on
 pub(crate) struct VolumeRootRule;
 
 impl VolumeRootRule {
     /// Whether the mount-point rule refuses a root.
+    #[allow(dead_code)] // read only by native system_disk_rule; dead on wasm until L1-5
     pub(crate) const ENFORCED: bool = false;
 }
