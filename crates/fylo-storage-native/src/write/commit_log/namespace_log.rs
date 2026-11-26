@@ -10,6 +10,7 @@ use super::log_segment::LogSegment;
 use super::namespace_entry::NamespaceEntry;
 use super::namespace_mark::NamespaceMark;
 use super::namespace_recovery::NamespaceRecovery;
+use crate::fresh_read::FreshRead;
 use crate::{Durability, NativeRoot, NativeStorageError, path_exists_no_follow};
 
 /// The namespace's own write-ahead log, where a transaction over several
@@ -31,6 +32,13 @@ impl NamespaceLog {
     const FOLDER: &'static str = ".namespace";
     const CHECKPOINT_RECORDS: u64 = 4_096;
     const CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024;
+    /// Recovery and settling read the namespace log whole, so the read goes
+    /// through the one shared fresh-read helper (ADR 0013, Amendment 3, and
+    /// ADR 0033 section 4): an open and a read, never cached attributes, and
+    /// `F_NOCACHE` on macOS. The log checkpoints at `CHECKPOINT_BYTES`, but a
+    /// single commit record may push one segment past it before settling, so
+    /// the bound matches a file-based log segment's own ceiling.
+    const SCAN_LIMIT: u64 = 1024 * 1024 * 1024;
 
     /// The namespace log of the namespace root at `root`.
     pub(crate) fn shared(root: &Path) -> Arc<Self> {
@@ -81,8 +89,17 @@ impl NamespaceLog {
     }
 
     /// Every valid record of the namespace log, or `None` without one.
+    ///
+    /// The segment is read through [`FreshRead`] so a network file system
+    /// cannot answer from cached bytes: an open and a whole read, with the
+    /// client's data cache turned off on macOS. A `None` means the file is
+    /// absent or its header never became valid.
     pub(crate) fn scan(root: &Path) -> Result<Option<LogScan>, NativeStorageError> {
-        LogSegment::scan(&Self::segment_path(root))
+        match FreshRead::bytes(&Self::segment_path(root), Self::SCAN_LIMIT) {
+            Ok(bytes) => Ok(LogScan::segment(&bytes).ok()),
+            Err(error) if Self::absent(&error) => Ok(None),
+            Err(error) => Err(NativeStorageError::io(error)),
+        }
     }
 
     /// Append `entry` and flush it, after a fresh check that this process
