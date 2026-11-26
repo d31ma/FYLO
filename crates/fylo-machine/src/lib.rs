@@ -1128,6 +1128,7 @@ impl Session {
                 "store".into(),
                 Value::from(store::StoreOperations::CAPABILITY_VERSION),
             ),
+            ("sql".into(), Value::from(1u32)),
             ("hotSet".into(), self.hot_set_capability()),
             ("tempCache".into(), self.temp_cache.capability()),
         ])

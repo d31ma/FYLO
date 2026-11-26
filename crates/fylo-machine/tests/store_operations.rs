@@ -146,6 +146,13 @@ fn the_handshake_reports_the_store_capability() {
 }
 
 #[test]
+fn the_handshake_reports_the_sql_capability() {
+    let fixture = Fixture::new();
+    let handshake = fixture.result(json!({ "op": "handshake" }));
+    assert_eq!(handshake["capabilities"]["sql"], json!(1));
+}
+
+#[test]
 fn save_without_an_id_creates_and_answers_the_entity_with_its_id() {
     let fixture = Fixture::new();
     let saved = fixture.save(json!({ "title": "alpha" }));

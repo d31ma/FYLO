@@ -5,8 +5,9 @@
 ### Breaking Changes
 
 - **The machine protocol reports version 2** (ADR 0035). The handshake
-  answers `protocolVersion: 2` and `capabilities.store: 1`, and every
-  response frame carries `protocolVersion: 2`. A client that checks for
+  answers `protocolVersion: 2`, `capabilities.store: 1` and
+  `capabilities.sql: 1`, and every response frame carries
+  `protocolVersion: 2`. A client that checks for
   `protocolVersion == 1` must accept 2. The v1 document operations
   (`getDoc`, `getLatest`, `putData`, `batchPutData`, `patchDoc`,
   `patchDocs`, `delDoc`, `delDocs`, `findDocs`) still work in this
