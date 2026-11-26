@@ -94,6 +94,9 @@ pub fn prepare_sql(input: &str, limits: QueryLimits) -> Result<SqlPlan, QueryErr
     let operation = operation(tokens.first())?;
     let mut parser = SqlParser::new(tokens, limits);
     let ast = parser.parse(operation)?;
+    if !parser.at_end() {
+        return Err(unsupported_sql("more than one statement"));
+    }
     let collection = ast
         .get("$collection")
         .or_else(|| ast.get("$leftCollection"))
@@ -656,6 +659,12 @@ impl SqlParser {
 
     fn advance(&mut self) {
         self.position = (self.position + 1).min(self.tokens.len() - 1);
+    }
+
+    /// Whether the parser has consumed every token of the statement, so only
+    /// the terminating `End` token remains.
+    fn at_end(&self) -> bool {
+        matches!(self.current(), TokenKind::End)
     }
 
     fn expect(&mut self, expected: &TokenKind) -> Result<(), QueryError> {

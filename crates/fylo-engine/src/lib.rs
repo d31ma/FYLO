@@ -403,6 +403,28 @@ impl WriteEngine {
         Ok(result)
     }
 
+    /// [`Self::execute_sql_mutation`], from an already-prepared plan whose AST
+    /// has already had its `$param` markers bound. `executeSQL` with
+    /// `parameters` routes through here so the mutation writer does not
+    /// re-parse the raw SQL and lose the bound values.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::execute_sql_mutation`].
+    pub fn execute_sql_mutation_plan(
+        &self,
+        plan: &SqlPlan,
+    ) -> Result<SqlMutationResult, EngineError> {
+        let codec = EngineDocumentCodec::new(self);
+        let outcome = self.writer.execute_sql_mutation_plan(plan, &codec);
+        let encoded = codec.encoded.take();
+        let result = codec.finish(outcome)?;
+        for collection in encoded {
+            self.record_encrypted_fields(&collection)?;
+        }
+        Ok(result)
+    }
+
     /// Bring `collection`'s encrypted-fields record up to the `$encrypted`
     /// list this engine's `fylo.schema` folder declares, when the engine has
     /// the key and the collection no registry, so a writer without the

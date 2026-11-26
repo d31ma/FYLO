@@ -1033,8 +1033,24 @@ impl NativeWriteRoot {
         sql: &str,
         codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
-        self.root.assert_profile_owned()?;
         let plan = prepare_sql(sql, QueryLimits::default()).map_err(|error| query_error(&error))?;
+        self.execute_sql_mutation_plan(&plan, codec)
+    }
+
+    /// [`Self::execute_sql_mutation_with`], from an already-prepared plan whose
+    /// AST has already had its `$param` markers bound. `executeSQL` with
+    /// `parameters` routes through here so the mutation writer does not
+    /// re-parse the raw SQL and lose the bound values.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::execute_sql_mutation_with`].
+    pub fn execute_sql_mutation_plan(
+        &self,
+        plan: &fylo_query::SqlPlan,
+        codec: &dyn DocumentCodec,
+    ) -> Result<SqlMutationResult, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         if plan.explain && !plan.analyze {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::InvalidQuery,
@@ -1042,9 +1058,9 @@ impl NativeWriteRoot {
             ));
         }
         match plan.operation {
-            SqlOperation::Insert => self.execute_sql_insert(&plan, codec),
-            SqlOperation::Update => self.execute_sql_update(&plan, codec),
-            SqlOperation::Delete => self.execute_sql_delete(&plan, codec),
+            SqlOperation::Insert => self.execute_sql_insert(plan, codec),
+            SqlOperation::Update => self.execute_sql_update(plan, codec),
+            SqlOperation::Delete => self.execute_sql_delete(plan, codec),
             _ => Err(NativeStorageError::new(
                 NativeStorageErrorCode::InvalidQuery,
                 "native SQL mutation accepts only INSERT, UPDATE, or DELETE",

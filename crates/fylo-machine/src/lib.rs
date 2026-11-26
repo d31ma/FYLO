@@ -2021,7 +2021,7 @@ impl Session {
     fn execute_sql_mutation(&self, request: &Value, plan: &SqlPlan) -> Result<Value, MachineError> {
         let mutation = self
             .write_engine(request)?
-            .execute_sql_mutation(&plan.sql)
+            .execute_sql_mutation_plan(plan)
             .map_err(|error| engine_error(&error))?;
         match mutation.kind {
             SqlMutationResultKind::Insert => mutation

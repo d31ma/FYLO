@@ -256,7 +256,7 @@ fn execute_sql_accepts_empty_parameters_without_placeholders() {
 }
 
 #[test]
-fn execute_sql_accepts_bound_placeholders() {
+fn execute_sql_binds_placeholders_into_a_select() {
     let fixture = Fixture::new();
     fixture.with_one_post();
     let frames = fixture.session(&[json!({
@@ -264,14 +264,37 @@ fn execute_sql_accepts_bound_placeholders() {
         "sql": "SELECT * FROM posts WHERE title = ?1",
         "parameters": ["Hello"],
     })]);
-    // Validation passes (the placeholder is bound and every value is used);
-    // binding itself is a later slice, so the query still runs with the
-    // literal the lexer sees. Assert only that validation did not reject it.
+    assert_eq!(frames[0].get("error"), None, "{}", frames[0]);
     assert_eq!(
-        frames[0].get("error").and_then(|e| e.get("code")),
-        None,
+        frames[0]["result"].as_object().unwrap().len(),
+        1,
         "{}",
         frames[0]
+    );
+}
+
+#[test]
+fn execute_sql_binds_placeholders_into_a_mutation() {
+    let fixture = Fixture::new();
+    fixture.with_one_post();
+    let frames = fixture.session(&[
+        json!({
+            "op": "executeSQL",
+            "sql": "UPDATE posts SET title = ?1 WHERE title = ?2",
+            "parameters": ["Changed", "Hello"],
+        }),
+        json!({
+            "op": "executeSQL",
+            "sql": "SELECT * FROM posts WHERE title = ?1",
+            "parameters": ["Changed"],
+        }),
+    ]);
+    assert_eq!(frames[0]["result"], json!(1), "{}", frames[0]);
+    assert_eq!(
+        frames[1]["result"].as_object().unwrap().len(),
+        1,
+        "{}",
+        frames[1]
     );
 }
 
