@@ -1697,6 +1697,8 @@ impl ReadOnlyEngine {
                 None => collection.document_ids().map_err(EngineError::storage)?,
             };
             let mut records = Vec::new();
+            let mut skipped = 0usize;
+            let offset = query.offset().unwrap_or(0);
             for batch in identifiers.chunks(Self::read_batch(&collection)) {
                 let stored_batch = collection
                     .read_documents(batch)
@@ -1705,6 +1707,10 @@ impl ReadOnlyEngine {
                     if let Some(record) =
                         self.query_record(&collection, query, (identifier, stored))?
                     {
+                        if skipped < offset {
+                            skipped += 1;
+                            continue;
+                        }
                         records.push(record);
                     }
                     if query
