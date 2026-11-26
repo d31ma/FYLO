@@ -29,7 +29,7 @@ pub use join::{JoinComparator, JoinMode, JoinSpec, value_by_path};
 pub use numeric_range::NumericRange;
 pub use sort_order::SortOrder;
 pub use sort_position::SortPosition;
-pub use sql::{AccessPath, SqlOperation, SqlPlan, prepare_sql};
+pub use sql::{AccessPath, SqlOperation, SqlParameters, SqlPlan, prepare_sql, scan_parameters};
 pub use store::{
     StoreNarrowing, StoreOperator, StorePage, StorePosition, StorePredicate, StoreQuery, StoreRow,
     StoreScrollPage, StoreSortField, StoreSortKey, StoreSortValue,

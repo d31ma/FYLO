@@ -209,3 +209,100 @@ fn explain_analyze_executes_the_statement_and_reports_the_result() {
     assert!(result["elapsedMs"].is_u64());
     assert_eq!(fixture.post_count(), 0);
 }
+
+#[test]
+fn execute_sql_refuses_an_unbound_placeholder() {
+    let fixture = Fixture::new();
+    fixture.with_one_post();
+    let frames = fixture.session(&[json!({
+        "op": "executeSQL",
+        "sql": "SELECT * FROM posts WHERE title = ?1",
+    })]);
+    assert_eq!(
+        frames[0]["error"]["code"],
+        json!("EQUERY_INVALID"),
+        "{}",
+        frames[0]
+    );
+}
+
+#[test]
+fn execute_sql_refuses_an_unused_parameter() {
+    let fixture = Fixture::new();
+    fixture.with_one_post();
+    let frames = fixture.session(&[json!({
+        "op": "executeSQL",
+        "sql": "SELECT * FROM posts",
+        "parameters": [1],
+    })]);
+    assert_eq!(
+        frames[0]["error"]["code"],
+        json!("EQUERY_INVALID"),
+        "{}",
+        frames[0]
+    );
+}
+
+#[test]
+fn execute_sql_accepts_empty_parameters_without_placeholders() {
+    let fixture = Fixture::new();
+    fixture.with_one_post();
+    let frames = fixture.session(&[json!({
+        "op": "executeSQL",
+        "sql": "SELECT * FROM posts",
+        "parameters": [],
+    })]);
+    assert_eq!(frames[0]["ok"], json!(true), "{}", frames[0]);
+}
+
+#[test]
+fn execute_sql_accepts_bound_placeholders() {
+    let fixture = Fixture::new();
+    fixture.with_one_post();
+    let frames = fixture.session(&[json!({
+        "op": "executeSQL",
+        "sql": "SELECT * FROM posts WHERE title = ?1",
+        "parameters": ["Hello"],
+    })]);
+    // Validation passes (the placeholder is bound and every value is used);
+    // binding itself is a later slice, so the query still runs with the
+    // literal the lexer sees. Assert only that validation did not reject it.
+    assert_eq!(
+        frames[0].get("error").and_then(|e| e.get("code")),
+        None,
+        "{}",
+        frames[0]
+    );
+}
+
+#[test]
+fn execute_sql_keeps_mesails_literal_shapes() {
+    let fixture = Fixture::new();
+    fixture.with_one_post();
+    // Mesail's devicebox renders `$1`/`$2` to literals and sends `executeSQL`
+    // with no `parameters` field, so these all reach FYLO as placeholder-free
+    // statements. They must keep executing unchanged (no EQUERY_INVALID).
+    let shapes = [
+        // 1. dotted path `waiting.<deviceKey> = true`, lowercase `true`.
+        "SELECT envelopeId, senderDeviceId, kind, storedUs, bodyId FROM posts WHERE waiting.d0123456789abcdef0123456 = true AND storedUs > 1000 LIMIT 10",
+        // 2. LIMIT with a rendered literal (the `$1` is already replaced).
+        "SELECT name, domainId FROM posts LIMIT 10",
+        // 3. lowercase `true` in a WHERE.
+        "SELECT * FROM posts WHERE flag = true",
+        // 4. SELECT *.
+        "SELECT * FROM posts",
+        // 5. EXPLAIN.
+        "EXPLAIN SELECT * FROM posts WHERE title = 'Hello'",
+        // 6. general SELECT field list with LIMIT.
+        "SELECT envelopeId, kind FROM posts WHERE storedUs < 1000 LIMIT 10",
+    ];
+    for statement in shapes {
+        let frames = fixture.session(&[json!({"op": "executeSQL", "sql": statement})]);
+        assert_eq!(
+            frames[0].get("error").and_then(|e| e.get("code")),
+            None,
+            "{statement} -> {}",
+            frames[0],
+        );
+    }
+}

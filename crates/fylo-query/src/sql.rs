@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
 
@@ -116,6 +118,103 @@ pub fn prepare_sql(input: &str, limits: QueryLimits) -> Result<SqlPlan, QueryErr
         analyze,
         access,
     })
+}
+
+/// The placeholders a SQL statement names, grouped by kind.
+///
+/// `?` and `?NNN` are positional (1-based); `:name` and `$name` are named.
+/// A statement uses one kind only (ADR 0035, `api/sql/v1`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SqlParameters {
+    /// 1-based positional placeholder indices (`?` and `?NNN`).
+    pub positional: BTreeSet<usize>,
+    /// Named placeholders (`:name` and `$name`), without the prefix.
+    pub named: BTreeSet<String>,
+}
+
+impl SqlParameters {
+    /// Whether the statement names no placeholders at all.
+    pub fn is_empty(&self) -> bool {
+        self.positional.is_empty() && self.named.is_empty()
+    }
+
+    /// Whether the statement mixes positional and named placeholders.
+    pub fn mixes_kinds(&self) -> bool {
+        !self.positional.is_empty() && !self.named.is_empty()
+    }
+}
+
+/// Scan a SQL statement for its placeholders, skipping string literals and
+/// quoted identifiers. The `EXPLAIN` prefix must already be stripped.
+///
+/// `?` is a sequential positional placeholder (the first is `1`, the next
+/// `2`, and so on); `?NNN` names a specific 1-based position. `:name` and
+/// `$name` are named placeholders.
+pub fn scan_parameters(sql: &str) -> SqlParameters {
+    let bytes = sql.as_bytes();
+    let mut positional = BTreeSet::new();
+    let mut named = BTreeSet::new();
+    let mut next_bare = 1usize;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' => {
+                let quote = bytes[index];
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == quote {
+                        if index + 1 < bytes.len() && bytes[index + 1] == quote {
+                            index += 2;
+                            continue;
+                        }
+                        index += 1;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            b'?' => {
+                let start = index + 1;
+                let mut end = start;
+                while end < bytes.len() && bytes[end].is_ascii_digit() {
+                    end += 1;
+                }
+                if end > start {
+                    if let Some(number) = std::str::from_utf8(&bytes[start..end])
+                        .unwrap_or("")
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|number| *number > 0)
+                    {
+                        positional.insert(number);
+                    }
+                } else {
+                    positional.insert(next_bare);
+                    next_bare += 1;
+                }
+                index = end;
+            }
+            b':' | b'$' => {
+                let start = index + 1;
+                let mut end = start;
+                while end < bytes.len()
+                    && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+                {
+                    end += 1;
+                }
+                if end > start {
+                    named.insert(
+                        std::str::from_utf8(&bytes[start..end])
+                            .unwrap_or("")
+                            .to_owned(),
+                    );
+                }
+                index = end;
+            }
+            _ => index += 1,
+        }
+    }
+    SqlParameters { positional, named }
 }
 
 fn strip_explain(input: &str) -> Result<(String, bool, bool), QueryError> {
@@ -849,6 +948,35 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn scans_positional_and_named_placeholders() {
+        let none = scan_parameters("SELECT * FROM users");
+        assert!(none.is_empty());
+
+        let numbered = scan_parameters("SELECT * FROM users WHERE a = ?1 AND b = ?2");
+        assert_eq!(numbered.positional, BTreeSet::from([1, 2]));
+        assert!(numbered.named.is_empty());
+
+        let bare = scan_parameters("SELECT * FROM users WHERE a = ? AND b = ?");
+        assert_eq!(bare.positional, BTreeSet::from([1, 2]));
+
+        let named = scan_parameters("SELECT * FROM users WHERE a = :x AND b = $y");
+        assert_eq!(
+            named.named,
+            BTreeSet::from(["x".to_owned(), "y".to_owned()])
+        );
+        assert!(named.positional.is_empty());
+    }
+
+    #[test]
+    fn scan_parameters_ignores_literals_and_quoted_identifiers() {
+        let literals = scan_parameters("SELECT * FROM users WHERE a = '?' AND b = \"$1\"");
+        assert!(literals.is_empty());
+
+        let mixed = scan_parameters("SELECT * FROM users WHERE a = ?1 AND b = '?'");
+        assert_eq!(mixed.positional, BTreeSet::from([1]));
+    }
 
     #[test]
     fn plans_select_predicates_and_explain() {

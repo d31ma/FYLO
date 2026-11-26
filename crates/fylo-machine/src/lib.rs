@@ -42,7 +42,8 @@ use fylo_engine::{
 };
 use fylo_format::Document;
 use fylo_query::{
-    JoinSpec, QueryErrorCode, QueryLimits, SqlOperation, SqlPlan, StructuredQuery, prepare_sql,
+    JoinSpec, QueryErrorCode, QueryLimits, SqlOperation, SqlParameters, SqlPlan, StructuredQuery,
+    prepare_sql, scan_parameters,
 };
 use fylo_storage_native::{
     CollectionKind, CollectionLayout, FilesystemProfile, LeaseTiming, NamespaceAdmin, NativeQueue,
@@ -1968,6 +1969,7 @@ impl Session {
         let statement = require_string(request, "sql")?;
         let plan = prepare_sql(statement, QueryLimits::default())
             .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))?;
+        validate_sql_parameters(request, &scan_parameters(&plan.sql))?;
         if !plan.explain {
             return self.execute_sql_plan(request, &plan);
         }
@@ -4277,6 +4279,122 @@ fn require_string<'a>(request: &'a Value, field: &str) -> Result<&'a str, Machin
                 format!("machine request field \"{field}\" must be a non-empty string"),
             )
         })
+}
+
+/// Validate `executeSQL`'s optional `parameters` field against the
+/// placeholders its statement names (ADR 0035, `api/sql/v1`).
+///
+/// A placeholder with no value, or a value no placeholder uses, fails with
+/// `EQUERY_INVALID`. An empty `parameters` list or object is valid only for a
+/// statement with no placeholders.
+fn validate_sql_parameters(request: &Value, params: &SqlParameters) -> Result<(), MachineError> {
+    let field = request.get("parameters");
+    if params.is_empty() {
+        let empty = match field {
+            None => true,
+            Some(Value::Array(list)) => list.is_empty(),
+            Some(Value::Object(map)) => map.is_empty(),
+            Some(_) => false,
+        };
+        if empty {
+            return Ok(());
+        }
+        return Err(MachineError::new(
+            "EQUERY_INVALID",
+            "SQL statement has no placeholders but \"parameters\" carries a value",
+        ));
+    }
+    if params.mixes_kinds() {
+        return Err(MachineError::new(
+            "EQUERY_INVALID",
+            "SQL statement mixes \"?\" and \":name\"/\"$name\" placeholders",
+        ));
+    }
+    if !params.positional.is_empty() {
+        let list = field.and_then(Value::as_array).ok_or_else(|| {
+            MachineError::new(
+                "EQUERY_INVALID",
+                "SQL statement uses \"?\" placeholders but \"parameters\" is not a list",
+            )
+        })?;
+        if list.len() > 64 {
+            return Err(MachineError::new(
+                "EQUERYLIMIT",
+                "SQL statement passes more than 64 parameters",
+            ));
+        }
+        for &position in &params.positional {
+            if list.get(position - 1).is_none() {
+                return Err(MachineError::new(
+                    "EQUERY_INVALID",
+                    format!("SQL placeholder \"?{position}\" has no value"),
+                ));
+            }
+        }
+        for (zero_based, value) in list.iter().enumerate() {
+            if !params.positional.contains(&(zero_based + 1)) {
+                return Err(MachineError::new(
+                    "EQUERY_INVALID",
+                    format!(
+                        "SQL parameter \"?{}\" is not used by the statement",
+                        zero_based + 1
+                    ),
+                ));
+            }
+            if !is_scalar_parameter(value) {
+                return Err(MachineError::new(
+                    "EQUERY_INVALID",
+                    "SQL parameters must be scalars (string, finite number, boolean or null)",
+                ));
+            }
+        }
+        return Ok(());
+    }
+    let map = field.and_then(Value::as_object).ok_or_else(|| {
+        MachineError::new(
+            "EQUERY_INVALID",
+            "SQL statement uses \":name\"/\"$name\" placeholders but \"parameters\" is not an object",
+        )
+    })?;
+    if map.len() > 64 {
+        return Err(MachineError::new(
+            "EQUERYLIMIT",
+            "SQL statement passes more than 64 parameters",
+        ));
+    }
+    for name in &params.named {
+        if !map.contains_key(name) {
+            return Err(MachineError::new(
+                "EQUERY_INVALID",
+                format!("SQL placeholder \":{name}\" has no value"),
+            ));
+        }
+    }
+    for (name, value) in map {
+        if !params.named.contains(name) {
+            return Err(MachineError::new(
+                "EQUERY_INVALID",
+                format!("SQL parameter \":{name}\" is not used by the statement"),
+            ));
+        }
+        if !is_scalar_parameter(value) {
+            return Err(MachineError::new(
+                "EQUERY_INVALID",
+                "SQL parameters must be scalars (string, finite number, boolean or null)",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a JSON value is a valid SQL parameter: a string, a finite number,
+/// a boolean, or `null`.
+fn is_scalar_parameter(value: &Value) -> bool {
+    match value {
+        Value::String(_) | Value::Bool(_) | Value::Null => true,
+        Value::Number(number) => number.as_f64().is_some_and(f64::is_finite),
+        _ => false,
+    }
 }
 
 fn optional_typed_string(request: &Value, field: &str) -> Result<Option<String>, MachineError> {
