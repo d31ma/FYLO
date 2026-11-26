@@ -8,9 +8,10 @@ repository.workspace = true
 description = "FYLO's file attribute calls: the xattr crate, and rustix on iOS (ADR 0026)"
 publish = false
 
-# Every system but iOS keeps the `xattr` crate. It has no iOS support, so
-# iOS calls rustix's extended-attribute functions directly.
-[target.'cfg(not(target_os = "ios"))'.dependencies]
+# The `xattr` crate covers every Unix platform FYLO supports. It has no iOS
+# support, so iOS calls rustix's extended-attribute functions directly, and it
+# has no Windows support, so Windows gets a no-op fallback instead.
+[target.'cfg(all(unix, not(target_os = "ios")))'.dependencies]
 xattr.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]

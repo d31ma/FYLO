@@ -1,6 +1,9 @@
 //! FYLO's attribute calls, on every system that runs them: through the
 //! `xattr` crate on the Mac and Linux, and through rustix on the iOS
-//! simulator (`bun run test:mobile ios`).
+//! simulator (`bun run test:mobile ios`). Windows has no attribute backend
+//! yet, so these tests do not run there.
+
+#![cfg(unix)]
 
 use std::fs::{self, File};
 use std::path::PathBuf;
