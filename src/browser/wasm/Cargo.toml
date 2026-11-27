@@ -1,5 +1,5 @@
 [package]
-name = "fylo-browser-index"
+name = "byckr-browser-index"
 version.workspace = true
 edition = "2021"
 rust-version.workspace = true
@@ -11,4 +11,4 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-fylo-query = { version = "0.1.0", path = "../../../crates/fylo-query" }
+byckr-query = { version = "0.1.0", path = "../../../crates/byckr-query" }

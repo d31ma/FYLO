@@ -1,0 +1,34 @@
+[package]
+name = "byckr-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "byckr-rust"
+path = "src/main.rs"
+
+[dependencies]
+byckr-engine = { version = "0.1.0", path = "../byckr-engine" }
+byckr-format = { version = "0.1.0", path = "../byckr-format" }
+byckr-identity = { version = "0.1.0", path = "../byckr-identity" }
+byckr-machine = { version = "0.1.0", path = "../byckr-machine" }
+byckr-query = { version = "0.1.0", path = "../byckr-query" }
+byckr-storage-native = { version = "0.1.0", path = "../byckr-storage-native" }
+serde_json.workspace = true
+
+[dev-dependencies]
+byckr-test-support = { version = "0.1.0", path = "../byckr-test-support" }
+# The identity tests compute a key's identifier the way `byckr identity` does.
+sha2.workspace = true
+
+[lints]
+workspace = true
+
+# The migration tests seed a root an earlier release wrote, whose record
+# files carry POSTIX access descriptors in the `user.byckr.access` xattr.
+[target.'cfg(unix)'.dev-dependencies]
+byckr-xattr = { version = "0.1.0", path = "../byckr-xattr" }

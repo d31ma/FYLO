@@ -1,0 +1,6950 @@
+//! Crash-recoverable native writes for the existing FYLO filesystem layout.
+//!
+//! The journal and generation records intentionally use the JavaScript
+//! engine's v1 schemas so either engine can recover an interrupted mutation.
+
+use byckr_vfs::{self as fs, File, OpenOptions};
+use std::collections::BTreeSet;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::UNIX_EPOCH;
+
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use byckr_format::{Document, DocumentLimits, TtidTimestamps};
+use byckr_query::{
+    IndexLookupValue, QueryLimits, SqlOperation, StructuredQuery, index_entries_for_document,
+    index_entries_with_words, prepare_sql,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+use super::platform_companion::{
+    read_dir_without_companions, remove_companion, remove_emptied_dir,
+};
+use super::{
+    CollectionKind, CollectionLayout, ExpectedType, MAX_DOCUMENT_BYTES, NativeRoot,
+    NativeStorageError, NativeStorageErrorCode, path_exists_no_follow, validate_ttid_shape,
+};
+
+const TRANSACTION_FORMAT: &str = "fylo.collection-transaction.v1";
+const GENERATION_FORMAT: &str = "fylo.collection-generation.v1";
+const MAX_TRANSACTION_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_CAPTURE_BYTES: u64 = 8 * 1024 * 1024;
+const LOCK_TTL_MILLIS: u64 = 5 * 60 * 1000;
+const DEFAULT_ACCESS_MODE: u32 = 0o600;
+
+mod access_admin;
+mod collection_writes;
+mod commit_log;
+mod document_codec;
+mod document_write;
+pub(crate) mod schema_counts;
+pub(crate) mod schema_registry;
+mod word_fields;
+pub use commit_log::{
+    CollectionAccessReport, CompactionReport, DatabaseCompactionReport, DatabasePackReport,
+    DatabaseRekey, DatabaseSalvageReport, LayoutMigrationReport, PackedCollection,
+    RecordAccessGroup, RecordAccessMigration, RootAccessReport, SalvageReport, SegmentVerification,
+};
+#[cfg(test)]
+pub(crate) use commit_log::{CopiedHook, SegmentCompactor};
+pub(crate) use commit_log::{NamespaceView, SegmentSchemas};
+pub(crate) mod version;
+
+pub use collection_writes::CollectionWrites;
+use document_codec::DocumentPolicy;
+pub use document_codec::{DocumentCodec, PlainDocumentCodec, schema_violations};
+pub use document_write::DocumentWrite;
+
+static UNIQUE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static TTID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Options for a create-only native document put.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PutDocumentOptions {
+    /// Developer-defined typed metadata written in the create transaction.
+    pub metadata: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// Options for a create-only native raw-file put.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PutRawFileOptions {
+    /// Durable logical object key.
+    pub key: String,
+    /// Safe lowercase extension including the leading dot.
+    pub extension: String,
+    /// Developer-defined typed metadata.
+    pub metadata: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// Observable result of one native SQL mutation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SqlMutationResult {
+    /// Executed mutation kind.
+    pub kind: SqlMutationResultKind,
+    /// Number of records written, updated, or deleted.
+    pub affected: usize,
+    /// Identifiers changed by the statement in deterministic order.
+    pub identifiers: Vec<String>,
+}
+
+/// Supported SQL mutation result kinds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum SqlMutationResultKind {
+    /// `INSERT`.
+    Insert,
+    /// `UPDATE`.
+    Update,
+    /// `DELETE`.
+    Delete,
+}
+
+/// Native mutation entry point.
+#[derive(Clone, Debug)]
+pub struct NativeWriteRoot {
+    root: NativeRoot,
+    config: super::RootConfig,
+    /// Whether a segment collection this writer creates keeps its segments
+    /// in a `.vdbx` container instead of `segments/`. Only tests set it,
+    /// through `with_segment_container`, until `.vdbx` roots exist.
+    segment_container: bool,
+}
+
+impl NativeWriteRoot {
+    /// Open an existing canonical FYLO root for recoverable writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the root cannot be opened safely.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, NativeStorageError> {
+        Ok(Self::writing(NativeRoot::open(path)?))
+    }
+
+    /// A writer over `root`. A `.vdbx` database root opens its file to
+    /// write on the first write, as every container does.
+    fn writing(root: NativeRoot) -> Self {
+        Self {
+            root: root.without_check_reuse(),
+            config: super::RootConfig::default(),
+            segment_container: false,
+        }
+    }
+
+    /// Open a selected profile, initializing only a new empty owned EFS root.
+    ///
+    /// # Errors
+    /// Rejects missing owners, mismatched descriptors and unconverted roots.
+    pub fn open_profiled(options: super::RootOpenOptions) -> Result<Self, NativeStorageError> {
+        if options.profile == super::FilesystemProfile::EfsSidecarV1 {
+            let repository =
+                fs::canonicalize(options.repository.as_deref().unwrap_or(&options.root))
+                    .map_err(NativeStorageError::io)?;
+            let canonical = fs::canonicalize(&options.root).map_err(NativeStorageError::io)?;
+            let lease = options.lease.as_ref().ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost,
+                    "EFS writer requires its owning lease",
+                )
+            })?;
+            lease.assert_owned_fresh()?;
+            if !lease.kernel_enforced() || lease.root() != repository {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost,
+                    "EFS writer kernel owner differs",
+                ));
+            }
+            if super::profile_manifest::ProfileManifest::read(&repository)?.is_none() {
+                if canonical != repository {
+                    return Err(NativeStorageError::new(
+                        NativeStorageErrorCode::CorruptMetadata,
+                        "an EFS worktree cannot initialize the canonical root descriptor",
+                    ));
+                }
+                super::profile_manifest::ProfileManifest::initialize(&repository, lease)?;
+            }
+        }
+        Ok(Self::writing(NativeRoot::open_profiled(options)?))
+    }
+
+    /// Selected immutable metadata representation.
+    #[must_use]
+    pub const fn filesystem_profile(&self) -> super::FilesystemProfile {
+        self.root.filesystem_profile()
+    }
+
+    /// Clone of the root owner, retaining the same lease generation.
+    #[must_use]
+    pub fn owning_lease(&self) -> Option<super::RootLease> {
+        self.root.owning_lease()
+    }
+
+    fn lock_collection(
+        &self,
+        collection: &super::NativeCollection,
+    ) -> Result<commit_log::CollectionGuard, NativeStorageError> {
+        self.settle_namespace_once()?;
+        self.lock_collection_unsettled(collection)
+    }
+
+    /// Lock a collection without first settling the namespace log; only
+    /// that settling itself locks this way.
+    fn lock_collection_unsettled(
+        &self,
+        collection: &super::NativeCollection,
+    ) -> Result<commit_log::CollectionGuard, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let exclusive = commit_log::CommitQueue::shared(&collection.path).exclusive()?;
+        let file = CollectionWriteLock::acquire_for(&self.root, collection, "collection.lock")?;
+        Ok(commit_log::CollectionGuard::new(file, exclusive))
+    }
+
+    fn move_record_pair(&self, source: &Path, target: &Path) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        if self.filesystem_profile() == super::FilesystemProfile::Native {
+            return fs::rename(source, target).map_err(NativeStorageError::io);
+        }
+        let source_manifest = super::sidecar_path(source);
+        let target_manifest = super::sidecar_path(target);
+        super::sidecar_attributes::SidecarAttributes::read_path(&self.root, source)?;
+        if path_exists_no_follow(target)? || path_exists_no_follow(&target_manifest)? {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "EFS pair destination or orphan manifest already exists",
+            ));
+        }
+        fs::rename(source, target).map_err(NativeStorageError::io)?;
+        sync_parent(source)?;
+        sync_parent(target)?;
+        failpoint("after-record-payload-rename")?;
+        fs::rename(&source_manifest, &target_manifest).map_err(NativeStorageError::io)?;
+        sync_parent(&source_manifest)?;
+        sync_parent(&target_manifest)?;
+        failpoint("after-record-sidecar-rename")?;
+        self.root.assert_profile_owned()
+    }
+
+    fn overwrite_record(&self, path: &Path, bytes: &[u8]) -> Result<(), NativeStorageError> {
+        if self.filesystem_profile() == super::FilesystemProfile::Native {
+            return overwrite_in_place(path, bytes);
+        }
+        let mut attributes =
+            super::sidecar_attributes::SidecarAttributes::read_path(&self.root, path)?;
+        overwrite_in_place(path, bytes)?;
+        super::sidecar_attributes::SidecarAttributes::refresh_binding(
+            &self.root,
+            path,
+            &mut attributes,
+        )?;
+        super::sidecar_attributes::SidecarAttributes::replace(&self.root, path, &attributes)?;
+        failpoint("after-metadata-write")
+    }
+
+    fn publish_payload(&self, path: &Path, bytes: &[u8]) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        if self.filesystem_profile() != super::FilesystemProfile::EfsSidecarV1 {
+            return durable_replace(path, bytes);
+        }
+        durable_replace_with_mode(path, bytes, DEFAULT_ACCESS_MODE)?;
+        verify_profiled_payload(&self.root, path)
+    }
+
+    fn require_pair_destination_absent(&self, target: &Path) -> Result<(), NativeStorageError> {
+        if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1
+            && (path_exists_no_follow(target)?
+                || path_exists_no_follow(&super::sidecar_path(target))?)
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "EFS pair destination or orphan manifest already exists",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Apply host-supplied runtime knobs to this writer.
+    #[must_use]
+    pub fn with_config(mut self, config: super::RootConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Keep the segments of every segment collection this writer creates in
+    /// a `.vdbx` container in the collection directory, with 1 MiB extents
+    /// (`docs/vdbx-segment-backend.md`, step 3). Test support only.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_segment_container(mut self) -> Self {
+        self.segment_container = true;
+        self
+    }
+
+    /// Runtime knobs this writer was opened with.
+    #[must_use]
+    pub fn config(&self) -> super::RootConfig {
+        self.config
+    }
+
+    /// Open one existing collection of this root.
+    ///
+    /// # Errors
+    ///
+    /// As [`NativeRoot::collection`].
+    pub fn collection(
+        &self,
+        collection_name: &str,
+    ) -> Result<super::NativeCollection, NativeStorageError> {
+        self.root.collection(collection_name)
+    }
+
+    /// The validation mode writes to `collection_name` run under: the one its
+    /// descriptor records, or this writer's `strict_schema` setting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing collection or a corrupt descriptor.
+    pub fn validation_mode(
+        &self,
+        collection_name: &str,
+    ) -> Result<super::ValidationMode, NativeStorageError> {
+        Ok(self.mode_of(&self.root.collection(collection_name)?))
+    }
+
+    fn mode_of(&self, collection: &super::NativeCollection) -> super::ValidationMode {
+        super::ValidationMode::resolve(collection.validation(), self.config.strict_schema)
+    }
+
+    /// The schema policy for one mutation of `collection`, around `codec`.
+    fn policy<'a>(
+        &self,
+        collection: &super::NativeCollection,
+        codec: &'a dyn DocumentCodec,
+    ) -> DocumentPolicy<'a> {
+        DocumentPolicy::new(
+            codec,
+            self.mode_of(collection),
+            self.root.path(),
+            &collection.name,
+        )
+    }
+
+    /// Record `mode` in `collection_name`'s catalog descriptor, so every
+    /// later writer of this root runs under it whatever its `strict_schema`
+    /// setting. Returns the mode the descriptor recorded before, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing collection, an unsafe path, lock
+    /// contention, or an interrupted durable write.
+    pub fn set_validation_mode(
+        &self,
+        collection_name: &str,
+        mode: super::ValidationMode,
+    ) -> Result<Option<super::ValidationMode>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        self.root.not_yet_in_database("setting a validation mode")?;
+        let collection = self.root.collection(collection_name)?;
+        let previous = collection.validation();
+        if previous == Some(mode) {
+            return Ok(previous);
+        }
+        let _lock = self.lock_collection(&collection)?;
+        let catalog = self
+            .root
+            .catalog_root()
+            .join(".fylo-catalog")
+            .join("collections");
+        let path = catalog.join(format!("{collection_name}.json"));
+        // A collection created before descriptors existed has none; it is a
+        // document collection at the default width, which is what a
+        // descriptor naming only its kind says too.
+        let mut descriptor: Map<String, Value> = if path_exists_no_follow(&path)? {
+            read_bounded_json(&path, super::MAX_DESCRIPTOR_BYTES)?
+        } else {
+            fs::create_dir_all(&catalog).map_err(NativeStorageError::io)?;
+            Map::from_iter([
+                ("version".into(), Value::from(1)),
+                ("kind".into(), Value::from("document")),
+            ])
+        };
+        descriptor.insert("validation".into(), Value::from(mode.as_str()));
+        let mut encoded = serde_json::to_vec(&descriptor).map_err(|error| json_error(&error))?;
+        encoded.push(b'\n');
+        durable_replace(&path, &encoded)?;
+        Ok(previous)
+    }
+
+    /// Record `fields` as `collection_name`'s encrypted-fields record, the
+    /// `$encrypted` paths every later writer of this root encrypts whether
+    /// or not it has the `fylo.schema` folder that declares them. Returns
+    /// whether the record changed; an empty list replaces a record but
+    /// never creates one.
+    ///
+    /// A directory root keeps the record in the catalog descriptor, and a
+    /// `.fxdb` database in the static part of the collection's directory
+    /// block, which is rewritten in place as a drop rewrites it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing collection, an unsafe path, lock
+    /// contention, a descriptor past its size limit, or an interrupted
+    /// durable write.
+    pub fn record_encrypted_fields(
+        &self,
+        collection_name: &str,
+        fields: &[String],
+    ) -> Result<bool, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let unchanged = |recorded: Option<Vec<String>>| {
+            recorded.map_or(fields.is_empty(), |recorded| recorded == fields)
+        };
+        if unchanged(self.root.recorded_encrypted_fields(collection_name)?) {
+            return Ok(false);
+        }
+        let collection = self.root.collection(collection_name)?;
+        let _lock = self.lock_collection(&collection)?;
+        // Read again under the lock: another writer may have recorded it.
+        if unchanged(self.root.recorded_encrypted_fields(collection_name)?) {
+            return Ok(false);
+        }
+        self.replace_descriptor_field(&collection, "encrypted", Value::from(fields.to_vec()))?;
+        Ok(true)
+    }
+
+    /// Set one field of `collection`'s descriptor to `record`, keeping every
+    /// other field. The caller holds the collection lock.
+    pub(crate) fn replace_descriptor_field(
+        &self,
+        collection: &super::NativeCollection,
+        field: &str,
+        record: Value,
+    ) -> Result<(), NativeStorageError> {
+        let collection_name = collection.name();
+        if let Some(database) = self.root.database() {
+            let current = database.collection(collection_name).ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::NotFound,
+                    format!("collection \"{collection_name}\" does not exist"),
+                )
+            })?;
+            let mut descriptor: Map<String, Value> =
+                serde_json::from_slice(&current.header.descriptor)
+                    .map_err(|error| json_error(&error))?;
+            descriptor.insert(field.into(), record);
+            let encoded = Value::Object(descriptor).to_string().into_bytes();
+            return database.replace_descriptor(collection_name, &encoded);
+        }
+        let catalog = self
+            .root
+            .catalog_root()
+            .join(".fylo-catalog")
+            .join("collections");
+        let path = catalog.join(format!("{collection_name}.json"));
+        let mut descriptor: Map<String, Value> = if path_exists_no_follow(&path)? {
+            read_bounded_json(&path, super::MAX_DESCRIPTOR_BYTES)?
+        } else {
+            fs::create_dir_all(&catalog).map_err(NativeStorageError::io)?;
+            Map::from_iter([
+                ("version".into(), Value::from(1)),
+                (
+                    "kind".into(),
+                    Value::from(match collection.kind() {
+                        CollectionKind::Document => "document",
+                        CollectionKind::File => "file",
+                    }),
+                ),
+            ])
+        };
+        descriptor.insert(field.into(), record);
+        let mut encoded = serde_json::to_vec(&descriptor).map_err(|error| json_error(&error))?;
+        encoded.push(b'\n');
+        durable_replace(&path, &encoded)
+    }
+
+    /// Open a materialized worktree whose catalog and repository metadata live
+    /// at another canonical root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either root cannot be opened safely.
+    pub fn open_with_repository(
+        path: impl AsRef<Path>,
+        repository_root: impl AsRef<Path>,
+    ) -> Result<Self, NativeStorageError> {
+        Ok(Self::writing(NativeRoot::open_with_repository(
+            path,
+            repository_root,
+        )?))
+    }
+
+    /// Canonical root identity.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.root.path()
+    }
+
+    /// Canonical root that owns the catalog and version metadata.
+    #[must_use]
+    pub fn repository_root(&self) -> &Path {
+        self.root.repository_root()
+    }
+
+    /// Recover one interrupted collection transaction.
+    ///
+    /// Active manifests roll back. Committed manifests roll forward. Both
+    /// paths rebuild the derived prefix index before publishing a stable
+    /// generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a live writer, corrupt journal, unsafe path, or
+    /// failed durable repair.
+    pub fn recover_collection(&self, collection: &str) -> Result<bool, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let settled = self.recover_namespace_naming(collection)?;
+        let opened = self.root.collection(collection)?;
+        let migrated = {
+            let _lock = self.lock_collection(&opened)?;
+            self.finish_layout_migration_if_pending(&opened)?
+        };
+        // A finished migration changed the layout the first handle names.
+        let collection = self.root.collection(collection)?;
+        let _lock = self.lock_collection(&collection)?;
+        Ok(self.recover_locked(&collection)? || migrated || settled)
+    }
+
+    /// Finish the write a stopped writer left in collection `name` of the
+    /// `.vdbx` database `root`, for a reader that found it
+    /// ([`super::NativeCollection::database_reader_generation`]): recover
+    /// it as the next writer would. Returns whether there was work.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn finish_stranded(
+        root: &NativeRoot,
+        name: &str,
+    ) -> Result<bool, NativeStorageError> {
+        Self::writing(root.clone()).recover_collection(name)
+    }
+
+    /// Create one document at an explicitly supplied TTID.
+    ///
+    /// This slice is create-only. The caller supplies the identifier so the
+    /// compatibility boundary does not silently invent a non-canonical TTID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid document, duplicate identifier,
+    /// unsafe path, lock contention, or interrupted durable operation.
+    pub fn put_document(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+        encoded: &[u8],
+        options: PutDocumentOptions,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        super::validate_canonical_ttid(identifier)?;
+        let document = Document::parse(encoded, DocumentLimits::default()).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptDocument,
+                format!("document is invalid: {error}"),
+            )
+        })?;
+        let canonical = document.encode().map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptDocument,
+                format!("document cannot be encoded: {error}"),
+            )
+        })?;
+        if canonical.len() as u64 > MAX_DOCUMENT_BYTES {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                "document exceeds the native write limit",
+            ));
+        }
+        let PutDocumentOptions { metadata } = options;
+        validate_custom_metadata(&metadata)?;
+        let collection = self.writable_collection(collection_name)?;
+        if collection.kind != CollectionKind::Document {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::WrongType,
+                "put_document requires a document collection",
+            ));
+        }
+        if self.uses_log(&collection) {
+            return self.put_document_logged(&collection, identifier, &canonical, &metadata);
+        }
+        let _lock = self.lock_collection(&collection)?;
+        self.recover_locked(&collection)?;
+        let target = collection
+            .path
+            .join("docs")
+            .join(crate::shard_of(identifier, collection.shard_width()))
+            .join(format!("{identifier}.json"));
+        if path_exists_no_follow(&target)? {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::DocumentExists,
+                "document identifier already exists",
+            ));
+        }
+        self.require_pair_destination_absent(&target)?;
+        let mut transaction = Transaction::begin(self, &collection, "put-document")?;
+        let outcome = (|| {
+            transaction.capture(&target)?;
+            let parent = target.parent().ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    "document target has no parent",
+                )
+            })?;
+            ensure_directory(&self.root, parent)?;
+            self.publish_payload(&target, &canonical)?;
+            if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                failpoint("after-record-payload-rename")?;
+            }
+            super::record_attributes::RecordAttributes::initialize(&self.root, &target)?;
+            self.write_custom_metadata_attributes(&target, &metadata)?;
+            if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                failpoint("after-record-sidecar-rename")?;
+            }
+            capture_index(&mut transaction, &collection)?;
+            // The identifier is proven absent above, so nothing to remove.
+            self.apply_index_delta(
+                &mut transaction,
+                &collection,
+                &BTreeSet::new(),
+                &record_index_keys(&collection, identifier)?,
+            )?;
+            transaction.commit()
+        })();
+        if let Err(error) = outcome {
+            if let Err(rollback) = transaction.rollback() {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::Io,
+                    format!("write failed ({error}) and rollback failed ({rollback})"),
+                ));
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Create one document from its fields, building the stored body through
+    /// `codec` under the collection's validation mode, so it is validated,
+    /// stamped and encrypted exactly as every other body write.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::put_document`], plus a document the schema rejects in
+    /// `strict` mode and any error `codec` returns.
+    pub fn put_document_fields_with(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+        fields: Map<String, Value>,
+        options: PutDocumentOptions,
+        codec: &dyn DocumentCodec,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let collection = self.document_collection(collection_name, "put_document")?;
+        let policy = self.policy(&collection, codec);
+        let outcome = policy
+            .encode(collection_name, fields)
+            .and_then(|encoded| self.put_document(collection_name, identifier, &encoded, options));
+        policy.finish(outcome)
+    }
+
+    /// Commit several document writes to one collection as one write-ahead
+    /// log record (ADR 0013): after a crash, recovery applies all of them or
+    /// none. Each body is built through `codec` under the collection's
+    /// validation mode, exactly as a single put or replace builds it.
+    ///
+    /// Each identifier may appear once. A batch needs a profile whose
+    /// document mutations are logged (native, and EFS on Unix); a segment
+    /// collection (every collection of a `.vdbx` database) commits it as
+    /// one segment plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid identifier or document, a repeated
+    /// identifier, a put over a live document, a replace or delete of a
+    /// missing one, a body the schema rejects in `strict` mode, a batch too
+    /// large for one log record, a collection without a log (`Unsupported`), or any
+    /// durable write failure. Nothing is written when
+    /// it fails.
+    pub fn commit_document_writes_with(
+        &self,
+        collection_name: &str,
+        writes: &[DocumentWrite],
+        codec: &dyn DocumentCodec,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        Self::check_batch_identifiers(writes)?;
+        let collection = self.document_collection(collection_name, "commit_document_writes")?;
+        if !self.uses_log(&collection) {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "a batch of document writes needs the collection's commit log",
+            ));
+        }
+        if writes.is_empty() {
+            return Ok(());
+        }
+        let policy = self.policy(&collection, codec);
+        let outcome = Self::batch_bodies(&policy, collection_name, writes)
+            .and_then(|bodies| self.commit_document_writes_to(&collection, writes, &bodies));
+        policy.finish(outcome)
+    }
+
+    /// Every identifier of a batch is a valid TTID, and none repeats.
+    fn check_batch_identifiers(writes: &[DocumentWrite]) -> Result<(), NativeStorageError> {
+        let mut seen = BTreeSet::new();
+        for write in writes {
+            match write {
+                DocumentWrite::Put { identifier, .. } => {
+                    super::validate_canonical_ttid(identifier)?;
+                }
+                _ => validate_ttid_shape(write.identifier())?,
+            }
+            if !seen.insert(write.identifier()) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::InvalidDocumentId,
+                    format!(
+                        "a batch changes document {} more than once",
+                        write.identifier()
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The canonical body of each write of a batch, built through `policy`
+    /// (`None` for a delete).
+    fn batch_bodies(
+        policy: &DocumentPolicy<'_>,
+        collection_name: &str,
+        writes: &[DocumentWrite],
+    ) -> Result<Vec<Option<Vec<u8>>>, NativeStorageError> {
+        let mut bodies = Vec::with_capacity(writes.len());
+        for write in writes {
+            bodies.push(match write {
+                DocumentWrite::Put { fields, .. } | DocumentWrite::Replace { fields, .. } => Some(
+                    canonical_body(&policy.encode(collection_name, fields.clone())?)?,
+                ),
+                DocumentWrite::Delete { .. } => None,
+            });
+        }
+        Ok(bodies)
+    }
+
+    /// Create one raw file at an explicitly supplied TTID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid identifiers, extension/key/metadata
+    /// bounds, duplicate records, unsafe paths, lock contention, or
+    /// interrupted durable operation.
+    pub fn put_raw_file(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+        bytes: &[u8],
+        options: &PutRawFileOptions,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        super::validate_canonical_ttid(identifier)?;
+        if bytes.len() as u64 > super::MAX_RAW_FILE_BYTES {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                "raw file exceeds the native write limit",
+            ));
+        }
+        super::validate_raw_extension(&format!("{identifier}{}", options.extension), identifier)?;
+        super::validate_raw_key(&options.key)?;
+        validate_custom_metadata(&options.metadata)?;
+        let collection = self.writable_collection(collection_name)?;
+        if collection.kind != CollectionKind::File {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::WrongType,
+                "put_raw_file requires a file collection",
+            ));
+        }
+        let _lock = self.lock_collection(&collection)?;
+        self.recover_locked(&collection)?;
+        if collection.raw_file_ids()?.iter().any(|id| id == identifier) {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::DocumentExists,
+                "raw-file identifier already exists",
+            ));
+        }
+        let target = collection
+            .path
+            .join("docs")
+            .join(crate::shard_of(identifier, collection.shard_width()))
+            .join(format!("{identifier}{}", options.extension));
+        self.require_pair_destination_absent(&target)?;
+        let mut transaction = Transaction::begin(self, &collection, "put-file")?;
+        let outcome = (|| {
+            transaction.capture(&target)?;
+            let parent = target.parent().ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    "raw-file target has no parent",
+                )
+            })?;
+            ensure_directory(&self.root, parent)?;
+            self.publish_payload(&target, bytes)?;
+            if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                failpoint("after-record-payload-rename")?;
+            }
+            super::record_attributes::RecordAttributes::initialize(&self.root, &target)?;
+            super::record_attributes::RecordAttributes::write(
+                &self.root,
+                &target,
+                super::KEY_XATTR,
+                options.key.as_bytes(),
+            )?;
+            self.write_custom_metadata_attributes(&target, &options.metadata)?;
+            // Every attribute write must land before the checksum stamp is
+            // computed. On Windows an alternate-data-stream write updates the
+            // file's last-write time, so a stamp taken earlier would record an
+            // mtime the next reader cannot match, permanently invalidating the
+            // checksum cache and making index rebuilds non-deterministic. POSIX
+            // xattr writes leave mtime alone, so the order is harmless there.
+            let metadata = fs::metadata(&target).map_err(NativeStorageError::io)?;
+            let checksum = super::sha256_hex(bytes);
+            let stamp = format!(
+                "{checksum}:{}:{}",
+                metadata.len(),
+                super::modified_millis(&metadata)?
+            );
+            super::record_attributes::RecordAttributes::write(
+                &self.root,
+                &target,
+                super::CHECKSUM_XATTR,
+                stamp.as_bytes(),
+            )?;
+            // Writing the stamp is itself a stream write on Windows, so it
+            // invalidates the mtime it just recorded. Restoring the recorded
+            // time makes the stamp self-consistent; on POSIX the attribute
+            // write never moved mtime, so this changes nothing.
+            if self.filesystem_profile() == super::FilesystemProfile::Native {
+                restore_modified(&target, &metadata)?;
+            }
+            if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                failpoint("after-record-sidecar-rename")?;
+            }
+            capture_index(&mut transaction, &collection)?;
+            // The identifier is proven absent above, so nothing to remove.
+            self.apply_index_delta(
+                &mut transaction,
+                &collection,
+                &BTreeSet::new(),
+                &record_index_keys(&collection, identifier)?,
+            )?;
+            transaction.commit()
+        })();
+        if let Err(error) = outcome {
+            if let Err(rollback) = transaction.rollback() {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::Io,
+                    format!("raw-file write failed ({error}) and rollback failed ({rollback})"),
+                ));
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn write_custom_metadata_attributes(
+        &self,
+        target: &Path,
+        metadata: &std::collections::BTreeMap<String, Value>,
+    ) -> Result<(), NativeStorageError> {
+        for (name, value) in metadata {
+            self.write_metadata_value(target, (name, value))?;
+        }
+        Ok(())
+    }
+
+    fn write_metadata_value(
+        &self,
+        target: &Path,
+        (name, value): (&str, &Value),
+    ) -> Result<(), NativeStorageError> {
+        if value.is_null() {
+            return Ok(());
+        }
+        let encoded = serde_json::to_vec(value).map_err(|error| json_error(&error))?;
+        super::record_attributes::RecordAttributes::write(
+            &self.root,
+            target,
+            &format!("{}{name}", super::META_XATTR_PREFIX),
+            &encoded,
+        )
+    }
+
+    /// Replace one existing document body while preserving its TTID and
+    /// metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing or malformed document, unsafe path,
+    /// lock contention, or interrupted durable operation.
+    pub fn patch_document(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+        encoded: &[u8],
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        validate_ttid_shape(identifier)?;
+        let document = Document::parse(encoded, DocumentLimits::default()).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptDocument,
+                format!("document is invalid: {error}"),
+            )
+        })?;
+        let canonical = document.encode().map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptDocument,
+                format!("document cannot be encoded: {error}"),
+            )
+        })?;
+        let collection = self.writable_collection(collection_name)?;
+        if collection.kind != CollectionKind::Document {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::WrongType,
+                "patch_document requires a document collection",
+            ));
+        }
+        if self.uses_log(&collection) {
+            return self.patch_document_logged(&collection, identifier, |_| Ok(canonical.clone()));
+        }
+        let _lock = self.lock_collection(&collection)?;
+        self.recover_locked(&collection)?;
+        let target = collection.read_document(identifier)?.path;
+        let before = record_index_keys(&collection, identifier)?;
+        let mut transaction = Transaction::begin(self, &collection, "patch-document")?;
+        let outcome = (|| {
+            transaction.capture(&target)?;
+            capture_index(&mut transaction, &collection)?;
+            self.overwrite_record(&target, &canonical)?;
+            self.apply_index_delta(
+                &mut transaction,
+                &collection,
+                &before,
+                &record_index_keys(&collection, identifier)?,
+            )?;
+            transaction.commit()
+        })();
+        if let Err(error) = outcome {
+            if let Err(rollback) = transaction.rollback() {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::Io,
+                    format!("patch failed ({error}) and rollback failed ({rollback})"),
+                ));
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Replace one existing document body with `fields`, building the stored
+    /// body through `codec` under the collection's validation mode.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::patch_document`], plus a document the schema rejects in
+    /// `strict` mode and any error `codec` returns.
+    pub fn patch_document_with(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+        fields: Map<String, Value>,
+        codec: &dyn DocumentCodec,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let collection = self.document_collection(collection_name, "patch_document")?;
+        let policy = self.policy(&collection, codec);
+        let outcome = policy
+            .encode(collection_name, fields)
+            .and_then(|encoded| self.patch_document(collection_name, identifier, &encoded));
+        policy.finish(outcome)
+    }
+
+    /// Shallow-merge fields into one existing document.
+    ///
+    /// This matches the JavaScript `patch(id, changes)` contract: top-level
+    /// keys in `changes` replace top-level keys in the stored document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-object patch, malformed resulting document,
+    /// unsafe path, lock contention, or interrupted durable operation.
+    pub fn patch_document_fields(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+        changes: &Map<String, Value>,
+    ) -> Result<(), NativeStorageError> {
+        self.patch_document_fields_with(collection_name, identifier, changes, &PlainDocumentCodec)
+    }
+
+    /// [`Self::patch_document_fields`], decoding the stored body and encoding
+    /// the merged result through `codec`, so the whole post-image is validated
+    /// and its declared fields encrypted.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::patch_document_fields`], plus any error `codec` returns.
+    pub fn patch_document_fields_with(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+        changes: &Map<String, Value>,
+        codec: &dyn DocumentCodec,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        validate_ttid_shape(identifier)?;
+        let collection = self.document_collection(collection_name, "patch_document_fields")?;
+        let policy = self.policy(&collection, codec);
+        let patch = |bytes: &[u8]| {
+            policy.restart();
+            let mut document = policy.decode(collection_name, parse_document_fields(bytes)?)?;
+            merge_top_level(&mut document, changes);
+            policy.encode(collection_name, document)
+        };
+        let outcome = if self.uses_log(&collection) {
+            self.patch_document_logged(&collection, identifier, patch)
+        } else {
+            (|| {
+                let _lock = self.lock_collection(&collection)?;
+                self.recover_locked(&collection)?;
+                let stored = collection.read_document(identifier)?;
+                let canonical = patch(&stored.bytes)?;
+                self.patch_document_locked(&collection, identifier, &stored.path, &canonical)
+            })()
+        };
+        policy.finish(outcome)
+    }
+
+    /// Execute a bounded `INSERT`, `UPDATE`, or `DELETE` SQL statement.
+    ///
+    /// An `INSERT` receives a monotonic TTID generated by this process and
+    /// retries if that identifier already exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed SQL, non-mutation operations, invalid
+    /// resulting documents, unsafe paths, lock contention, or interrupted
+    /// durable operation.
+    pub fn execute_sql_mutation(&self, sql: &str) -> Result<SqlMutationResult, NativeStorageError> {
+        self.execute_sql_mutation_with(sql, &PlainDocumentCodec)
+    }
+
+    /// [`Self::execute_sql_mutation`], with `INSERT` rows and `UPDATE`
+    /// post-images encoded through `codec` and `UPDATE` pre-images decoded
+    /// through it before the assignments merge.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::execute_sql_mutation`], plus any error `codec` returns.
+    pub fn execute_sql_mutation_with(
+        &self,
+        sql: &str,
+        codec: &dyn DocumentCodec,
+    ) -> Result<SqlMutationResult, NativeStorageError> {
+        let plan = prepare_sql(sql, QueryLimits::default()).map_err(|error| query_error(&error))?;
+        self.execute_sql_mutation_plan(&plan, codec)
+    }
+
+    /// [`Self::execute_sql_mutation_with`], from an already-prepared plan whose
+    /// AST has already had its `$param` markers bound. `executeSQL` with
+    /// `parameters` routes through here so the mutation writer does not
+    /// re-parse the raw SQL and lose the bound values.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::execute_sql_mutation_with`].
+    pub fn execute_sql_mutation_plan(
+        &self,
+        plan: &byckr_query::SqlPlan,
+        codec: &dyn DocumentCodec,
+    ) -> Result<SqlMutationResult, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        if plan.explain && !plan.analyze {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::InvalidQuery,
+                "EXPLAIN without ANALYZE does not execute a SQL mutation",
+            ));
+        }
+        match plan.operation {
+            SqlOperation::Insert => self.execute_sql_insert(plan, codec),
+            SqlOperation::Update => self.execute_sql_update(plan, codec),
+            SqlOperation::Delete => self.execute_sql_delete(plan, codec),
+            _ => Err(NativeStorageError::new(
+                NativeStorageErrorCode::InvalidQuery,
+                "native SQL mutation accepts only INSERT, UPDATE, or DELETE",
+            )),
+        }
+    }
+
+    /// Merge developer metadata into one existing document or raw file.
+    ///
+    /// A JSON `null` removes that name, matching the JavaScript
+    /// `metadata(record)` mutation contract. Canonical FYLO attributes are not
+    /// writable through this path, and `user.fylo.meta-updated-at` advances
+    /// strictly so two updates inside one millisecond stay ordered.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid identifier, invalid metadata name or
+    /// value, missing record, unsafe path, lock contention, or interrupted
+    /// durable operation.
+    pub fn set_record_metadata(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+        record: &Map<String, Value>,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        self.write_record_metadata(collection_name, identifier, record, false)
+    }
+
+    /// Replace a record's developer metadata with `record` exactly.
+    ///
+    /// This is the `replaceDocMetadata` contract: a name the record omits is
+    /// removed rather than left behind, so the caller does not have to know
+    /// what is currently stored in order to state what should be.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set_record_metadata`].
+    pub fn replace_record_metadata(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+        record: &Map<String, Value>,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        self.write_record_metadata(collection_name, identifier, record, true)
+    }
+
+    fn write_record_metadata(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+        record: &Map<String, Value>,
+        replace: bool,
+    ) -> Result<(), NativeStorageError> {
+        validate_ttid_shape(identifier)?;
+        validate_custom_metadata(&record.clone().into_iter().collect())?;
+        let collection = self.writable_collection(collection_name)?;
+        if self.uses_log(&collection) {
+            return self.write_record_metadata_logged(&collection, identifier, (record, replace));
+        }
+        let _lock = self.lock_collection(&collection)?;
+        self.recover_locked(&collection)?;
+        let target = record_target(&collection, identifier)?;
+        let mut record = record.clone();
+        if replace {
+            for name in collection.read_custom_metadata(identifier)?.keys() {
+                record.entry(name.clone()).or_insert(Value::Null);
+            }
+        }
+        let record = &record;
+        let updated_at = next_meta_updated_at(&self.root, &target)?;
+        // A document's index keys come from its fields alone, so this is a
+        // no-op delta there; a raw file indexes `meta` and `lastModified`.
+        let before = record_index_keys(&collection, identifier)?;
+        let mut transaction = Transaction::begin(self, &collection, "set-metadata")?;
+        let outcome = (|| {
+            transaction.capture(&target)?;
+            capture_index(&mut transaction, &collection)?;
+            for (name, value) in record {
+                let attribute = format!("{}{name}", super::META_XATTR_PREFIX);
+                if value.is_null() {
+                    super::record_attributes::RecordAttributes::remove(
+                        &self.root, &target, &attribute,
+                    )?;
+                } else {
+                    let encoded = serde_json::to_vec(value).map_err(|error| json_error(&error))?;
+                    super::record_attributes::RecordAttributes::write(
+                        &self.root, &target, &attribute, &encoded,
+                    )?;
+                }
+            }
+            super::record_attributes::RecordAttributes::write(
+                &self.root,
+                &target,
+                super::META_UPDATED_XATTR,
+                updated_at.to_string().as_bytes(),
+            )?;
+            self.apply_index_delta(
+                &mut transaction,
+                &collection,
+                &before,
+                &record_index_keys(&collection, identifier)?,
+            )?;
+            transaction.commit()
+        })();
+        finish_transaction(transaction, outcome, "metadata")
+    }
+
+    /// Soft-delete one existing document or raw file into the retained
+    /// tombstone tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing document, conflicting tombstone,
+    /// unsafe path, lock contention, or interrupted durable move.
+    pub fn delete_document(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        validate_ttid_shape(identifier)?;
+        let collection = self.writable_collection(collection_name)?;
+        if self.uses_log(&collection) {
+            return self.delete_document_logged(&collection, identifier);
+        }
+        let _lock = self.lock_collection(&collection)?;
+        self.recover_locked(&collection)?;
+        let source = record_target(&collection, identifier)?;
+        let filename = source.file_name().ok_or_else(|| {
+            NativeStorageError::new(NativeStorageErrorCode::UnsafePath, "record has no filename")
+        })?;
+        let target = collection
+            .path
+            .join(".deleted")
+            .join(crate::shard_of(identifier, collection.shard_width()))
+            .join(filename);
+        if path_exists_no_follow(&target)? {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "retained document tombstone already exists",
+            ));
+        }
+        self.require_pair_destination_absent(&target)?;
+        let before = record_index_keys(&collection, identifier)?;
+        let mut transaction = Transaction::begin(self, &collection, "delete-document")?;
+        let outcome = (|| {
+            transaction.capture(&source)?;
+            transaction.capture(&target)?;
+            capture_index(&mut transaction, &collection)?;
+            let parent = target.parent().ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    "tombstone target has no parent",
+                )
+            })?;
+            ensure_directory(&self.root, parent)?;
+            self.move_record_pair(&source, &target)?;
+            sync_parent(&source)?;
+            sync_parent(&target)?;
+            failpoint("after-delete-rename")?;
+            // The record now lives under `.deleted`, which is not indexed.
+            self.apply_index_delta(&mut transaction, &collection, &before, &BTreeSet::new())?;
+            transaction.commit()
+        })();
+        if let Err(error) = outcome {
+            if let Err(rollback) = transaction.rollback() {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::Io,
+                    format!("delete failed ({error}) and rollback failed ({rollback})"),
+                ));
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Restore one retained document or raw-file tombstone into the live tree.
+    ///
+    /// The record keeps its TTID and its attributes, matching the JavaScript
+    /// `restore(id)` contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the identifier is invalid, a live record already
+    /// occupies it, no tombstone exists, the path is unsafe, the lock is
+    /// held, or a durable operation is interrupted.
+    pub fn restore_document(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        validate_ttid_shape(identifier)?;
+        let collection = self.writable_collection(collection_name)?;
+        if self.uses_log(&collection) {
+            return self.restore_document_logged(&collection, identifier);
+        }
+        let _lock = self.lock_collection(&collection)?;
+        self.recover_locked(&collection)?;
+        match record_target(&collection, identifier) {
+            Ok(_) => {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "cannot restore a record that already exists",
+                ));
+            }
+            Err(error) if error.code() == NativeStorageErrorCode::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let source = match collection.kind {
+            CollectionKind::Document => collection.read_deleted_document(identifier)?.path,
+            CollectionKind::File => collection.read_deleted_raw_file(identifier)?.path,
+        };
+        let filename = source.file_name().ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath,
+                "retained record has no filename",
+            )
+        })?;
+        let target = collection
+            .path
+            .join("docs")
+            .join(crate::shard_of(identifier, collection.shard_width()))
+            .join(filename);
+        self.require_pair_destination_absent(&target)?;
+        let mut transaction = Transaction::begin(self, &collection, "restore-document")?;
+        let outcome = (|| {
+            transaction.capture(&source)?;
+            transaction.capture(&target)?;
+            capture_index(&mut transaction, &collection)?;
+            let parent = target.parent().ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    "restore target has no parent",
+                )
+            })?;
+            ensure_directory(&self.root, parent)?;
+            self.move_record_pair(&source, &target)?;
+            sync_parent(&source)?;
+            sync_parent(&target)?;
+            failpoint("after-restore-rename")?;
+            // A live record at this identifier is refused above, so the
+            // tombstone's keys are additions.
+            self.apply_index_delta(
+                &mut transaction,
+                &collection,
+                &BTreeSet::new(),
+                &record_index_keys(&collection, identifier)?,
+            )?;
+            transaction.commit()
+        })();
+        finish_transaction(transaction, outcome, "restore")
+    }
+
+    /// Move every record in a collection to a new shard width.
+    ///
+    /// The descriptor records the destination and the width being left before
+    /// a single record moves, so an interrupted run leaves every record
+    /// findable under one candidate or another and re-running finishes what
+    /// remains. Documents are the source of truth, so this renames files and
+    /// rebuilds the derived index without rewriting a record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported width, a missing collection, an
+    /// unsafe path, lock contention, or an interrupted durable operation.
+    pub fn reshard_collection(
+        &self,
+        collection_name: &str,
+        width: u32,
+    ) -> Result<usize, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        if !(crate::MIN_SHARD_WIDTH..=crate::MAX_SHARD_WIDTH).contains(&width) {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                format!(
+                    "shard width must be {} to {}: {width}",
+                    crate::MIN_SHARD_WIDTH,
+                    crate::MAX_SHARD_WIDTH
+                ),
+            ));
+        }
+        self.root.refuse_in_database(
+            "a .vdbx database collection keeps the shard width it was created with",
+        )?;
+        let collection = self.root.collection(collection_name)?;
+        let recorded = collection.shard_width();
+        let previous = collection.previous_shard_widths().to_vec();
+        if recorded == width && previous.is_empty() {
+            return Ok(0);
+        }
+        let _lock = self.lock_collection(&collection)?;
+        self.recover_locked(&collection)?;
+        if collection.uses_segments() {
+            // Segments are not sharded: the width only shapes an export or a
+            // migration back to files, so nothing moves.
+            self.write_shard_width(collection_name, width, &[])?;
+            return Ok(0);
+        }
+        let mut leaving: Vec<u32> = previous;
+        if recorded != width && !leaving.contains(&recorded) {
+            leaving.push(recorded);
+        }
+        leaving.retain(|value| *value != width);
+        self.write_shard_width(collection_name, width, &leaving)?;
+        let collection = self.root.collection(collection_name)?;
+
+        let mut moved = 0;
+        let mut transaction = Transaction::begin(self, &collection, "reshard")?;
+        let outcome = (|| {
+            for state_folder in ["docs", ".deleted"] {
+                let root = collection.path.join(state_folder);
+                for (source, target) in reshard_moves(&root, width, &leaving)? {
+                    self.require_pair_destination_absent(&target)?;
+                    transaction.capture(&source)?;
+                    transaction.capture(&target)?;
+                    let parent = target.parent().ok_or_else(|| {
+                        NativeStorageError::new(
+                            NativeStorageErrorCode::UnsafePath,
+                            "reshard target has no parent",
+                        )
+                    })?;
+                    ensure_directory(&self.root, parent)?;
+                    self.move_record_pair(&source, &target)?;
+                    sync_parent(&source)?;
+                    sync_parent(&target)?;
+                    failpoint("after-reshard-rename")?;
+                    moved += 1;
+                }
+                remove_emptied_shards(&root)?;
+            }
+            capture_index_files(&mut transaction, &collection)?;
+            self.rebuild_index(&collection)?;
+            transaction.commit()
+        })();
+        finish_transaction(transaction, outcome, "reshard")?;
+        self.write_shard_width(collection_name, width, &[])?;
+        Ok(moved)
+    }
+
+    fn write_shard_width(
+        &self,
+        collection: &str,
+        width: u32,
+        leaving: &[u32],
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let path = self
+            .root
+            .catalog_root()
+            .join(".fylo-catalog")
+            .join("collections")
+            .join(format!("{collection}.json"));
+        let mut descriptor: Map<String, Value> =
+            read_bounded_json(&path, super::MAX_DESCRIPTOR_BYTES)?;
+        descriptor.insert("shardWidth".into(), Value::from(width));
+        // A completed reshard must leave no width behind, or every later
+        // lookup would keep probing a directory that can no longer hold
+        // anything.
+        descriptor.remove("previousShardWidths");
+        if !leaving.is_empty() {
+            descriptor.insert(
+                "previousShardWidths".into(),
+                Value::Array(leaving.iter().map(|width| Value::from(*width)).collect()),
+            );
+        }
+        let mut encoded = serde_json::to_vec(&descriptor).map_err(|error| json_error(&error))?;
+        encoded.push(b'\n');
+        durable_replace(&path, &encoded)
+    }
+
+    /// Rebuild one collection's derived index from its documents.
+    ///
+    /// Documents are the source of truth, so this is always safe to repeat.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing collection, an unsafe path, lock
+    /// contention, or an interrupted durable write.
+    pub fn rebuild_collection(&self, collection_name: &str) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let collection = self.root.collection(collection_name)?;
+        if collection.uses_segments() {
+            return self.rebuild_segment_collection(&collection);
+        }
+        let _lock = self.lock_collection(&collection)?;
+        self.rebuild_file_collection_locked(&collection)
+    }
+
+    /// Rebuild a file-layout collection's index while the caller holds its
+    /// lock.
+    pub(crate) fn rebuild_file_collection_locked(
+        &self,
+        collection: &super::NativeCollection,
+    ) -> Result<(), NativeStorageError> {
+        self.recover_locked(collection)?;
+        let mut transaction = Transaction::begin(self, collection, "rebuild-index")?;
+        let outcome = (|| {
+            capture_index_files(&mut transaction, collection)?;
+            self.rebuild_index(collection)?;
+            transaction.commit()
+        })();
+        finish_transaction(transaction, outcome, "index rebuild")
+    }
+
+    /// Re-hash every active and deleted raw file without trusting its checksum
+    /// cache, matching the published `verifyCollection` machine operation.
+    /// Missing stamps are refreshed best-effort; mismatched stamps are retained
+    /// as evidence of the expected bytes.
+    ///
+    /// The scan holds the collection lock and first recovers any transaction
+    /// a crashed writer left behind, so it counts only committed files and
+    /// never stamps beside a live writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-file collection, a live writer, a failed
+    /// recovery, unsafe paths, malformed metadata, oversized files, or I/O
+    /// failures other than a file that vanished during the scan.
+    pub fn verify_file_collection(
+        &self,
+        collection_name: &str,
+    ) -> Result<Value, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let collection = self.root.collection(collection_name)?;
+        if collection.kind != CollectionKind::File {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::WrongType,
+                "verifyCollection requires a file collection",
+            ));
+        }
+        let _lock = self.lock_collection(&collection)?;
+        self.recover_locked(&collection)?;
+        let states = [
+            (
+                "active",
+                collection.path.join("docs"),
+                collection.raw_file_ids()?,
+            ),
+            (
+                "deleted",
+                collection.path.join(".deleted"),
+                collection.deleted_raw_file_ids()?,
+            ),
+        ];
+        let mut files_scanned = 0_usize;
+        let mut verified = 0_usize;
+        let mut stamped = 0_usize;
+        let mut corrupt = Vec::new();
+        for (state, root, identifiers) in states {
+            for identifier in identifiers {
+                let check = match verify_raw_file_checksum(&collection, &root, &identifier) {
+                    Ok(check) => check,
+                    Err(error) if error.code() == NativeStorageErrorCode::NotFound => continue,
+                    Err(error) => return Err(error),
+                };
+                files_scanned += 1;
+                match check.expected {
+                    Some(expected) if expected != check.actual => corrupt.push(serde_json::json!({
+                        "id": identifier,
+                        "namespace": state,
+                        "expected": expected,
+                        "actual": check.actual,
+                    })),
+                    Some(_) => verified += 1,
+                    None => {
+                        // The checksum is a rebuildable cache. A read-only file
+                        // can still be verified even when the cache cannot be
+                        // refreshed, exactly like the JavaScript engine.
+                        let _ = stamp_raw_file_checksum(&self.root, &check.path, &check.actual);
+                        stamped += 1;
+                    }
+                }
+            }
+        }
+        Ok(serde_json::json!({
+            "collection": collection_name,
+            "filesScanned": files_scanned,
+            "verified": verified,
+            "stamped": stamped,
+            "corrupt": corrupt,
+        }))
+    }
+
+    /// Open one collection, or report that there is none.
+    ///
+    /// Creating and dropping have to tell "absent" apart from every other
+    /// failure, so the directory is probed directly first.
+    fn collection_if_present(
+        &self,
+        collection_name: &str,
+    ) -> Result<Option<super::NativeCollection>, NativeStorageError> {
+        if let Some(database) = self.root.database() {
+            // A handle without an encrypted database's key may not even
+            // learn whether a collection exists.
+            database.require_key()?;
+            if database.collection(collection_name).is_none() {
+                return Ok(None);
+            }
+            return self.root.collection(collection_name).map(Some);
+        }
+        let present = [".collections", ".buckets"].into_iter().try_fold(
+            false,
+            |found, kind_folder| -> Result<bool, NativeStorageError> {
+                Ok(found
+                    || path_exists_no_follow(
+                        &self.root.path().join(kind_folder).join(collection_name),
+                    )?)
+            },
+        )?;
+        if !present {
+            return Ok(None);
+        }
+        self.root.collection(collection_name).map(Some)
+    }
+
+    /// Create one collection, or complete a partly created one.
+    ///
+    /// The descriptor is written before the directories it describes. A
+    /// collection exists when its directory does, so an interrupted create
+    /// leaves a descriptor naming nothing — which reads as "no such
+    /// collection" — rather than a directory whose kind folder and shard width
+    /// nobody recorded. Re-running finishes it.
+    ///
+    /// Returns `true` when the collection did not exist beforehand.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name, a kind that contradicts an
+    /// existing collection, an unsafe path, or an interrupted durable write.
+    pub fn create_collection(
+        &self,
+        collection_name: &str,
+        kind: CollectionKind,
+        versioned: Option<bool>,
+    ) -> Result<bool, NativeStorageError> {
+        self.create_collection_with_layout(collection_name, kind, versioned, None)
+    }
+
+    /// Create one collection with an explicit layout, overriding the root's
+    /// `layout` setting. An existing collection keeps the layout it has;
+    /// `migrate_layout` moves it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::create_collection`], and `Unsupported` for the segment
+    /// layout on a raw-file collection or a non-native profile.
+    pub fn create_collection_with_layout(
+        &self,
+        collection_name: &str,
+        kind: CollectionKind,
+        versioned: Option<bool>,
+        layout: Option<CollectionLayout>,
+    ) -> Result<bool, NativeStorageError> {
+        if self.root.is_database() && layout == Some(CollectionLayout::Files) {
+            return Err(NativeRoot::database_unsupported(
+                "a .vdbx database keeps every collection in segments, not the file layout",
+            ));
+        }
+        if layout == Some(CollectionLayout::Segments) && kind != CollectionKind::Document {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "raw-file collections keep the file layout",
+            ));
+        }
+        let writer = match layout {
+            Some(layout) => &self.clone().with_config(super::RootConfig {
+                layout,
+                ..self.config
+            }),
+            None => self,
+        };
+        #[cfg(unix)]
+        super::extended_attribute_probe::ExtendedAttributeProbe::check_before_create(
+            &self.root, kind,
+        )?;
+        writer.create_collection_as_configured(collection_name, kind, versioned)
+    }
+
+    fn create_collection_as_configured(
+        &self,
+        collection_name: &str,
+        kind: CollectionKind,
+        versioned: Option<bool>,
+    ) -> Result<bool, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        super::validate_collection_name(collection_name)?;
+        if self.root.is_database() {
+            return self.create_database_collection(collection_name, kind, versioned);
+        }
+        let existing = self.collection_if_present(collection_name)?;
+        if let Some(collection) = &existing
+            && collection.kind != kind
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::WrongType,
+                format!(
+                    "collection \"{collection_name}\" already exists with kind \"{}\"",
+                    match collection.kind {
+                        CollectionKind::Document => "document",
+                        CollectionKind::File => "file",
+                    }
+                ),
+            ));
+        }
+
+        let catalog = self
+            .root
+            .catalog_root()
+            .join(".fylo-catalog")
+            .join("collections");
+        let descriptor_path = catalog.join(format!("{collection_name}.json"));
+        // An existing collection keeps the width it was built with: the layout
+        // is a property of the root, and the host only chooses for a collection
+        // that does not exist yet.
+        let width = match &existing {
+            Some(collection) => collection.shard_width,
+            // Validated here, not just where the CLI parses it: a host that
+            // builds `RootConfig` directly reaches this with any `u32`, and an
+            // out-of-range width would be written into the descriptor and
+            // become the collection's permanent layout.
+            None => super::validated_shard_width(self.config.shard_width)?,
+        };
+        if existing.is_none() {
+            fs::create_dir_all(&catalog).map_err(NativeStorageError::io)?;
+            let mut descriptor = Map::new();
+            descriptor.insert("version".into(), Value::from(1));
+            descriptor.insert(
+                "kind".into(),
+                Value::from(match kind {
+                    CollectionKind::Document => "document",
+                    CollectionKind::File => "file",
+                }),
+            );
+            descriptor.insert("shardWidth".into(), Value::from(width));
+            if self.creates_segments(kind)? {
+                descriptor.insert(
+                    "layout".into(),
+                    Value::from(CollectionLayout::Segments.as_str()),
+                );
+                crate::change_lineage::ChangeLineage::insert_fresh(&mut descriptor)?;
+            }
+            if versioned == Some(false) {
+                descriptor.insert("versioned".into(), Value::from(false));
+            }
+            let mut encoded = serde_json::to_vec(&Value::Object(descriptor))
+                .map_err(|error| json_error(&error))?;
+            encoded.push(b'\n');
+            durable_replace(&descriptor_path, &encoded)?;
+        }
+
+        let kind_folder = kind.folder_name();
+        let collection_root = self.root.path().join(kind_folder).join(collection_name);
+        let layout = match &existing {
+            Some(collection) => collection.layout,
+            None if self.creates_segments(kind)? => CollectionLayout::Segments,
+            None => CollectionLayout::Files,
+        };
+        if layout == CollectionLayout::Segments {
+            if existing.is_none() && self.segment_container {
+                commit_log::SegmentLayout::create_container(
+                    &self.root,
+                    &collection_root,
+                    collection_name,
+                )?;
+            }
+            commit_log::SegmentLayout::create_empty(&self.root, &collection_root, 0)?;
+            let collection = self.root.collection(collection_name)?;
+            commit_log::SegmentLayout::write_marker(&generation_path(self, &collection))?;
+            return Ok(existing.is_none());
+        }
+        self.create_files_layout(&collection_root, collection_name, existing.is_none())?;
+        Ok(existing.is_none())
+    }
+
+    /// The folders and empty index of a files-layout collection, and the
+    /// incarnation of a new one.
+    fn create_files_layout(
+        &self,
+        collection_root: &Path,
+        collection_name: &str,
+        created: bool,
+    ) -> Result<(), NativeStorageError> {
+        for directory in [
+            collection_root.to_path_buf(),
+            collection_root.join("docs"),
+            collection_root.join(".deleted"),
+            collection_root.join("index"),
+        ] {
+            ensure_directory(&self.root, &directory)?;
+        }
+        // Never rewrite an index that exists: re-creating a populated
+        // collection would otherwise replace its keys with an empty snapshot.
+        let index = collection_root.join("index");
+        write_if_missing(
+            &index.join("manifest.json"),
+            format!(
+                "{{\"format\":\"fylo.local-fs.index.v1\",\"createdAt\":{}}}\n",
+                now_millis()?
+            )
+            .as_bytes(),
+        )?;
+        write_if_missing(&index.join("keys.snapshot"), b"")?;
+        write_if_missing(&index.join("keys.wal"), b"")?;
+        self.record_new_incarnation(collection_name, created)
+    }
+
+    fn record_new_incarnation(
+        &self,
+        collection_name: &str,
+        created: bool,
+    ) -> Result<(), NativeStorageError> {
+        if !created {
+            return Ok(());
+        }
+        self.record_incarnation(collection_name)
+    }
+
+    /// Give a new files-layout collection a fresh incarnation (ADR 0030
+    /// section 3.3), so a cache never takes an entry of an earlier life of
+    /// the same name for this one.
+    fn record_incarnation(&self, collection_name: &str) -> Result<(), NativeStorageError> {
+        let collection = self.root.collection(collection_name)?;
+        let path = collection.incarnation_path();
+        ensure_directory(&self.root, path.parent().expect("incarnation has parent"))?;
+        let incarnation = super::CollectionIncarnation::fresh()?;
+        durable_replace(&path, &incarnation.encode())
+    }
+
+    /// Create a collection of a `.vdbx` database: a directory block whose
+    /// descriptor names a document collection in segments, and the first
+    /// segment and slot of its layout, all in the file. A collection whose
+    /// block exists but whose slots do not is completed.
+    fn create_database_collection(
+        &self,
+        collection_name: &str,
+        kind: CollectionKind,
+        versioned: Option<bool>,
+    ) -> Result<bool, NativeStorageError> {
+        if kind == CollectionKind::File {
+            return Err(NativeRoot::database_unsupported(
+                "a .vdbx database holds no file collections or buckets",
+            ));
+        }
+        if versioned == Some(true) {
+            return Err(NativeRoot::database_unsupported(
+                "a .vdbx database has no version control",
+            ));
+        }
+        let width = super::validated_shard_width(self.config.shard_width)?;
+        self.add_database_collection(collection_name, Self::database_descriptor(width)?)
+    }
+
+    /// The catalog descriptor of a new collection of a `.vdbx` database: a
+    /// document collection in segments at shard width `width`, with a fresh
+    /// change lineage.
+    pub(crate) fn database_descriptor(
+        width: u32,
+    ) -> Result<Map<String, Value>, NativeStorageError> {
+        let mut descriptor = Map::new();
+        descriptor.insert("version".into(), Value::from(1));
+        descriptor.insert("kind".into(), Value::from("document"));
+        descriptor.insert("shardWidth".into(), Value::from(width));
+        descriptor.insert(
+            "layout".into(),
+            Value::from(CollectionLayout::Segments.as_str()),
+        );
+        crate::change_lineage::ChangeLineage::insert_fresh(&mut descriptor)?;
+        Ok(descriptor)
+    }
+
+    /// Add the collection `collection_name` with catalog descriptor
+    /// `descriptor` to this `.vdbx` database root, unless a live collection
+    /// has the name, and complete its layout. Returns whether it was added.
+    pub(crate) fn add_database_collection(
+        &self,
+        collection_name: &str,
+        descriptor: Map<String, Value>,
+    ) -> Result<bool, NativeStorageError> {
+        let database = self.root.database().ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "a directory root has no .vdbx database",
+            )
+        })?;
+        let created = database.collection(collection_name).is_none()
+            && database.add_collection(
+                collection_name,
+                &crate::segments::ContainerMedium::descriptor(descriptor),
+            )?;
+        let collection = self.root.collection(collection_name)?;
+        let _lock = self.lock_collection(&collection)?;
+        commit_log::SegmentLayout::create_in_database(
+            &*collection.segment_medium()?,
+            &collection.path,
+            0,
+        )?;
+        Ok(created)
+    }
+
+    /// Whether a collection created now gets the segment layout: a document
+    /// collection on the native profile when the root asks for segments.
+    fn creates_segments(&self, kind: CollectionKind) -> Result<bool, NativeStorageError> {
+        if self.config.layout != CollectionLayout::Segments || kind != CollectionKind::Document {
+            return Ok(false);
+        }
+        if !super::NativeCollection::SEGMENTS_SUPPORTED {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "this build does not carry the segment layout",
+            ));
+        }
+        if self.filesystem_profile() != super::FilesystemProfile::Native {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "the segment layout requires the native filesystem profile",
+            ));
+        }
+        Ok(true)
+    }
+
+    /// Remove one collection and the descriptor that names it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing collection, an unsafe path, or a failed
+    /// removal.
+    pub fn drop_collection(&self, collection_name: &str) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        super::validate_collection_name(collection_name)?;
+        let Some(collection) = self.collection_if_present(collection_name)? else {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::NotFound,
+                format!("collection \"{collection_name}\" does not exist"),
+            ));
+        };
+        // Recover first: dropping a collection mid-transaction would discard
+        // the journal that says what the interrupted write still owes. In a
+        // database a compaction's copy is an extent the collection owns, so
+        // none may be running.
+        {
+            let _compaction = if self.root.is_database() {
+                Some(CollectionWriteLock::acquire_compaction(
+                    &self.root,
+                    &collection,
+                )?)
+            } else {
+                None
+            };
+            let _lock = self.lock_collection(&collection)?;
+            self.recover_locked(&collection)?;
+            if let Some(database) = self.root.database() {
+                return database.drop_collection(collection_name);
+            }
+        }
+        let segments = Self::segment_medium_of(&collection)?;
+        remove_dir_durable(&collection.path)?;
+        Self::forget_segment_table(segments.as_deref());
+        if collection.uses_segments() {
+            // The fixed segment marker would make a later file collection of the
+            // same name unreadable.
+            let state = generation_path(self, &collection);
+            if let Some(directory) = state.parent()
+                && path_exists_no_follow(directory)?
+            {
+                remove_dir_durable(directory)?;
+            }
+        }
+        let descriptor_path = self
+            .root
+            .catalog_root()
+            .join(".fylo-catalog")
+            .join("collections")
+            .join(format!("{collection_name}.json"));
+        if path_exists_no_follow(&descriptor_path)? {
+            fs::remove_file(&descriptor_path).map_err(NativeStorageError::io)?;
+            remove_companion(&descriptor_path);
+        }
+        self.remove_schema_registry(collection_name)?;
+        Ok(())
+    }
+
+    /// The segment medium of `collection`, or `None` for the file layout.
+    fn segment_medium_of(
+        collection: &super::NativeCollection,
+    ) -> Result<Option<std::sync::Arc<dyn crate::segments::SegmentMedium>>, NativeStorageError>
+    {
+        if !collection.uses_segments() {
+            return Ok(None);
+        }
+        collection.segment_medium().map(Some)
+    }
+
+    /// Forget the location table this process cached for a dropped segment
+    /// collection, so a collection created again at its path never reads it.
+    fn forget_segment_table(medium: Option<&dyn crate::segments::SegmentMedium>) {
+        if let Some(medium) = medium {
+            crate::segments::TableCache::shared().forget(medium);
+        }
+    }
+
+    /// Allocate one process-monotonic TTID for a caller that has none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the system clock is outside the TTID range.
+    pub fn allocate_identifier(&self) -> Result<String, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        generate_ttid()
+    }
+
+    /// Resolve a collection for a record mutation.
+    ///
+    /// Refuses when the collection's recorded width differs from the one this
+    /// process is configured for. The layout is a property of the root while
+    /// the configuration is per process, so letting a write through would have
+    /// it land under a shard the next reader does not look in. Relocating every
+    /// record is bounded only by collection size, so it never happens
+    /// implicitly inside a write — the caller is told which command does it.
+    ///
+    /// Reads are unaffected, and so are recovery, `rebuild`, and `reshard`:
+    /// resharding is the operation that resolves the mismatch.
+    fn writable_collection(
+        &self,
+        collection_name: &str,
+    ) -> Result<super::NativeCollection, NativeStorageError> {
+        let collection = self.root.collection(collection_name)?;
+        if let Some(configured) = self.config.shard_width
+            && configured != collection.shard_width()
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::ShardWidth,
+                format!(
+                    "collection \"{collection_name}\" is sharded at width {} but this process \
+                     is configured for {configured}; run `fylo reshard {collection_name} --width \
+                     {configured}` to move it, or drop the override",
+                    collection.shard_width()
+                ),
+            ));
+        }
+        Ok(collection)
+    }
+
+    fn document_collection(
+        &self,
+        collection_name: &str,
+        operation: &str,
+    ) -> Result<super::NativeCollection, NativeStorageError> {
+        let collection = self.writable_collection(collection_name)?;
+        if collection.kind != CollectionKind::Document {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::WrongType,
+                format!("{operation} requires a document collection"),
+            ));
+        }
+        Ok(collection)
+    }
+
+    fn patch_document_locked(
+        &self,
+        collection: &super::NativeCollection,
+        identifier: &str,
+        target: &Path,
+        canonical: &[u8],
+    ) -> Result<(), NativeStorageError> {
+        let before = record_index_keys(collection, identifier)?;
+        let mut transaction = Transaction::begin(self, collection, "patch-document")?;
+        let outcome = (|| {
+            transaction.capture(target)?;
+            capture_index(&mut transaction, collection)?;
+            self.overwrite_record(target, canonical)?;
+            self.apply_index_delta(
+                &mut transaction,
+                collection,
+                &before,
+                &record_index_keys(collection, identifier)?,
+            )?;
+            transaction.commit()
+        })();
+        finish_transaction(transaction, outcome, "patch")?;
+        Ok(())
+    }
+
+    fn execute_sql_insert(
+        &self,
+        plan: &byckr_query::SqlPlan,
+        codec: &dyn DocumentCodec,
+    ) -> Result<SqlMutationResult, NativeStorageError> {
+        let values = required_object(&plan.ast, "$values", "SQL INSERT values")?;
+        let collection = self.document_collection(&plan.collection, "SQL INSERT")?;
+        let policy = self.policy(&collection, codec);
+        let outcome = policy
+            .encode(&plan.collection, values.clone())
+            .and_then(|encoded| self.insert_sql_row(plan, &encoded));
+        policy.finish(outcome)
+    }
+
+    fn insert_sql_row(
+        &self,
+        plan: &byckr_query::SqlPlan,
+        encoded: &[u8],
+    ) -> Result<SqlMutationResult, NativeStorageError> {
+        for _ in 0..16 {
+            let identifier = generate_ttid()?;
+            match self.put_document(
+                &plan.collection,
+                &identifier,
+                encoded,
+                PutDocumentOptions::default(),
+            ) {
+                Ok(()) => {
+                    return Ok(SqlMutationResult {
+                        kind: SqlMutationResultKind::Insert,
+                        affected: 1,
+                        identifiers: vec![identifier],
+                    });
+                }
+                Err(error) if error.code() == NativeStorageErrorCode::DocumentExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(NativeStorageError::new(
+            NativeStorageErrorCode::ConcurrentWrite,
+            "unable to allocate a unique TTID for SQL INSERT",
+        ))
+    }
+
+    fn execute_sql_update(
+        &self,
+        plan: &byckr_query::SqlPlan,
+        codec: &dyn DocumentCodec,
+    ) -> Result<SqlMutationResult, NativeStorageError> {
+        let changes = required_object(&plan.ast, "$set", "SQL UPDATE assignments")?;
+        let query_value = plan
+            .ast
+            .get("$where")
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Map::new()));
+        let query = StructuredQuery::from_value(&query_value, QueryLimits::default())
+            .map_err(|error| query_error(&error))?;
+        let collection = self.document_collection(&plan.collection, "SQL UPDATE")?;
+        let policy = self.policy(&collection, codec);
+        let outcome = self.update_sql_rows(&collection, (&query, changes), &policy);
+        policy.finish(outcome)
+    }
+
+    fn update_sql_rows(
+        &self,
+        collection: &super::NativeCollection,
+        (query, changes): (&StructuredQuery, &Map<String, Value>),
+        policy: &DocumentPolicy<'_>,
+    ) -> Result<SqlMutationResult, NativeStorageError> {
+        if self.uses_log(collection) {
+            match self.sql_update_logged(collection, (query, changes), policy) {
+                Err(error) if Self::exceeds_log_budget(&error) => {}
+                outcome => return outcome,
+            }
+        }
+        policy.restart();
+        let _lock = self.lock_collection(collection)?;
+        self.recover_locked(collection)?;
+        let mut documents = matching_documents(collection, query, policy)?;
+        for document in &mut documents {
+            let mut fields = document.decoded_fields(&collection.name, policy)?;
+            merge_top_level(&mut fields, changes);
+            document.encoded = policy.encode(&collection.name, Document::copy_fields(&fields))?;
+            document.fields = fields;
+        }
+        self.write_sql_updates(collection, &documents)?;
+        Ok(SqlMutationResult {
+            kind: SqlMutationResultKind::Update,
+            affected: documents.len(),
+            identifiers: documents
+                .into_iter()
+                .map(|document| document.identifier)
+                .collect(),
+        })
+    }
+
+    fn execute_sql_delete(
+        &self,
+        plan: &byckr_query::SqlPlan,
+        codec: &dyn DocumentCodec,
+    ) -> Result<SqlMutationResult, NativeStorageError> {
+        let query = StructuredQuery::from_value(&plan.ast, QueryLimits::default())
+            .map_err(|error| query_error(&error))?;
+        let collection = self.document_collection(&plan.collection, "SQL DELETE")?;
+        if self.uses_log(&collection) {
+            return self.sql_delete_logged(&collection, &query, codec);
+        }
+        let _lock = self.lock_collection(&collection)?;
+        self.recover_locked(&collection)?;
+        let documents = matching_documents(&collection, &query, codec)?;
+        self.write_sql_deletes(&collection, &documents)?;
+        Ok(SqlMutationResult {
+            kind: SqlMutationResultKind::Delete,
+            affected: documents.len(),
+            identifiers: documents
+                .into_iter()
+                .map(|document| document.identifier)
+                .collect(),
+        })
+    }
+
+    fn write_sql_updates(
+        &self,
+        collection: &super::NativeCollection,
+        documents: &[SqlDocument],
+    ) -> Result<(), NativeStorageError> {
+        if documents.is_empty() {
+            return Ok(());
+        }
+        let before = record_index_keys_for(collection, documents)?;
+        let mut transaction = Transaction::begin(self, collection, "update-many")?;
+        let outcome = (|| {
+            capture_documents(&mut transaction, documents)?;
+            capture_index(&mut transaction, collection)?;
+            for document in documents {
+                self.overwrite_record(&document.path, &document.encoded)?;
+            }
+            self.apply_index_delta(
+                &mut transaction,
+                collection,
+                &before,
+                &record_index_keys_for(collection, documents)?,
+            )?;
+            transaction.commit()
+        })();
+        finish_transaction(transaction, outcome, "SQL UPDATE")
+    }
+
+    fn write_sql_deletes(
+        &self,
+        collection: &super::NativeCollection,
+        documents: &[SqlDocument],
+    ) -> Result<(), NativeStorageError> {
+        if documents.is_empty() {
+            return Ok(());
+        }
+        for document in documents {
+            self.require_pair_destination_absent(&deleted_document_path(
+                collection,
+                &document.identifier,
+            ))?;
+        }
+        let before = record_index_keys_for(collection, documents)?;
+        let mut transaction = Transaction::begin(self, collection, "delete-many")?;
+        let outcome = (|| {
+            capture_documents(&mut transaction, documents)?;
+            capture_index(&mut transaction, collection)?;
+            for document in documents {
+                let target = deleted_document_path(collection, &document.identifier);
+                transaction.capture(&target)?;
+                ensure_deleted_parent(self, &target)?;
+                self.move_record_pair(&document.path, &target)?;
+                sync_parent(&document.path)?;
+                sync_parent(&target)?;
+                failpoint("after-delete-rename")?;
+            }
+            // Every record moved under `.deleted`, which is not indexed.
+            self.apply_index_delta(&mut transaction, collection, &before, &BTreeSet::new())?;
+            transaction.commit()
+        })();
+        finish_transaction(transaction, outcome, "SQL DELETE")
+    }
+
+    fn recover_locked(
+        &self,
+        collection: &super::NativeCollection,
+    ) -> Result<bool, NativeStorageError> {
+        self.require_no_pending_migration(collection)?;
+        let log_recovered = if self.profile_uses_log() {
+            self.settle_log(collection)?
+        } else {
+            false
+        };
+        let journal_recovered = self.recover_journal_locked(collection)?;
+        let settled = self.settle_log_after_journal(collection, journal_recovered)?;
+        let index_compacted = commit_log::LogCheckpoint::compact_index(collection)?;
+        Ok(log_recovered || journal_recovered || settled || index_compacted)
+    }
+
+    /// A journal recovery leaves the collection stable, so a log the
+    /// recovery found unsettled is checkpointed now, and a second recovery
+    /// finds nothing left to do.
+    fn settle_log_after_journal(
+        &self,
+        collection: &super::NativeCollection,
+        journal_recovered: bool,
+    ) -> Result<bool, NativeStorageError> {
+        if !journal_recovered || !self.profile_uses_log() {
+            return Ok(false);
+        }
+        self.settle_log(collection)
+    }
+
+    /// Finish a layout migration a crash interrupted. The caller's view of
+    /// the collection then names the wrong layout, so it is told to retry.
+    pub(crate) fn require_no_pending_migration(
+        &self,
+        collection: &super::NativeCollection,
+    ) -> Result<(), NativeStorageError> {
+        if self.finish_layout_migration_if_pending(collection)? {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::ConcurrentWrite,
+                "an interrupted layout migration was completed; retry the operation",
+            ));
+        }
+        Ok(())
+    }
+
+    fn recover_journal_locked(
+        &self,
+        collection: &super::NativeCollection,
+    ) -> Result<bool, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        // A collection of a `.vdbx` database writes only through its log,
+        // which recovery has settled; it has no transaction journal.
+        if collection.database_block().is_some() {
+            return Ok(false);
+        }
+        let generation = collection.stored_generation()?;
+        if generation.state == super::GenerationStatus::Stable {
+            cleanup_orphan_transactions(self, collection)?;
+            return Ok(false);
+        }
+        let identifier = generation.transaction_id.ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "writing generation has no transaction identifier",
+            )
+        })?;
+        validate_transaction_segment(&identifier)?;
+        let root = transaction_root(self, collection, &identifier);
+        self.root.verify_path(&root, ExpectedType::Directory)?;
+        let manifest: TransactionManifest =
+            read_bounded_json(&root.join("transaction.json"), MAX_TRANSACTION_BYTES)?;
+        manifest.validate(collection.name(), &identifier)?;
+        let captures = read_captures(&root)?;
+        if manifest.phase == TransactionPhase::Active {
+            restore_captures(&self.root, &collection.path, &root, &captures)?;
+            rebuild_restored_index(self, collection, &root, &captures)?;
+        } else {
+            self.rebuild_index(collection)?;
+        }
+        write_generation(
+            self,
+            collection,
+            &GenerationRecord::stable(manifest.generation_before.saturating_add(2)),
+        )?;
+        remove_dir_durable(&root)?;
+        Ok(true)
+    }
+
+    /// Record one record's index change as a WAL append instead of walking the
+    /// whole collection.
+    ///
+    /// An index key embeds the identifier of the record that produced it, so
+    /// no key of one record is derivable from another and a mutation can only
+    /// ever add or remove its own. `before` is read before the mutation and
+    /// `after` after it; either is empty when the record does not exist at
+    /// that point, which is what a create and a delete respectively see.
+    fn apply_index_delta(
+        &self,
+        transaction: &mut Transaction<'_>,
+        collection: &super::NativeCollection,
+        before: &BTreeSet<String>,
+        after: &BTreeSet<String>,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        Self::require_index_room(transaction, collection, (before, after))?;
+        let mut appended = Vec::new();
+        for (sign, key) in before
+            .difference(after)
+            .map(|key| (b'-', key))
+            .chain(after.difference(before).map(|key| (b'+', key)))
+        {
+            appended.push(sign);
+            appended.push(b'\t');
+            appended.extend_from_slice(key.as_bytes());
+            appended.push(b'\n');
+        }
+        if appended.is_empty() {
+            return Ok(());
+        }
+        let index = collection.path.join("index");
+        ensure_directory(&self.root, &index)?;
+        transaction.record_index_append();
+        append_synced(&index.join("keys.wal"), &appended)?;
+        compact_index_if_large(transaction, collection)
+    }
+
+    /// Refuse a record change whose index keys do not fit, before the index
+    /// is touched, so the transaction's rollback only restores the record.
+    fn require_index_room(
+        transaction: &mut Transaction<'_>,
+        collection: &super::NativeCollection,
+        (before, after): (&BTreeSet<String>, &BTreeSet<String>),
+    ) -> Result<(), NativeStorageError> {
+        let removed: BTreeSet<String> = before.difference(after).cloned().collect();
+        let added: BTreeSet<String> = after.difference(before).cloned().collect();
+        let refused = commit_log::IndexGrowth::of(&removed, &added).require_room(collection);
+        refused.inspect_err(|_| transaction.refuse_index_change())
+    }
+
+    fn rebuild_index(
+        &self,
+        collection: &super::NativeCollection,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let mut keys = BTreeSet::new();
+        match collection.kind {
+            CollectionKind::Document => {
+                for identifier in collection.document_ids()? {
+                    let stored = collection.read_document(&identifier)?;
+                    let document = Document::parse(&stored.bytes, DocumentLimits::default())
+                        .map_err(|error| {
+                            NativeStorageError::new(
+                                NativeStorageErrorCode::CorruptDocument,
+                                format!("document is invalid during index rebuild: {error}"),
+                            )
+                        })?;
+                    keys.extend(index_entries_with_words(
+                        identifier.as_str(),
+                        document.fields(),
+                        collection.word_fields(),
+                        |_, value| Ok::<_, NativeStorageError>(IndexLookupValue::plain(value)),
+                    )?);
+                }
+            }
+            CollectionKind::File => {
+                for identifier in collection.raw_file_ids()? {
+                    let stored = collection.read_raw_file(&identifier)?;
+                    let fields = raw_file_index_fields(&identifier, &stored)?;
+                    keys.extend(index_entries_for_document(
+                        identifier.as_str(),
+                        &fields,
+                        |_, value| Ok::<_, NativeStorageError>(IndexLookupValue::plain(value)),
+                    )?);
+                }
+            }
+        }
+        let index = collection.path.join("index");
+        ensure_directory(&self.root, &index)?;
+        let mut snapshot = Vec::new();
+        for key in keys {
+            snapshot.extend_from_slice(key.as_bytes());
+            snapshot.push(b'\n');
+        }
+        durable_replace(&index.join("keys.snapshot"), &snapshot)?;
+        durable_replace(&index.join("keys.wal"), b"")?;
+        Ok(())
+    }
+}
+
+struct RawChecksumCheck {
+    path: PathBuf,
+    expected: Option<String>,
+    actual: String,
+}
+
+fn verify_raw_file_checksum(
+    collection: &super::NativeCollection,
+    state_folder: &Path,
+    identifier: &str,
+) -> Result<RawChecksumCheck, NativeStorageError> {
+    let path = collection.find_raw_file_path(state_folder, identifier)?;
+    let (mut file, _) = collection
+        .root
+        .open_file(&path, super::MAX_RAW_FILE_BYTES)?;
+    let attributes =
+        super::record_attributes::RecordAttributes::read(&collection.root, &file, &path)?;
+    let bytes = super::read_bounded(
+        (&mut file).take(super::MAX_RAW_FILE_BYTES.saturating_add(1)),
+        super::MAX_RAW_FILE_BYTES,
+    )?;
+    attributes.verify(&collection.root, &file, &path)?;
+    let expected = attributes
+        .get(super::CHECKSUM_XATTR)
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(|stamp| stamp.split(':').next())
+        .filter(|checksum| {
+            checksum.len() == 64
+                && checksum
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .map(ToOwned::to_owned);
+    Ok(RawChecksumCheck {
+        path,
+        expected,
+        actual: super::sha256_hex(&bytes),
+    })
+}
+
+fn stamp_raw_file_checksum(
+    root: &NativeRoot,
+    path: &Path,
+    checksum: &str,
+) -> Result<(), NativeStorageError> {
+    let metadata = fs::metadata(path).map_err(NativeStorageError::io)?;
+    let stamp = format!(
+        "{checksum}:{}:{}",
+        metadata.len(),
+        super::modified_millis(&metadata)?
+    );
+    super::record_attributes::RecordAttributes::write(
+        root,
+        path,
+        super::CHECKSUM_XATTR,
+        stamp.as_bytes(),
+    )?;
+    if root.filesystem_profile() == super::FilesystemProfile::Native {
+        restore_modified(path, &metadata)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct SqlDocument {
+    identifier: String,
+    path: PathBuf,
+    fields: Map<String, Value>,
+    /// Whether `fields` already went through the codec's `decode`.
+    decoded: bool,
+    encoded: Vec<u8>,
+}
+
+impl SqlDocument {
+    /// The fields an `UPDATE` merges its assignments into.
+    fn decoded_fields(
+        &mut self,
+        collection: &str,
+        codec: &dyn DocumentCodec,
+    ) -> Result<Map<String, Value>, NativeStorageError> {
+        let fields = std::mem::take(&mut self.fields);
+        if self.decoded {
+            return Ok(fields);
+        }
+        codec.decode(collection, fields)
+    }
+}
+
+/// The live documents a SQL `UPDATE` or `DELETE` statement's `WHERE`
+/// matches. Where `codec` says decoding changes what a query sees (a
+/// declared encrypted field, or a document below the head schema version),
+/// each body is matched as a read returns it.
+fn matching_documents(
+    collection: &super::NativeCollection,
+    query: &StructuredQuery,
+    codec: &dyn DocumentCodec,
+) -> Result<Vec<SqlDocument>, NativeStorageError> {
+    let mut matches = Vec::new();
+    let decoded = codec.decodes_for_query(collection.name())?;
+    for identifier in collection.document_ids()? {
+        let stored = collection.read_document(&identifier)?;
+        let mut fields = parse_document_fields(&stored.bytes)?;
+        if decoded {
+            fields = codec.decode(collection.name(), fields)?;
+        }
+        let timestamps = TtidTimestamps::decode(&identifier).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::InvalidDocumentId,
+                format!("document TTID is invalid: {error}"),
+            )
+        })?;
+        if !query.matches(&fields, timestamps.created_at, stored.modified_millis) {
+            continue;
+        }
+        matches.push(SqlDocument {
+            identifier,
+            path: stored.path,
+            fields,
+            decoded,
+            encoded: Vec::new(),
+        });
+        if query
+            .limit()
+            .is_some_and(|limit| limit > 0 && matches.len() >= limit)
+        {
+            break;
+        }
+    }
+    Ok(matches)
+}
+
+fn record_target(
+    collection: &super::NativeCollection,
+    identifier: &str,
+) -> Result<PathBuf, NativeStorageError> {
+    match collection.kind {
+        CollectionKind::Document => Ok(collection.read_document(identifier)?.path),
+        CollectionKind::File => Ok(collection.read_raw_file(identifier)?.path),
+    }
+}
+
+fn next_meta_updated_at(root: &NativeRoot, path: &Path) -> Result<u64, NativeStorageError> {
+    let file = File::open(path).map_err(NativeStorageError::io)?;
+    let previous = super::record_attributes::RecordAttributes::read(root, &file, path)?
+        .get(super::META_UPDATED_XATTR)
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let now = super::wall_clock()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::Io,
+                format!("system clock is before the Unix epoch: {error}"),
+            )
+        })?
+        .as_millis();
+    let now = u64::try_from(now).map_err(|_| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::Io,
+            "system clock exceeds the metadata timestamp range",
+        )
+    })?;
+    Ok(now.max(previous.saturating_add(1)))
+}
+
+/// Records that are not already under the canonical shard, with where they go.
+/// Remove shard directories a reshard emptied.
+///
+/// Enumeration costs one directory read per shard, so a widening left behind
+/// as many empty directories as it created and the collection would stay slow
+/// to walk forever. `remove_dir` refuses a non-empty directory, which is
+/// exactly the guard wanted here: a shard that still holds a record is left
+/// alone rather than inspected and raced. A shard holding nothing but the
+/// orphaned companions of records that moved out is empty all the same.
+fn remove_emptied_shards(root: &Path) -> Result<(), NativeStorageError> {
+    let Ok(shards) = read_dir_without_companions(root) else {
+        return Ok(());
+    };
+    for shard in shards {
+        let shard = shard.map_err(NativeStorageError::io)?;
+        if !shard.metadata().map_err(NativeStorageError::io)?.is_dir() {
+            continue;
+        }
+        // A failure means the shard still holds records, or vanished under a
+        // concurrent recovery. Either way it is not this pass's business.
+        if remove_emptied_dir(&shard.path()).is_ok() {
+            sync_parent(&shard.path())?;
+        }
+    }
+    Ok(())
+}
+
+fn reshard_moves(
+    root: &Path,
+    width: u32,
+    leaving: &[u32],
+) -> Result<Vec<(PathBuf, PathBuf)>, NativeStorageError> {
+    let mut moves = Vec::new();
+    let Ok(shards) = read_dir_without_companions(root) else {
+        return Ok(moves);
+    };
+    for shard in shards {
+        let shard = shard.map_err(NativeStorageError::io)?;
+        if !shard.metadata().map_err(NativeStorageError::io)?.is_dir() {
+            continue;
+        }
+        for record in read_dir_without_companions(shard.path()).map_err(NativeStorageError::io)? {
+            let record = record.map_err(NativeStorageError::io)?;
+            let path = record.path();
+            if !fs::symlink_metadata(&path)
+                .map_err(NativeStorageError::io)?
+                .is_file()
+            {
+                continue;
+            }
+            let filename = record.file_name().to_string_lossy().into_owned();
+            if super::is_scratch_file(&filename) {
+                continue;
+            }
+            let Some(identifier) = super::raw_file_identifier(&filename) else {
+                continue;
+            };
+            if crate::validate_ttid_shape(identifier).is_err() {
+                continue;
+            }
+            let target = root
+                .join(crate::shard_of(identifier, width))
+                .join(&filename);
+            if target != path {
+                moves.push((path, target));
+            }
+        }
+    }
+    let _ = leaving;
+    Ok(moves)
+}
+
+fn parse_document_fields(bytes: &[u8]) -> Result<Map<String, Value>, NativeStorageError> {
+    Document::parse(bytes, DocumentLimits::default())
+        .map(Document::into_fields)
+        .map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptDocument,
+                format!("document is invalid: {error}"),
+            )
+        })
+}
+
+fn encode_document_fields(fields: Map<String, Value>) -> Result<Vec<u8>, NativeStorageError> {
+    Document::try_from_value(Value::Object(fields), DocumentLimits::default())
+        .and_then(|document| document.encode())
+        .map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptDocument,
+                format!("document cannot be encoded: {error}"),
+            )
+        })
+}
+
+fn merge_top_level(target: &mut Map<String, Value>, changes: &Map<String, Value>) {
+    for (field, value) in changes {
+        target.insert(field.clone(), value.clone());
+    }
+}
+
+fn required_object<'a>(
+    value: &'a Value,
+    key: &str,
+    description: &str,
+) -> Result<&'a Map<String, Value>, NativeStorageError> {
+    value.get(key).and_then(Value::as_object).ok_or_else(|| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::InvalidQuery,
+            format!("{description} must be an object"),
+        )
+    })
+}
+
+fn capture_documents(
+    transaction: &mut Transaction<'_>,
+    documents: &[SqlDocument],
+) -> Result<(), NativeStorageError> {
+    for document in documents {
+        transaction.capture(&document.path)?;
+    }
+    Ok(())
+}
+
+/// Prefix-index keys the collection's live record contributes right now.
+///
+/// A record that does not exist contributes none, so this is also the correct
+/// "before" for a create and "after" for a delete.
+fn record_index_keys(
+    collection: &super::NativeCollection,
+    identifier: &str,
+) -> Result<BTreeSet<String>, NativeStorageError> {
+    let plain = |_: &str, value: &str| Ok::<_, NativeStorageError>(IndexLookupValue::plain(value));
+    match collection.kind {
+        CollectionKind::Document => match collection.read_document(identifier) {
+            Ok(stored) => {
+                let document =
+                    Document::parse(&stored.bytes, DocumentLimits::default()).map_err(|error| {
+                        NativeStorageError::new(
+                            NativeStorageErrorCode::CorruptDocument,
+                            format!("document is invalid during index update: {error}"),
+                        )
+                    })?;
+                index_entries_with_words(
+                    identifier,
+                    document.fields(),
+                    collection.word_fields(),
+                    plain,
+                )
+            }
+            Err(error) if error.code() == NativeStorageErrorCode::NotFound => Ok(BTreeSet::new()),
+            Err(error) => Err(error),
+        },
+        CollectionKind::File => match collection.read_raw_file(identifier) {
+            Ok(stored) => {
+                let fields = raw_file_index_fields(identifier, &stored)?;
+                index_entries_for_document(identifier, &fields, plain)
+            }
+            Err(error) if error.code() == NativeStorageErrorCode::NotFound => Ok(BTreeSet::new()),
+            Err(error) => Err(error),
+        },
+    }
+}
+
+/// Fold the WAL into the snapshot once a reader would carry too much of it.
+///
+/// The threshold grows with the snapshot up to a fixed ceiling (see
+/// [`crate::index_limit::IndexLimit`]), so a load of `n` records pays
+/// for `O(log n)` compactions until the snapshot passes the ceiling, and one
+/// per ceiling's worth of keys after it. Compaction merges the same bytes the
+/// reader already merges, so unlike a rebuild it never reads a record.
+fn compact_index_if_large(
+    transaction: &mut Transaction<'_>,
+    collection: &super::NativeCollection,
+) -> Result<(), NativeStorageError> {
+    if !commit_log::LogCheckpoint::index_wants_compaction(collection)? {
+        return Ok(());
+    }
+    transaction.capture(&collection.path.join("index").join("keys.snapshot"))?;
+    commit_log::LogCheckpoint::fold_index(collection)
+}
+
+/// Union of [`record_index_keys`] over one statement's matched records.
+fn record_index_keys_for(
+    collection: &super::NativeCollection,
+    documents: &[SqlDocument],
+) -> Result<BTreeSet<String>, NativeStorageError> {
+    let mut keys = BTreeSet::new();
+    for document in documents {
+        keys.extend(record_index_keys(collection, &document.identifier)?);
+    }
+    Ok(keys)
+}
+
+/// Capture what an index delta changes: the WAL it appends to. The snapshot is
+/// captured only if compaction is about to rewrite it, so a write no longer
+/// copies the whole snapshot. Rollback and recovery rebuild the index from the
+/// records either way; the capture covers a rollback whose rebuild fails.
+fn capture_index(
+    transaction: &mut Transaction<'_>,
+    collection: &super::NativeCollection,
+) -> Result<(), NativeStorageError> {
+    transaction.capture(&collection.path.join("index").join("keys.wal"))
+}
+
+/// Capture both index files, for a transaction that rewrites the whole index.
+fn capture_index_files(
+    transaction: &mut Transaction<'_>,
+    collection: &super::NativeCollection,
+) -> Result<(), NativeStorageError> {
+    transaction.capture(&collection.path.join("index").join("keys.snapshot"))?;
+    capture_index(transaction, collection)
+}
+
+fn rebuild_restored_index(
+    writer: &NativeWriteRoot,
+    collection: &super::NativeCollection,
+    transaction_root: &Path,
+    captures: &[Capture],
+) -> Result<(), NativeStorageError> {
+    if captures_whole_index(captures) {
+        return Ok(());
+    }
+    writer
+        .rebuild_index(collection)
+        .or_else(|_| restore_captures(&writer.root, &collection.path, transaction_root, captures))
+}
+
+fn captures_whole_index(captures: &[Capture]) -> bool {
+    captures_path(captures, "index/keys.snapshot") && captures_path(captures, "index/keys.wal")
+}
+
+fn captures_path(captures: &[Capture], path: &str) -> bool {
+    captures.iter().any(|capture| capture.path == path)
+}
+
+fn finish_transaction(
+    mut transaction: Transaction<'_>,
+    outcome: Result<(), NativeStorageError>,
+    operation: &str,
+) -> Result<(), NativeStorageError> {
+    if let Err(error) = outcome {
+        if let Err(rollback) = transaction.rollback() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Io,
+                format!("{operation} failed ({error}) and rollback failed ({rollback})"),
+            ));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn deleted_document_path(collection: &super::NativeCollection, identifier: &str) -> PathBuf {
+    collection
+        .path
+        .join(".deleted")
+        .join(crate::shard_of(identifier, collection.shard_width()))
+        .join(format!("{identifier}.json"))
+}
+
+fn ensure_deleted_parent(
+    writer: &NativeWriteRoot,
+    target: &Path,
+) -> Result<(), NativeStorageError> {
+    let parent = target.parent().ok_or_else(|| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::UnsafePath,
+            "tombstone target has no parent",
+        )
+    })?;
+    ensure_directory(&writer.root, parent)
+}
+
+fn generate_ttid() -> Result<String, NativeStorageError> {
+    let identifier = encode_base36(next_ttid_tick()?);
+    validate_ttid_shape(&identifier)?;
+    Ok(identifier)
+}
+
+/// The next TTID clock tick of this process: 100-nanosecond units since the
+/// Unix epoch, always above every tick this process drew before, whether
+/// for a TTID or for a segment layout id (ADR 0027).
+pub(crate) fn next_ttid_tick() -> Result<u64, NativeStorageError> {
+    let elapsed = super::wall_clock()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::Io,
+                format!("system clock is before the Unix epoch: {error}"),
+            )
+        })?;
+    let clock_ticks = u64::try_from(elapsed.as_nanos() / 100).map_err(|_| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::Io,
+            "system clock exceeds the TTID timestamp range",
+        )
+    })?;
+    // `fetch_update` returns the previous value, so the monotonic tick is
+    // recomputed here from exactly the same expression the closure stored.
+    let previous = TTID_SEQUENCE
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |previous| {
+            Some(clock_ticks.max(previous.saturating_add(1)))
+        })
+        .unwrap_or_else(|previous| previous);
+    Ok(clock_ticks.max(previous.saturating_add(1)))
+}
+
+fn encode_base36(mut value: u64) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let mut encoded = [0_u8; 13];
+    let mut cursor = encoded.len();
+    loop {
+        cursor -= 1;
+        encoded[cursor] = DIGITS[(value % 36) as usize];
+        value /= 36;
+        if value == 0 {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&encoded[cursor..]).into_owned()
+}
+
+fn query_error(error: &byckr_query::QueryError) -> NativeStorageError {
+    NativeStorageError::new(
+        NativeStorageErrorCode::InvalidQuery,
+        format!("SQL mutation is invalid: {error}"),
+    )
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum TransactionPhase {
+    Active,
+    Committed,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TransactionManifest {
+    format: String,
+    id: String,
+    collection: String,
+    operation: String,
+    phase: TransactionPhase,
+    generation_before: u64,
+    event_offset: u64,
+    captures: Vec<serde_json::Value>,
+}
+
+impl TransactionManifest {
+    fn validate(&self, collection: &str, identifier: &str) -> Result<(), NativeStorageError> {
+        if self
+            .invalid_conditions(collection, identifier)
+            .into_iter()
+            .any(|condition| condition)
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "transaction manifest has an invalid schema or identity",
+            ));
+        }
+        Ok(())
+    }
+
+    fn invalid_conditions(&self, collection: &str, identifier: &str) -> [bool; 6] {
+        [
+            self.format != TRANSACTION_FORMAT,
+            self.id != identifier,
+            self.collection != collection,
+            self.operation.is_empty(),
+            self.operation.len() > 256,
+            !self.captures.is_empty(),
+        ]
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct GenerationRecord {
+    format: String,
+    generation: u64,
+    state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transaction_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log: Option<super::LogPosition>,
+}
+
+impl GenerationRecord {
+    fn writing(generation: u64, transaction_id: String) -> Self {
+        Self {
+            format: GENERATION_FORMAT.into(),
+            generation,
+            state: "writing".into(),
+            transaction_id: Some(transaction_id),
+            log: None,
+        }
+    }
+
+    fn stable(generation: u64) -> Self {
+        Self {
+            format: GENERATION_FORMAT.into(),
+            generation,
+            state: "stable".into(),
+            transaction_id: None,
+            log: None,
+        }
+    }
+
+    /// This record in the registry-fenced format when `fenced` holds (ADR
+    /// 0017 section 3). The v3 format admits a log position or none.
+    pub(crate) fn fenced(mut self, fenced: bool) -> Self {
+        if fenced {
+            super::GenerationState::FORMAT_V3.clone_into(&mut self.format);
+        }
+        self
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Capture {
+    path: String,
+    present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backup: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<u32>,
+    #[serde(rename = "mtimeMs", skip_serializing_if = "Option::is_none")]
+    mtime_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    xattrs: Option<Vec<CapturedAttribute>>,
+}
+
+impl Capture {
+    fn validate_backups(
+        root: &NativeRoot,
+        transaction_root: &Path,
+        captures: &[Self],
+    ) -> Result<(), NativeStorageError> {
+        for capture in captures.iter().filter(|capture| capture.present) {
+            capture.validate_backup(root, transaction_root)?;
+        }
+        Ok(())
+    }
+
+    fn validate_backup(
+        &self,
+        root: &NativeRoot,
+        transaction_root: &Path,
+    ) -> Result<(), NativeStorageError> {
+        self.validate_mode()?;
+        let backup = transaction_root.join(safe_relative_path(
+            self.backup.as_deref().ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "EFS before-image backup is absent",
+                )
+            })?,
+        )?);
+        let (mut file, metadata) = root.open_file(&backup, super::MAX_RAW_FILE_BYTES)?;
+        self.validate_manifest(&mut file)?;
+        super::sidecar_attributes::SidecarAttributes::verify_owner(root, &metadata, true)?;
+        self.validate_timestamp(&metadata)?;
+        root.verify_open_file_identity(&backup, &file)
+    }
+
+    fn validate_mode(&self) -> Result<(), NativeStorageError> {
+        let mode = self.mode.ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "EFS before-image mode is absent",
+            )
+        })?;
+        let manifest = self.path.ends_with(super::SIDECAR_SUFFIX);
+        if mode > 0o777 || mode & 0o400 == 0 || (manifest && mode != 0o600) {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "EFS before-image mode is inconsistent",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_manifest(&self, file: &mut File) -> Result<(), NativeStorageError> {
+        if self.path.ends_with(super::SIDECAR_SUFFIX) {
+            let maximum = 16 * 1024 * 1024;
+            let bytes = super::read_bounded(file.take(maximum + 1), maximum)?;
+            super::sidecar_attributes::SidecarAttributes::decode(&bytes)?;
+        }
+        Ok(())
+    }
+
+    fn validate_timestamp(&self, metadata: &fs::Metadata) -> Result<(), NativeStorageError> {
+        let expected = self.mtime_ms.ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "EFS before-image timestamp is absent",
+            )
+        })?;
+        if !expected.is_finite()
+            || expected < 0.0
+            || modified_millis(metadata)?.partial_cmp(&expected) != Some(std::cmp::Ordering::Equal)
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "EFS before-image timestamp is inconsistent",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CapturedAttribute {
+    pub(crate) name: String,
+    pub(crate) value: String,
+}
+
+struct Transaction<'a> {
+    writer: &'a NativeWriteRoot,
+    collection: &'a super::NativeCollection,
+    manifest: TransactionManifest,
+    root: PathBuf,
+    captures: Vec<Capture>,
+    captured: BTreeSet<PathBuf>,
+    finished: bool,
+    /// The collection's schema version count before this transaction, kept
+    /// current by its commit (ADR 0017 section 6).
+    schema_counts: Option<schema_counts::SchemaVersionCounts>,
+    /// Whether this transaction appended to the index log.
+    index_appended: bool,
+    /// Whether this transaction refused a record change whose index keys
+    /// did not fit.
+    index_refused: bool,
+}
+
+impl<'a> Transaction<'a> {
+    fn begin(
+        writer: &'a NativeWriteRoot,
+        collection: &'a super::NativeCollection,
+        operation: &str,
+    ) -> Result<Self, NativeStorageError> {
+        writer.root.assert_profile_owned_fresh()?;
+        let generation = collection.generation()?;
+        if generation.state != super::GenerationStatus::Stable {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::ConcurrentWrite,
+                "collection requires recovery before writing",
+            ));
+        }
+        let identifier = unique_name("rust-tx");
+        let root = transaction_root(writer, collection, &identifier);
+        ensure_directory(&writer.root, &root)?;
+        ensure_directory(&writer.root, &root.join("captures"))?;
+        ensure_directory(&writer.root, &root.join("before"))?;
+        let event_offset = fs::metadata(
+            collection
+                .path
+                .join("events")
+                .join(format!("{}.ndjson", collection.name())),
+        )
+        .map_or(0, |metadata| metadata.len());
+        let manifest = TransactionManifest {
+            format: TRANSACTION_FORMAT.into(),
+            id: identifier.clone(),
+            collection: collection.name().into(),
+            operation: operation.into(),
+            phase: TransactionPhase::Active,
+            generation_before: generation.generation,
+            event_offset,
+            captures: Vec::new(),
+        };
+        // Counted while the generation is still stable, so a count rebuilt
+        // here is stamped with the generation it describes.
+        let schema_counts =
+            NativeWriteRoot::schema_counts_before_commit(collection, generation.generation);
+        write_json_durable(&root.join("transaction.json"), &manifest)?;
+        write_generation(
+            writer,
+            collection,
+            &GenerationRecord::writing(generation.generation.saturating_add(1), identifier),
+        )?;
+        let mut transaction = Self {
+            writer,
+            collection,
+            manifest,
+            root,
+            captures: Vec::new(),
+            captured: BTreeSet::new(),
+            finished: false,
+            schema_counts,
+            index_appended: false,
+            index_refused: false,
+        };
+        // The manifest and the writing generation are already durable, so a
+        // failure here owns them. Returning the error alone would leave a live
+        // process having published a transaction it never started, forcing the
+        // next opener to recover state this one could have undone itself.
+        //
+        // Nothing has been captured and no record has changed, so undoing
+        // exactly what this function published is the whole job. A full
+        // rollback would also rebuild the index, which is work this transaction
+        // never invalidated and which can fail for reasons that have nothing to
+        // do with it.
+        if let Err(error) = failpoint("after-state-writing") {
+            transaction.abandon()?;
+            return Err(error);
+        }
+        Ok(transaction)
+    }
+
+    /// Undo a transaction that published its journal but changed nothing.
+    fn abandon(&mut self) -> Result<(), NativeStorageError> {
+        self.writer.root.assert_profile_owned_fresh()?;
+        if self.finished {
+            return Ok(());
+        }
+        write_generation(
+            self.writer,
+            self.collection,
+            &GenerationRecord::stable(self.manifest.generation_before),
+        )?;
+        self.finished = true;
+        remove_dir_durable(&self.root)
+    }
+
+    fn capture(&mut self, target: &Path) -> Result<(), NativeStorageError> {
+        self.writer.root.assert_profile_owned()?;
+        let relative = self.capture_relative_path(target)?;
+        if !self.captured.insert(relative.to_owned()) {
+            return Ok(());
+        }
+        // Where attributes live in a sidecar file, that file is part of the
+        // record. Capturing it as its own entry means the before-image, the
+        // restore, and the remove-if-absent paths all cover it without any of
+        // them learning what a sidecar is. Bounded at one level: a sidecar's
+        // own sidecar is never captured.
+        if (self.writer.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1
+            || cfg!(all(
+                not(unix),
+                not(windows),
+                not(all(target_arch = "wasm32", target_os = "unknown"))
+            )))
+            && !target
+                .as_os_str()
+                .to_string_lossy()
+                .ends_with(super::SIDECAR_SUFFIX)
+            // Index files are derived and never carry a sidecar.
+            && relative.components().next() != Some(std::path::Component::Normal("index".as_ref()))
+        {
+            self.capture(&super::sidecar_path(target))?;
+        }
+        let present = path_exists_no_follow(target)?;
+        let index = self.captures.len();
+        let capture = if present {
+            self.writer.root.verify_path(target, ExpectedType::File)?;
+            let metadata =
+                if self.writer.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                    // Over NFS a path stat can be answered from the attribute
+                    // cache and predate another client's last write. Opening
+                    // revalidates it (close-to-open), so the handle's metadata is
+                    // what the before-image copy will see.
+                    self.writer
+                        .root
+                        .open_file(target, super::MAX_RAW_FILE_BYTES)?
+                        .1
+                } else {
+                    fs::symlink_metadata(target).map_err(NativeStorageError::io)?
+                };
+            if self.writer.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                super::sidecar_attributes::SidecarAttributes::verify_owner(
+                    &self.writer.root,
+                    &metadata,
+                    target
+                        .as_os_str()
+                        .to_string_lossy()
+                        .ends_with(super::SIDECAR_SUFFIX),
+                )?;
+            }
+            let backup = PathBuf::from("before").join(format!("{index:06}.bin"));
+            if self.writer.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                let before_image = copy_durable_with_mode(
+                    target,
+                    &self.root.join(&backup),
+                    Some(0o600),
+                    Some(metadata.modified().map_err(NativeStorageError::io)?),
+                )?;
+                let captured = before_image.metadata().map_err(NativeStorageError::io)?;
+                super::sidecar_attributes::SidecarAttributes::verify_owner(
+                    &self.writer.root,
+                    &captured,
+                    true,
+                )?;
+                if captured.modified().map_err(NativeStorageError::io)?
+                    != metadata.modified().map_err(NativeStorageError::io)?
+                {
+                    return Err(NativeStorageError::new(
+                        NativeStorageErrorCode::CorruptMetadata,
+                        "EFS before-image did not preserve the exact timestamp",
+                    ));
+                }
+            } else {
+                copy_durable(target, &self.root.join(&backup))?;
+            }
+            Capture {
+                path: portable_path(relative)?,
+                present: true,
+                backup: Some(portable_path(&backup)?),
+                mode: Some(native_mode(&metadata)),
+                mtime_ms: Some(modified_millis(&metadata)?),
+                xattrs: Some(
+                    if self.writer.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                        Vec::new()
+                    } else {
+                        capture_attributes(target)?
+                    },
+                ),
+            }
+        } else {
+            Capture {
+                path: portable_path(relative)?,
+                present: false,
+                backup: None,
+                mode: None,
+                mtime_ms: None,
+                xattrs: None,
+            }
+        };
+        write_json_durable(
+            &self.root.join("captures").join(format!("{index:06}.json")),
+            &capture,
+        )?;
+        self.captures.push(capture);
+        failpoint("after-capture")?;
+        Ok(())
+    }
+
+    fn capture_relative_path<'b>(&self, target: &'b Path) -> Result<&'b Path, NativeStorageError> {
+        let relative = target.strip_prefix(&self.collection.path).map_err(|_| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath,
+                "transaction target escapes its collection",
+            )
+        })?;
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath,
+                "transaction target is not a safe relative path",
+            ));
+        }
+        Ok(relative)
+    }
+
+    fn commit(&mut self) -> Result<(), NativeStorageError> {
+        self.writer.root.assert_profile_owned_fresh()?;
+        failpoint("before-commit-marker")?;
+        self.manifest.phase = TransactionPhase::Committed;
+        write_json_durable(&self.root.join("transaction.json"), &self.manifest)?;
+        failpoint("after-commit-marker")?;
+        // Read the before-images while the journal still holds them.
+        let counted = self
+            .schema_counts
+            .take()
+            .and_then(|counts| Some((counts, self.schema_count_delta().ok()?)));
+        let generation = self.manifest.generation_before.saturating_add(2);
+        write_generation(
+            self.writer,
+            self.collection,
+            &GenerationRecord::stable(generation),
+        )?;
+        self.finished = true;
+        if let Some((counts, delta)) = counted {
+            NativeWriteRoot::schema_counts_after_commit(
+                self.collection,
+                counts,
+                &delta,
+                generation,
+            );
+        }
+        remove_dir_durable(&self.root)?;
+        Ok(())
+    }
+
+    /// How this transaction changed the stored `_v` of live documents: each
+    /// captured live document body leaves with its before-image and arrives
+    /// with the file as it is now.
+    fn schema_count_delta(&self) -> Result<schema_counts::SchemaCountDelta, NativeStorageError> {
+        let mut delta = schema_counts::SchemaCountDelta::default();
+        for capture in &self.captures {
+            let relative = safe_relative_path(&capture.path)?;
+            if !schema_counts::SchemaCountDelta::is_live_document(&relative) {
+                continue;
+            }
+            if let Some(backup) = capture.backup.as_deref().filter(|_| capture.present) {
+                let before = fs::read(self.root.join(safe_relative_path(backup)?))
+                    .map_err(NativeStorageError::io)?;
+                delta.remove(&before)?;
+            }
+            let current = self.collection.path.join(&relative);
+            if path_exists_no_follow(&current)? {
+                delta.add(&fs::read(&current).map_err(NativeStorageError::io)?)?;
+            }
+        }
+        Ok(delta)
+    }
+
+    fn refuse_index_change(&mut self) {
+        self.index_refused = true;
+    }
+
+    fn record_index_append(&mut self) {
+        self.index_appended = true;
+    }
+
+    /// Rebuild the index from the restored records, unless a refusal came
+    /// before anything was appended to it or both index files were captured:
+    /// then the index files are as the transaction found them. A rebuild that
+    /// fails keeps the restored captures, so a rollback never leaves the
+    /// collection writing.
+    fn rebuild_changed_index(&self) -> Result<(), NativeStorageError> {
+        if self.index_refused && !self.index_appended {
+            return Ok(());
+        }
+        rebuild_restored_index(self.writer, self.collection, &self.root, &self.captures)
+    }
+
+    fn rollback(&mut self) -> Result<(), NativeStorageError> {
+        self.writer.root.assert_profile_owned_fresh()?;
+        if self.finished {
+            return Ok(());
+        }
+        // A failed recovery is worse than the crash it recovers from, so each
+        // step names itself: an operator seeing only the platform's message has
+        // no way to tell which durable operation refused.
+        restore_captures(
+            &self.writer.root,
+            &self.collection.path,
+            &self.root,
+            &self.captures,
+        )
+        .map_err(|error| rollback_step("restoring captures", &error))?;
+        self.rebuild_changed_index()
+            .map_err(|error| rollback_step("rebuilding the index", &error))?;
+        write_generation(
+            self.writer,
+            self.collection,
+            &GenerationRecord::stable(self.manifest.generation_before.saturating_add(2)),
+        )
+        .map_err(|error| rollback_step("publishing the recovered generation", &error))?;
+        self.finished = true;
+        remove_dir_durable(&self.root)
+            .map_err(|error| rollback_step("removing the transaction directory", &error))
+    }
+}
+
+impl Drop for Transaction<'_> {
+    fn drop(&mut self) {
+        // Deliberately leave unfinished durable state for the next opener.
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LockRecord {
+    owner: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root_owner: Option<String>,
+    pid: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    process_identity: Option<String>,
+    ts: u64,
+}
+
+/// What keeps other writers off one collection while it is written.
+#[derive(Debug)]
+enum CollectionWriteLock {
+    /// A lock file in the collection's `locks/` directory.
+    File { _held: LockFile },
+    /// The collection's writer byte in its `.vdbx` database.
+    Database {
+        _held: crate::container_database::ContainerWriterLock,
+    },
+    /// The collection's compactor byte in its `.vdbx` database.
+    Compactor {
+        _held: crate::container_database::ContainerCompactorLock,
+    },
+}
+
+/// A held lock file, removed when dropped if this owner still holds it.
+#[derive(Debug)]
+struct LockFile {
+    path: PathBuf,
+    owner: String,
+    owning_root: Option<NativeRoot>,
+}
+
+impl CollectionWriteLock {
+    /// The lock named `name` of `collection`: a file in its `locks/`
+    /// directory, or in a `.vdbx` database, the collection's writer byte,
+    /// which stands for every lock the collection's writer takes.
+    fn acquire_for(
+        root: &NativeRoot,
+        collection: &super::NativeCollection,
+        name: &str,
+    ) -> Result<Self, NativeStorageError> {
+        if let (Some(database), Some(block)) = (root.database(), collection.database_block()) {
+            root.assert_profile_owned()?;
+            return database
+                .lock_writer(block)
+                .map(|held| Self::Database { _held: held });
+        }
+        Self::acquire_profiled(root, &collection.path.join("locks"), name)
+    }
+
+    /// The lock one compaction of `collection` holds from its preparation
+    /// to its adoption: `locks/compaction.lock`, or in a `.vdbx` database
+    /// the collection's compactor byte.
+    fn acquire_compaction(
+        root: &NativeRoot,
+        collection: &super::NativeCollection,
+    ) -> Result<Self, NativeStorageError> {
+        if let (Some(database), Some(block)) = (root.database(), collection.database_block()) {
+            root.assert_profile_owned()?;
+            return database
+                .lock_compactor(block)
+                .map(|held| Self::Compactor { _held: held });
+        }
+        Self::acquire_profiled(root, &collection.path.join("locks"), "compaction.lock")
+    }
+
+    fn acquire_at(locks: &Path, name: &str) -> Result<LockFile, NativeStorageError> {
+        fs::create_dir_all(locks).map_err(NativeStorageError::io)?;
+        let path = locks.join(name);
+        let owner = unique_name("rust-owner");
+        let record = LockRecord {
+            owner: owner.clone(),
+            root_owner: None,
+            pid: super::process_id(),
+            process_identity: own_process_identity(),
+            ts: unix_millis()?,
+        };
+        if !try_create_lock(&path, &record, false)? {
+            reclaim_stale_lock(&path, &record)?;
+            if !try_create_lock(&path, &record, false)? {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::ConcurrentWrite,
+                    "collection write lock is held by another process",
+                ));
+            }
+        }
+        Ok(LockFile {
+            path,
+            owner,
+            owning_root: None,
+        })
+    }
+
+    fn acquire_profiled(
+        root: &NativeRoot,
+        locks: &Path,
+        name: &str,
+    ) -> Result<Self, NativeStorageError> {
+        root.assert_profile_owned()?;
+        if root.filesystem_profile() == super::FilesystemProfile::Native {
+            let mut lock = Self::acquire_at(locks, name)?;
+            if root.owning_lease().is_some() {
+                lock.owning_root = Some(root.clone());
+            }
+            return Ok(Self::File { _held: lock });
+        }
+        let lease = root.owning_lease().ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::RootLeaseLost,
+                "EFS collection owner is absent",
+            )
+        })?;
+        ensure_directory(root, locks)?;
+        let path = locks.join(name);
+        let owner = unique_name("rust-owner");
+        let record = LockRecord {
+            owner: owner.clone(),
+            root_owner: Some(lease.owner_generation().to_owned()),
+            pid: super::process_id(),
+            process_identity: None,
+            ts: unix_millis()?,
+        };
+        if !try_create_lock(&path, &record, true)? {
+            root.verify_path(&path, ExpectedType::File)?;
+            let existing: LockRecord = read_bounded_json(&path, 16 * 1024)?;
+            if existing.root_owner.as_deref() == Some(lease.owner_generation()) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::ConcurrentWrite,
+                    "collection lock belongs to this live root-owner generation",
+                ));
+            }
+            // A verified cooperative root owner may clear a prior generation.
+            // A local PID or boot identity is never remote-owner death proof.
+            root.assert_profile_owned()?;
+            let stale = path.with_extension(format!("stale.{}", unique_name("lock")));
+            fs::rename(&path, &stale).map_err(NativeStorageError::io)?;
+            fs::remove_file(stale).map_err(NativeStorageError::io)?;
+            sync_parent(&path)?;
+            if !try_create_lock(&path, &record, true)? {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::ConcurrentWrite,
+                    "EFS collection lock was contested",
+                ));
+            }
+        }
+        root.assert_profile_owned()?;
+        Ok(Self::File {
+            _held: LockFile {
+                path,
+                owner,
+                owning_root: Some(root.clone()),
+            },
+        })
+    }
+}
+
+impl Drop for LockFile {
+    fn drop(&mut self) {
+        if self
+            .owning_root
+            .as_ref()
+            .is_some_and(|root| root.assert_profile_owned().is_err())
+        {
+            return;
+        }
+        let Ok(record) = read_bounded_json::<LockRecord>(&self.path, 16 * 1024) else {
+            return;
+        };
+        if record.owner != self.owner {
+            return;
+        }
+        let released = self
+            .path
+            .with_extension(format!("released.{}", unique_name("lock")));
+        if fs::rename(&self.path, &released).is_ok() {
+            let _ = fs::remove_file(released);
+        }
+    }
+}
+
+/// Claim `path` atomically with `record`.
+///
+/// A native lock is one exclusive create, which a local filesystem makes
+/// atomic, and it is not flushed: it lives no longer than its process.
+/// `durable` keeps the link-then-check claim and its flushes, which the EFS
+/// profile needs because exclusive create is unreliable over NFS and a remote
+/// owner reads the record.
+fn try_create_lock(
+    path: &Path,
+    record: &LockRecord,
+    durable: bool,
+) -> Result<bool, NativeStorageError> {
+    let encoded = serde_json::to_vec(record).map_err(|error| json_error(&error))?;
+    if !durable {
+        return try_create_exclusive(path, &encoded);
+    }
+    let scratch = sibling_scratch(path);
+    write_new_synced(&scratch, &encoded)?;
+    let result = match fs::hard_link(&scratch, path) {
+        Ok(()) => {
+            sync_parent(path)?;
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        // A host filesystem has no links, and Android refuses an app's
+        // links. Link-then-check exists because exclusive create is
+        // unreliable over NFS, and neither of these is NFS — so the exclusive
+        // create they do offer is the atomic primitive here.
+        Err(error) if links_unavailable(&error) => match write_new_synced(path, &encoded) {
+            Ok(()) => {
+                sync_parent(path)?;
+                true
+            }
+            Err(error) if error.code() == NativeStorageErrorCode::Io => false,
+            Err(error) => return Err(error),
+        },
+        Err(error) => return Err(NativeStorageError::io(error)),
+    };
+    fs::remove_file(scratch).map_err(NativeStorageError::io)?;
+    Ok(result)
+}
+
+/// Whether `link(2)` failed because links are not available here, rather
+/// than because of the paths: a filesystem without hard links answers
+/// `Unsupported`, and Android's security policy answers `EACCES`.
+fn links_unavailable(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::Unsupported || refused_by_android_policy(error)
+}
+
+#[cfg(target_os = "android")]
+fn refused_by_android_policy(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
+}
+
+#[cfg(not(target_os = "android"))]
+fn refused_by_android_policy(_error: &std::io::Error) -> bool {
+    false
+}
+
+fn try_create_exclusive(path: &Path, encoded: &[u8]) -> Result<bool, NativeStorageError> {
+    let mut file = match OpenOptions::new().create_new(true).write(true).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(error) => return Err(NativeStorageError::io(error)),
+    };
+    file.write_all(encoded).map_err(NativeStorageError::io)?;
+    Ok(true)
+}
+
+fn reclaim_stale_lock(path: &Path, contender: &LockRecord) -> Result<(), NativeStorageError> {
+    let payload = fs::read(path).map_err(NativeStorageError::io)?;
+    let existing: LockRecord = match serde_json::from_slice(&payload) {
+        Ok(existing) => existing,
+        Err(_) => unreadable_lock_record(path)?,
+    };
+    if lock_owner_alive(&existing)
+        || unix_millis()?.saturating_sub(existing.ts) < LOCK_TTL_MILLIS
+            && existing.process_identity.is_none()
+    {
+        return Ok(());
+    }
+    let claim = path.with_extension("lock.takeover");
+    let claim_record = LockRecord {
+        owner: contender.owner.clone(),
+        root_owner: contender.root_owner.clone(),
+        pid: contender.pid,
+        process_identity: contender.process_identity.clone(),
+        ts: contender.ts,
+    };
+    if !try_create_lock(&claim, &claim_record, false)? {
+        return Ok(());
+    }
+    let current = fs::read(path).map_err(NativeStorageError::io)?;
+    if current == payload {
+        let stale = path.with_extension(format!("stale.{}", unique_name("lock")));
+        fs::rename(path, &stale).map_err(NativeStorageError::io)?;
+        fs::remove_file(stale).map_err(NativeStorageError::io)?;
+        sync_parent(path)?;
+    }
+    let _ = fs::remove_file(claim);
+    Ok(())
+}
+
+/// A native lock record is written in full before it is linked into place,
+/// so only power loss can leave one unreadable. Once such a record is older
+/// than the lock TTL its owner cannot still be running, so it reads as a dead
+/// owner; a fresh unreadable record is still refused.
+fn unreadable_lock_record(path: &Path) -> Result<LockRecord, NativeStorageError> {
+    let unreadable = || {
+        NativeStorageError::new(
+            NativeStorageErrorCode::ConcurrentWrite,
+            "collection lock is unreadable and cannot be reclaimed automatically",
+        )
+    };
+    let metadata = fs::symlink_metadata(path).map_err(NativeStorageError::io)?;
+    let written = commit_log::modified_ms(&metadata)?;
+    // A browser module writes its records one host call at a time, so a tab
+    // closed or a Worker killed between the create and the write leaves one
+    // unreadable without any power loss. No live session can own it: this
+    // module writes a record in full before it reads one, and the root's Web
+    // Lock keeps every other session out.
+    let browser = cfg!(all(target_arch = "wasm32", target_os = "unknown"));
+    if !browser && unix_millis()?.saturating_sub(written) < LOCK_TTL_MILLIS {
+        return Err(unreadable());
+    }
+    Ok(LockRecord {
+        owner: String::new(),
+        root_owner: None,
+        pid: 0,
+        process_identity: Some(String::new()),
+        ts: written,
+    })
+}
+
+/// This process's identity never changes while it runs, and finding it
+/// spawns a process on macOS, so it is found once.
+pub(crate) fn own_process_identity() -> Option<String> {
+    static IDENTITY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    IDENTITY
+        .get_or_init(|| {
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            {
+                browser_session_identity()
+            }
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            {
+                process_identity(super::process_id())
+            }
+        })
+        .clone()
+}
+
+/// A browser module has no pid to record, and a lock record without an
+/// identity reads as live for the whole lock TTL, so a crashed tab would
+/// lock its collections out of the next session, and out of a native process
+/// the root is copied to, for five minutes. A random identity per module
+/// instance says plainly that the owner is a session no other process can
+/// observe, which every reader treats as gone: the root's Web Lock, not the
+/// record, is what keeps a second live session out.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn browser_session_identity() -> Option<String> {
+    let mut bytes = [0_u8; 16];
+    byckr_vfs::host_random(&mut bytes).ok()?;
+    Some(format!("browser:{}", hex_lower(&bytes)))
+}
+
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), target_os = "ios"))]
+fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::new(), |mut text, byte| {
+        let _ = write!(text, "{byte:02x}");
+        text
+    })
+}
+
+fn lock_owner_alive(record: &LockRecord) -> bool {
+    let observed = process_identity(record.pid);
+    match (&record.process_identity, observed) {
+        (Some(expected), Some(observed)) => expected == &observed,
+        (None, Some(_)) => true,
+        _ => false,
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(crate) fn process_identity(pid: u32) -> Option<String> {
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    let status_line = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // Field 22 of /proc/<pid>/stat is the process start time in clock ticks.
+    // Everything before the last ')' is the comm field, which may itself
+    // contain spaces, so the scan starts after it.
+    let started_ticks = status_line
+        .get(status_line.rfind(')')?.saturating_add(2)..)?
+        .split_whitespace()
+        .nth(19)?;
+    Some(format!("linux:{}:{started_ticks}", boot.trim()))
+}
+
+/// Read from the process handle; WMI through PowerShell takes seconds, so it
+/// is asked only when Windows will not open the process.
+#[cfg(target_os = "windows")]
+pub(crate) fn process_identity(pid: u32) -> Option<String> {
+    crate::process_start_time::ProcessStartTime::ticks(pid)
+        .map_or_else(
+            |_| wmi_creation_ticks(pid),
+            |found| found.map(|ticks| ticks.to_string()),
+        )
+        .map(|value| format!("win32:{value}"))
+}
+
+#[cfg(target_os = "windows")]
+fn wmi_creation_ticks(pid: u32) -> Option<String> {
+    let command = format!(
+        "(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CreationDate.ToUniversalTime().Ticks"
+    );
+    command_output(
+        "powershell.exe",
+        &["-NoProfile", "-NonInteractive", "-Command", &command],
+    )
+}
+
+/// Nothing outside the module can be observed from a browser, so the only
+/// owner that reads as live is this module instance itself; any other
+/// session's record is a crashed tab's, since the root's Web Lock keeps a
+/// second live session out.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn process_identity(_pid: u32) -> Option<String> {
+    own_process_identity()
+}
+
+/// An iOS app may not start `ps`, and its sandbox hides every other
+/// process. So this process gets a random identity that lasts while it runs,
+/// and any other process's record reads as gone, as a crashed browser tab's
+/// does: on iOS a directory root has one process, and `.vdbx` files keep
+/// writers apart through the kernel's byte-range locks instead.
+#[cfg(target_os = "ios")]
+pub(crate) fn process_identity(pid: u32) -> Option<String> {
+    (pid == super::process_id())
+        .then(ios_session_identity)
+        .flatten()
+}
+
+#[cfg(target_os = "ios")]
+fn ios_session_identity() -> Option<String> {
+    static IDENTITY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    IDENTITY
+        .get_or_init(|| {
+            let mut bytes = [0_u8; 16];
+            getrandom::fill(&mut bytes).ok()?;
+            Some(format!("ios:{}:{}", super::process_id(), hex_lower(&bytes)))
+        })
+        .clone()
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "ios",
+    target_os = "windows",
+    all(target_arch = "wasm32", target_os = "unknown")
+)))]
+pub(crate) fn process_identity(pid: u32) -> Option<String> {
+    let platform = if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        std::env::consts::OS
+    };
+    command_output("ps", &["-o", "lstart=", "-p", &pid.to_string()])
+        .map(|value| format!("{platform}:{value}"))
+}
+
+// Only the Windows and generic-Unix process-identity probes shell out; Linux
+// and Android read /proc directly, and iOS may not start a process.
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "ios",
+    all(target_arch = "wasm32", target_os = "unknown")
+)))]
+fn command_output(program: &str, arguments: &[&str]) -> Option<String> {
+    let output = std::process::Command::new(program)
+        .args(arguments)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (!value.is_empty()).then_some(value)
+}
+
+fn transaction_root(
+    writer: &NativeWriteRoot,
+    collection: &super::NativeCollection,
+    identifier: &str,
+) -> PathBuf {
+    writer
+        .root
+        .path()
+        .join(".fylo-transactions")
+        .join(&collection.kind_folder)
+        .join(collection.name())
+        .join(identifier)
+}
+
+fn generation_path(writer: &NativeWriteRoot, collection: &super::NativeCollection) -> PathBuf {
+    transaction_root(writer, collection, "state.json")
+        .parent()
+        .expect("state parent")
+        .join("state.json")
+}
+
+fn write_generation(
+    writer: &NativeWriteRoot,
+    collection: &super::NativeCollection,
+    generation: &GenerationRecord,
+) -> Result<(), NativeStorageError> {
+    writer.root.assert_profile_owned()?;
+    let path = generation_path(writer, collection);
+    ensure_directory(&writer.root, path.parent().expect("generation has parent"))?;
+    let fenced = collection.generation_fenced(&collection.stored_generation()?);
+    write_json_durable(&path, &generation.clone().fenced(fenced))
+}
+
+fn is_capture_scratch(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        name.len() > 12
+            && name.as_bytes()[..6].iter().all(u8::is_ascii_digit)
+            && name[6..].starts_with(".json.rust-")
+            && name
+                .rsplit_once('.')
+                .is_some_and(|(_, extension)| extension == "tmp")
+    })
+}
+
+fn read_captures(root: &Path) -> Result<Vec<Capture>, NativeStorageError> {
+    let directory = root.join("captures");
+    let mut entries = read_dir_without_companions(&directory)
+        .map_err(NativeStorageError::io)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(NativeStorageError::io)?;
+    // A capture is published by renaming its synced scratch file. A crash
+    // before that rename leaves the scratch behind, and the capture it would
+    // have recorded never took effect: a target is captured before it is
+    // mutated. The scratch is therefore not part of the sequence.
+    entries.retain(|entry| !is_capture_scratch(&entry.file_name()));
+    entries.sort_by_key(fs::DirEntry::file_name);
+    if entries.len() > 10_000 {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::FileTooLarge,
+            "transaction capture count exceeds 10000",
+        ));
+    }
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let expected = format!("{index:06}.json");
+            if entry.file_name() != std::ffi::OsStr::new(&expected)
+                || !entry.file_type().map_err(NativeStorageError::io)?.is_file()
+            {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "transaction capture sequence is corrupt",
+                ));
+            }
+            read_bounded_json(&entry.path(), MAX_CAPTURE_BYTES)
+        })
+        .collect()
+}
+
+/// Clear the Windows read-only attribute so a rolled-back path can be deleted.
+///
+/// `set_readonly(false)` means something entirely different on Unix, where it
+/// widens the mode to world-writable, so this is deliberately not shared.
+// Clippy warns that this widens a Unix mode to world-writable. On Windows it
+// only clears FILE_ATTRIBUTE_READONLY and carries none of that meaning, which
+// is why the function exists per platform rather than shared.
+#[allow(clippy::permissions_set_readonly_false)]
+#[cfg(windows)]
+fn clear_readonly(target: &Path, metadata: &fs::Metadata) -> Result<(), NativeStorageError> {
+    let mut permissions = metadata.permissions();
+    if permissions.readonly() {
+        permissions.set_readonly(false);
+        fs::set_permissions(target, permissions).map_err(NativeStorageError::io)?;
+    }
+    Ok(())
+}
+
+// The signature mirrors the Windows implementation so the caller stays
+// platform-free.
+#[allow(clippy::unnecessary_wraps)]
+#[cfg(not(windows))]
+fn clear_readonly(_target: &Path, _metadata: &fs::Metadata) -> Result<(), NativeStorageError> {
+    Ok(())
+}
+
+/// Delete a path a rolled-back transaction created, reporting whether it was
+/// there.
+///
+/// Windows refuses to delete a file carrying the read-only attribute and
+/// refuses `remove_file` on a directory, and reports both as "Access is
+/// denied", where POSIX needs only write permission on the parent. Recovery
+/// must not be stopped by either, so the read-only attribute is cleared and a
+/// directory is removed as one.
+fn remove_capture_target(target: &Path) -> Result<bool, NativeStorageError> {
+    let removed = remove_capture_target_itself(target)?;
+    if removed {
+        remove_companion(target);
+    }
+    Ok(removed)
+}
+
+fn remove_capture_target_itself(target: &Path) -> Result<bool, NativeStorageError> {
+    match fs::remove_file(target) {
+        Ok(()) => return Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() != std::io::ErrorKind::PermissionDenied => {
+            return Err(NativeStorageError::io(error));
+        }
+        Err(_) => {}
+    }
+    let metadata = match fs::symlink_metadata(target) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(NativeStorageError::io(error)),
+    };
+    if metadata.is_dir() {
+        remove_emptied_dir(target).map_err(NativeStorageError::io)?;
+        return Ok(true);
+    }
+    clear_readonly(target, &metadata)?;
+    fs::remove_file(target).map_err(|error| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::Io,
+            format!(
+                "cannot remove rolled-back path {}: {error}",
+                target.to_string_lossy()
+            ),
+        )
+    })?;
+    Ok(true)
+}
+
+fn rollback_step(step: &str, error: &NativeStorageError) -> NativeStorageError {
+    NativeStorageError::new(
+        error.code(),
+        format!("recovery failed while {step}: {error}"),
+    )
+}
+
+fn validate_bound_captures(
+    root: &NativeRoot,
+    collection: &Path,
+    transaction: &Path,
+    captures: &[Capture],
+) -> Result<(), NativeStorageError> {
+    let mut by_path = std::collections::BTreeMap::new();
+    let mut records = BTreeSet::new();
+    for capture in captures {
+        if by_path.insert(capture.path.as_str(), capture).is_some() {
+            return Err(bound_capture_error());
+        }
+        records.insert(
+            capture
+                .path
+                .strip_suffix(super::SIDECAR_SUFFIX)
+                .unwrap_or(&capture.path),
+        );
+    }
+    for relative in records {
+        let target = collection.join(safe_relative_path(relative)?);
+        if super::sidecar_attributes::SidecarAttributes::is_record_area(root, &target) {
+            super::sidecar_attributes::SidecarAttributes::record_identity(root, &target)?;
+            validate_bound_capture_pair(
+                root,
+                (&target, transaction),
+                by_path.get(relative).copied(),
+                by_path
+                    .get(format!("{relative}{}", super::SIDECAR_SUFFIX).as_str())
+                    .copied(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn bound_capture_error() -> NativeStorageError {
+    NativeStorageError::new(
+        NativeStorageErrorCode::CorruptMetadata,
+        "EFS before-image record pair or binding is inconsistent",
+    )
+}
+
+fn capture_backup(transaction: &Path, capture: &Capture) -> Result<PathBuf, NativeStorageError> {
+    Ok(transaction.join(safe_relative_path(
+        capture.backup.as_deref().ok_or_else(bound_capture_error)?,
+    )?))
+}
+
+fn validate_bound_capture_pair(
+    root: &NativeRoot,
+    (target, transaction): (&Path, &Path),
+    payload: Option<&Capture>,
+    manifest: Option<&Capture>,
+) -> Result<(), NativeStorageError> {
+    if payload.is_some_and(|capture| !capture.present) {
+        if manifest.is_none_or(|capture| capture.present) {
+            return Err(bound_capture_error());
+        }
+        return Ok(());
+    }
+    let manifest = manifest.ok_or_else(bound_capture_error)?;
+    if !manifest.present {
+        return if payload.is_none() {
+            Ok(())
+        } else {
+            Err(bound_capture_error())
+        };
+    }
+    let manifest_path = capture_backup(transaction, manifest)?;
+    let (mut file, _) = root.open_file(&manifest_path, 16 * 1024 * 1024)?;
+    let bytes = super::read_bounded((&mut file).take(16 * 1024 * 1024 + 1), 16 * 1024 * 1024)?;
+    let attributes = super::sidecar_attributes::SidecarAttributes::decode(&bytes)?;
+    let payload_path = payload
+        .map(|capture| capture_backup(transaction, capture))
+        .transpose()?
+        .unwrap_or_else(|| target.to_owned());
+    let (payload_file, metadata) = root.open_file(&payload_path, super::MAX_RAW_FILE_BYTES)?;
+    super::sidecar_attributes::SidecarAttributes::verify_owner(root, &metadata, payload.is_some())?;
+    super::sidecar_attributes::SidecarAttributes::verify_file_binding(
+        root,
+        &payload_file,
+        target,
+        &attributes,
+    )?;
+    root.verify_open_file_identity(&manifest_path, &file)?;
+    root.verify_open_file_identity(&payload_path, &payload_file)?;
+    root.assert_profile_owned()
+}
+
+fn restore_captures(
+    root: &NativeRoot,
+    collection_root: &Path,
+    transaction_root: &Path,
+    captures: &[Capture],
+) -> Result<(), NativeStorageError> {
+    root.assert_profile_owned()?;
+    let efs = root.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1;
+    if efs
+        && captures.iter().any(|capture| {
+            capture
+                .xattrs
+                .as_ref()
+                .is_some_and(|attributes| !attributes.is_empty())
+        })
+    {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "EFS journal unexpectedly contains native extended attributes",
+        ));
+    }
+    if efs {
+        Capture::validate_backups(root, transaction_root, captures)?;
+    }
+    if efs {
+        validate_bound_captures(root, collection_root, transaction_root, captures)?;
+    }
+    for capture in captures.iter().rev() {
+        root.assert_profile_owned()?;
+        let relative = safe_relative_path(&capture.path)?;
+        let target = collection_root.join(&relative);
+        if !capture.present {
+            match remove_capture_target(&target) {
+                Ok(true) => sync_parent(&target)?,
+                Ok(false) => {}
+                Err(error) => return Err(error),
+            }
+            continue;
+        }
+        let backup = capture.backup.as_deref().ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "present transaction capture has no backup",
+            )
+        })?;
+        let backup = transaction_root.join(safe_relative_path(backup)?);
+        let step = |name: &str, error: &NativeStorageError| {
+            NativeStorageError::new(
+                error.code(),
+                format!("{name} {}: {error}", target.to_string_lossy()),
+            )
+        };
+        ensure_plain_parent(
+            collection_root,
+            target.parent().expect("capture has parent"),
+        )
+        .map_err(|error| step("preparing the parent of", &error))?;
+        if efs {
+            // The private before-image inode retains the original exact mtime;
+            // the existing f64 mtimeMs schema remains wire-compatible.
+            let modified = fs::symlink_metadata(&backup)
+                .map_err(NativeStorageError::io)?
+                .modified()
+                .map_err(NativeStorageError::io)?;
+            let restored = copy_durable_with_mode(
+                &backup,
+                &target,
+                Some(capture.mode.unwrap_or(0o600)),
+                Some(modified),
+            )
+            .map_err(|error| step("restoring the private before-image of", &error))?;
+            crate::sync_handle(&restored).map_err(NativeStorageError::io)?;
+            super::sidecar_attributes::SidecarAttributes::verify_owner(
+                root,
+                &restored.metadata().map_err(NativeStorageError::io)?,
+                target
+                    .as_os_str()
+                    .to_string_lossy()
+                    .ends_with(super::SIDECAR_SUFFIX),
+            )?;
+            root.verify_open_file_identity(&target, &restored)?;
+        } else {
+            copy_durable(&backup, &target)
+                .map_err(|error| step("restoring the before-image of", &error))?;
+            restore_attributes(&target, capture.xattrs.as_deref().unwrap_or_default())
+                .map_err(|error| step("restoring the attributes of", &error))?;
+            if let Some(mode) = capture.mode {
+                set_mode(&target, mode).map_err(|error| step("restoring the mode of", &error))?;
+            }
+        }
+        sync_parent(&target).map_err(|error| step("flushing the parent of", &error))?;
+    }
+    Ok(())
+}
+
+fn cleanup_orphan_transactions(
+    writer: &NativeWriteRoot,
+    collection: &super::NativeCollection,
+) -> Result<(), NativeStorageError> {
+    let state = generation_path(writer, collection);
+    let Some(root) = state.parent() else {
+        return Ok(());
+    };
+    if fs::metadata(root).is_err() {
+        return Ok(());
+    }
+    for entry in read_dir_without_companions(root).map_err(NativeStorageError::io)? {
+        let entry = entry.map_err(NativeStorageError::io)?;
+        if entry.file_name() == "state.json" || entry.file_name() == "log" {
+            continue;
+        }
+        if entry.file_type().map_err(NativeStorageError::io)?.is_dir() {
+            remove_dir_durable(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_directory(root: &NativeRoot, path: &Path) -> Result<(), NativeStorageError> {
+    root.assert_profile_owned()?;
+    if path_exists_no_follow(path)? {
+        root.verify_path(path, ExpectedType::Directory)?;
+        return Ok(());
+    }
+    let parent = path.parent().ok_or_else(|| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::UnsafePath,
+            "storage directory has no parent",
+        )
+    })?;
+    if parent != root.path() {
+        ensure_directory(root, parent)?;
+    }
+    match fs::create_dir(path) {
+        Ok(()) => sync_parent(path)?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(NativeStorageError::io(error)),
+    }
+    root.verify_path(path, ExpectedType::Directory)?;
+    Ok(())
+}
+
+fn ensure_plain_parent(root: &Path, target: &Path) -> Result<(), NativeStorageError> {
+    let relative = target.strip_prefix(root).map_err(|_| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::UnsafePath,
+            "rollback target escapes collection root",
+        )
+    })?;
+    let mut current = root.to_owned();
+    for component in relative.components() {
+        let std::path::Component::Normal(segment) = component else {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath,
+                "rollback path is not normal",
+            ));
+        };
+        current.push(segment);
+        if fs::metadata(&current).is_ok() {
+            let metadata = fs::symlink_metadata(&current).map_err(NativeStorageError::io)?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    "rollback parent contains a link or non-directory",
+                ));
+            }
+        } else {
+            fs::create_dir(&current).map_err(NativeStorageError::io)?;
+            sync_parent(&current)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn durable_replace_private(path: &Path, bytes: &[u8]) -> Result<(), NativeStorageError> {
+    durable_replace_with_mode(path, bytes, 0o600)
+}
+
+/// Replace a segment collection's own file (ADR 0015 section 10): readable
+/// by the root owner only where the platform has POSIX modes, and an
+/// ordinary durable replace elsewhere.
+pub(crate) fn durable_replace_owner_only(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), NativeStorageError> {
+    if cfg!(unix) {
+        return durable_replace_with_mode(path, bytes, 0o600);
+    }
+    durable_replace(path, bytes)
+}
+
+fn durable_replace_with_mode(
+    path: &Path,
+    bytes: &[u8],
+    mode: u32,
+) -> Result<(), NativeStorageError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        failpoint("before-file-write")?;
+        let scratch = sibling_scratch(path);
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(mode & 0o600)
+                .open(&scratch)
+                .map_err(NativeStorageError::io)?;
+            file.set_permissions(fs::Permissions::from_mode(mode & 0o600))
+                .map_err(NativeStorageError::io)?;
+            file.write_all(bytes).map_err(NativeStorageError::io)?;
+            file.set_permissions(fs::Permissions::from_mode(mode))
+                .map_err(NativeStorageError::io)?;
+            crate::sync_handle(&file).map_err(NativeStorageError::io)?;
+            failpoint("after-file-sync")?;
+            fs::rename(&scratch, path).map_err(NativeStorageError::io)?;
+            failpoint("after-file-rename")?;
+            sync_parent(path)
+        })();
+        if result.is_err() && path_exists_no_follow(&scratch)? {
+            fs::remove_file(&scratch).map_err(NativeStorageError::io)?;
+            sync_parent(&scratch)?;
+        }
+        result
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, bytes, mode);
+        Err(NativeStorageError::new(
+            NativeStorageErrorCode::Unsupported,
+            "private EFS metadata requires POSIX files",
+        ))
+    }
+}
+
+fn durable_replace(path: &Path, bytes: &[u8]) -> Result<(), NativeStorageError> {
+    failpoint("before-file-write")?;
+    let scratch = sibling_scratch(path);
+    write_new_synced(&scratch, bytes)?;
+    failpoint("after-file-sync")?;
+    fs::rename(&scratch, path).map_err(NativeStorageError::io)?;
+    failpoint("after-file-rename")?;
+    sync_parent(path)
+}
+
+fn overwrite_in_place(path: &Path, bytes: &[u8]) -> Result<(), NativeStorageError> {
+    failpoint("before-file-write")?;
+    let metadata = fs::symlink_metadata(path).map_err(NativeStorageError::io)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::UnsafePath,
+            "overwrite target is not a regular non-link file",
+        ));
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(NativeStorageError::io)?;
+    file.write_all(bytes).map_err(NativeStorageError::io)?;
+    crate::sync_handle(&file).map_err(NativeStorageError::io)?;
+    failpoint("after-file-sync")?;
+    sync_parent(path)
+}
+
+fn raw_file_index_fields(
+    identifier: &str,
+    stored: &super::StoredRawFile,
+) -> Result<Map<String, Value>, NativeStorageError> {
+    let timestamps = TtidTimestamps::decode(identifier).map_err(|error| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::InvalidDocumentId,
+            format!("raw-file TTID is invalid: {error}"),
+        )
+    })?;
+    let mut fields = Map::new();
+    fields.insert(
+        "name".into(),
+        Value::String(format!("{identifier}{}", stored.extension)),
+    );
+    fields.insert("key".into(), Value::String(stored.key.clone()));
+    fields.insert("extension".into(), Value::String(stored.extension.clone()));
+    fields.insert(
+        "contentType".into(),
+        Value::String(stored.content_type.clone()),
+    );
+    fields.insert(
+        "contentLength".into(),
+        Value::from(u64::try_from(stored.bytes.len()).map_err(|_| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                "raw-file length does not fit the index format",
+            )
+        })?),
+    );
+    fields.insert("etag".into(), Value::String(stored.checksum_sha256.clone()));
+    fields.insert(
+        "checksumSHA256".into(),
+        Value::String(stored.checksum_sha256.clone()),
+    );
+    fields.insert("createdAt".into(), Value::from(timestamps.created_at));
+    fields.insert("lastModified".into(), Value::from(stored.modified_millis));
+    if !stored.custom_metadata.is_empty() {
+        fields.insert(
+            "meta".into(),
+            Value::Object(
+                stored
+                    .custom_metadata
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect(),
+            ),
+        );
+    }
+    Ok(fields)
+}
+
+fn validate_custom_metadata(
+    metadata: &std::collections::BTreeMap<String, Value>,
+) -> Result<(), NativeStorageError> {
+    let mut total = 0_usize;
+    for (name, value) in metadata {
+        if name.is_empty()
+            || name.len() > 64
+            || name.contains('\0')
+            || name.contains('/')
+            || name.contains('\\')
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "raw-file custom metadata name is invalid",
+            ));
+        }
+        let encoded = serde_json::to_vec(value).map_err(|error| json_error(&error))?;
+        if encoded.len() > super::MAX_META_VALUE_BYTES {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                "raw-file custom metadata value exceeds 60 KiB",
+            ));
+        }
+        total = total
+            .checked_add(name.len())
+            .and_then(|value| value.checked_add(encoded.len()))
+            .ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::FileTooLarge,
+                    "raw-file custom metadata size overflow",
+                )
+            })?;
+        if total > super::MAX_FILE_METADATA_BYTES {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                "raw-file custom metadata exceeds 1 MiB",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn remove_byckr_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
+    use super::extended_attribute_error::ExtendedAttributeError;
+    use byckr_xattr::FileExt;
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(NativeStorageError::io)?;
+    match file.remove_xattr(name) {
+        Ok(()) => {}
+        Err(error) if missing_xattr(&error) => return Ok(()),
+        Err(error) => {
+            return Err(ExtendedAttributeError::for_attribute(
+                error,
+                "removexattr",
+                name,
+                path,
+            ));
+        }
+    }
+    crate::sync_handle(&file).map_err(NativeStorageError::io)?;
+    failpoint("after-metadata-write")
+}
+
+#[cfg(unix)]
+fn missing_xattr(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return true;
+    }
+    // `xattr` preserves the platform errno for an absent name. Darwin's
+    // ENOATTR and Linux/Android's ENODATA are both ErrorKind::Other.
+    #[cfg(target_vendor = "apple")]
+    if error.raw_os_error() == Some(93) {
+        return true;
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    if error.raw_os_error() == Some(61) {
+        return true;
+    }
+    false
+}
+
+#[cfg(windows)]
+pub(crate) fn remove_byckr_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
+    use std::ffi::OsString;
+
+    let mut stream = OsString::from(path.as_os_str());
+    stream.push(":fylo.xattrs");
+    let stream = PathBuf::from(stream);
+    let mut attributes: std::collections::BTreeMap<String, String> = match fs::read(&stream) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("Windows FYLO ADS manifest is corrupt: {error}"),
+            )
+        })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(NativeStorageError::io(error)),
+    };
+    if attributes.remove(name).is_none() {
+        return Ok(());
+    }
+    let encoded = serde_json::to_vec(&attributes).map_err(|error| json_error(&error))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(stream)
+        .map_err(NativeStorageError::io)?;
+    file.write_all(&encoded).map_err(NativeStorageError::io)?;
+    crate::sync_handle(&file).map_err(NativeStorageError::io)?;
+    failpoint("after-metadata-write")
+}
+
+/// Drop one attribute from the record's sidecar, removing the file with the
+/// last entry so an attribute-free record leaves nothing behind.
+#[cfg(all(
+    not(unix),
+    not(windows),
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+pub(crate) fn remove_byckr_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
+    let sidecar = super::sidecar_path(path);
+    let mut attributes = read_sidecar(&sidecar)?;
+    if attributes.remove(name).is_none() {
+        return Ok(());
+    }
+    write_sidecar(&sidecar, &attributes)
+}
+
+/// Drop one attribute from the host's manifest.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn remove_byckr_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
+    let mut attributes = read_host_manifest(path)?;
+    if attributes.remove(name).is_none() {
+        return Ok(());
+    }
+    write_host_manifest(path, &attributes)
+}
+
+#[cfg(unix)]
+pub(crate) fn write_byckr_attribute(
+    path: &Path,
+    name: &str,
+    value: &[u8],
+) -> Result<(), NativeStorageError> {
+    use super::extended_attribute_error::ExtendedAttributeError;
+    use byckr_xattr::FileExt;
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(NativeStorageError::io)?;
+    file.set_xattr(name, value)
+        .map_err(|error| ExtendedAttributeError::for_attribute(error, "setxattr", name, path))?;
+    crate::sync_handle(&file).map_err(NativeStorageError::io)?;
+    failpoint("after-metadata-write")
+}
+
+#[cfg(windows)]
+pub(crate) fn write_byckr_attribute(
+    path: &Path,
+    name: &str,
+    value: &[u8],
+) -> Result<(), NativeStorageError> {
+    use std::ffi::OsString;
+
+    let mut stream = OsString::from(path.as_os_str());
+    stream.push(":fylo.xattrs");
+    let stream = PathBuf::from(stream);
+    let mut attributes: std::collections::BTreeMap<String, String> = match fs::read(&stream) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("Windows FYLO ADS manifest is corrupt: {error}"),
+            )
+        })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::collections::BTreeMap::default()
+        }
+        Err(error) => return Err(NativeStorageError::io(error)),
+    };
+    attributes.insert(name.into(), BASE64.encode(value));
+    let encoded = serde_json::to_vec(&attributes).map_err(|error| json_error(&error))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(stream)
+        .map_err(NativeStorageError::io)?;
+    file.write_all(&encoded).map_err(NativeStorageError::io)?;
+    crate::sync_handle(&file).map_err(NativeStorageError::io)?;
+    failpoint("after-metadata-write")
+}
+
+/// Write one attribute into the record's sidecar.
+///
+/// Read-modify-write of a whole manifest rather than a single-name update: the
+/// record's attributes are a handful of small values, and a durable replace of
+/// the whole file is both simpler and atomic where a partial rewrite would not
+/// be. Windows does the same thing to its alternate data stream.
+#[cfg(all(
+    not(unix),
+    not(windows),
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+pub(crate) fn write_byckr_attribute(
+    path: &Path,
+    name: &str,
+    value: &[u8],
+) -> Result<(), NativeStorageError> {
+    let sidecar = super::sidecar_path(path);
+    let mut attributes = read_sidecar(&sidecar)?;
+    attributes.insert(name.into(), BASE64.encode(value));
+    write_sidecar(&sidecar, &attributes)
+}
+
+/// Store one attribute through the host.
+///
+/// The host owns the manifest's location, so a browser root keeps no file
+/// beside the record. Read-modify-write of the whole manifest, as Windows does
+/// to its alternate data stream: a record's attributes are a handful of small
+/// values and replacing all of them is atomic where a partial update is not.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn write_byckr_attribute(
+    path: &Path,
+    name: &str,
+    value: &[u8],
+) -> Result<(), NativeStorageError> {
+    let mut attributes = read_host_manifest(path)?;
+    attributes.insert(name.into(), BASE64.encode(value));
+    write_host_manifest(path, &attributes)
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn read_host_manifest(
+    path: &Path,
+) -> Result<std::collections::BTreeMap<String, String>, NativeStorageError> {
+    let bytes = byckr_vfs::host_read_attrs(path).map_err(NativeStorageError::io)?;
+    if bytes.is_empty() {
+        return Ok(std::collections::BTreeMap::default());
+    }
+    serde_json::from_slice(&bytes).map_err(|error| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            format!("FYLO attribute manifest is corrupt: {error}"),
+        )
+    })
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn write_host_manifest(
+    path: &Path,
+    attributes: &std::collections::BTreeMap<String, String>,
+) -> Result<(), NativeStorageError> {
+    let encoded = if attributes.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::to_vec(attributes).map_err(|error| json_error(&error))?
+    };
+    byckr_vfs::host_write_attrs(path, &encoded).map_err(NativeStorageError::io)?;
+    failpoint("after-metadata-write")
+}
+
+#[cfg(all(
+    not(unix),
+    not(windows),
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+fn read_sidecar(
+    sidecar: &Path,
+) -> Result<std::collections::BTreeMap<String, String>, NativeStorageError> {
+    match fs::read(sidecar) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("FYLO attribute sidecar is corrupt: {error}"),
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(std::collections::BTreeMap::default())
+        }
+        Err(error) => Err(NativeStorageError::io(error)),
+    }
+}
+
+#[cfg(all(
+    not(unix),
+    not(windows),
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+fn write_sidecar(
+    sidecar: &Path,
+    attributes: &std::collections::BTreeMap<String, String>,
+) -> Result<(), NativeStorageError> {
+    if attributes.is_empty() {
+        match fs::remove_file(sidecar) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(NativeStorageError::io(error)),
+        }
+        return failpoint("after-metadata-write");
+    }
+    let encoded = serde_json::to_vec(attributes).map_err(|error| json_error(&error))?;
+    durable_replace(sidecar, &encoded)?;
+    failpoint("after-metadata-write")
+}
+
+fn copy_durable(source: &Path, target: &Path) -> Result<(), NativeStorageError> {
+    let source = File::open(source).map_err(NativeStorageError::io)?;
+    let metadata = source.metadata().map_err(NativeStorageError::io)?;
+    if !metadata.is_file() {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::WrongType,
+            "transaction backup source is not a regular file",
+        ));
+    }
+    if metadata.len() > super::MAX_RAW_FILE_BYTES {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::FileTooLarge,
+            "transaction backup exceeds the raw-file limit",
+        ));
+    }
+    let scratch = sibling_scratch(target);
+    let mut output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&scratch)
+        .map_err(NativeStorageError::io)?;
+    std::io::copy(&mut source.take(super::MAX_RAW_FILE_BYTES + 1), &mut output)
+        .map_err(NativeStorageError::io)?;
+    crate::sync_handle(&output).map_err(NativeStorageError::io)?;
+    drop(output);
+    // Windows replaces an existing destination only when it is writable, and a
+    // retained tombstone is not, so restoring a before-image over one fails
+    // with "Access is denied" where POSIX simply renames.
+    if let Ok(existing) = fs::symlink_metadata(target) {
+        clear_readonly(target, &existing)?;
+    }
+    fs::rename(scratch, target).map_err(NativeStorageError::io)?;
+    sync_parent(target)
+}
+
+fn copy_durable_with_mode(
+    source: &Path,
+    target: &Path,
+    mode: Option<u32>,
+    modified: Option<std::time::SystemTime>,
+) -> Result<File, NativeStorageError> {
+    let source_path = source;
+    let before = mode
+        .map(|_| private_copy_source_metadata(source_path))
+        .transpose()?;
+    let mut source = File::open(source_path).map_err(NativeStorageError::io)?;
+    let metadata = source.metadata().map_err(NativeStorageError::io)?;
+    #[cfg(unix)]
+    if let Some(before) = before.as_ref() {
+        use std::os::unix::fs::MetadataExt;
+        if (before.dev(), before.ino()) != (metadata.dev(), metadata.ino()) {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath,
+                "private copy source changed while opening",
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = before;
+    if let Some(modified) = modified
+        && metadata.modified().map_err(NativeStorageError::io)? != modified
+    {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "private copy source timestamp changed",
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::WrongType,
+            "transaction backup source is not a regular file",
+        ));
+    }
+    if metadata.len() > super::MAX_RAW_FILE_BYTES {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::FileTooLarge,
+            "transaction backup exceeds the raw-file limit",
+        ));
+    }
+    let scratch = sibling_scratch(target);
+    let mut options = OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode.map_or(0o666, |value| value & 0o600));
+    }
+    let result = (|| {
+        let mut output = options
+            .create_new(true)
+            .write(true)
+            .open(&scratch)
+            .map_err(NativeStorageError::io)?;
+        #[cfg(unix)]
+        set_private_copy_mode(&output, mode.map(|value| value & 0o600))?;
+        std::io::copy(
+            &mut (&mut source).take(super::MAX_RAW_FILE_BYTES + 1),
+            &mut output,
+        )
+        .map_err(NativeStorageError::io)?;
+        if mode.is_some() {
+            verify_private_copy_contents(source_path, &source, &metadata)?;
+            #[cfg(not(target_family = "wasm"))]
+            if crate::FileIdentity::from_file(source.try_clone().map_err(NativeStorageError::io)?)
+                .map_err(NativeStorageError::io)?
+                != crate::FileIdentity::from_path(source_path).map_err(NativeStorageError::io)?
+            {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    "private copy source identity changed",
+                ));
+            }
+        }
+        if let Some(modified) = modified {
+            output
+                .set_times(fs::FileTimes::new().set_modified(modified))
+                .map_err(NativeStorageError::io)?;
+        }
+        set_private_copy_mode(&output, mode)?;
+        crate::sync_handle(&output).map_err(NativeStorageError::io)?;
+        // The legacy Windows Native restore permits replacement of a readonly destination.
+        if let Ok(existing) = fs::symlink_metadata(target) {
+            clear_readonly(target, &existing)?;
+        }
+        fs::rename(&scratch, target).map_err(NativeStorageError::io)?;
+        sync_parent(target)?;
+        Ok(output)
+    })();
+    if result.is_err() && path_exists_no_follow(&scratch)? {
+        fs::remove_file(&scratch).map_err(NativeStorageError::io)?;
+        sync_parent(&scratch)?;
+    }
+    result
+}
+
+fn private_copy_source_metadata(source: &Path) -> Result<fs::Metadata, NativeStorageError> {
+    let metadata = fs::symlink_metadata(source).map_err(NativeStorageError::io)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::UnsafePath,
+            "private copy source is not a regular file",
+        ));
+    }
+    Ok(metadata)
+}
+
+fn verify_private_copy_contents(
+    source_path: &Path,
+    source: &File,
+    metadata: &fs::Metadata,
+) -> Result<(), NativeStorageError> {
+    let after = source.metadata().map_err(NativeStorageError::io)?;
+    let current = fs::symlink_metadata(source_path).map_err(NativeStorageError::io)?;
+    if current.file_type().is_symlink()
+        || !current.is_file()
+        || after.len() != metadata.len()
+        || after.modified().map_err(NativeStorageError::io)?
+            != metadata.modified().map_err(NativeStorageError::io)?
+    {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "private copy source changed while reading",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_copy_mode(output: &File, mode: Option<u32>) -> Result<(), NativeStorageError> {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(mode) = mode {
+        output
+            .set_permissions(fs::Permissions::from_mode(mode))
+            .map_err(NativeStorageError::io)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_private_copy_mode(_output: &File, mode: Option<u32>) -> Result<(), NativeStorageError> {
+    if mode.is_some() {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::Unsupported,
+            "private copy requires POSIX mode projection",
+        ));
+    }
+    Ok(())
+}
+
+/// Append to an existing durable file without rewriting it.
+///
+/// A torn tail is expected rather than guarded against: the index reader stops
+/// at the last complete line, so a crash mid-append loses the entry it was
+/// writing and nothing before it.
+fn append_synced(path: &Path, bytes: &[u8]) -> Result<(), NativeStorageError> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(NativeStorageError::io)?;
+    file.write_all(bytes).map_err(NativeStorageError::io)?;
+    crate::sync_handle(&file).map_err(NativeStorageError::io)
+}
+
+fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), NativeStorageError> {
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(NativeStorageError::io)?;
+    file.write_all(bytes).map_err(NativeStorageError::io)?;
+    crate::sync_handle(&file).map_err(NativeStorageError::io)
+}
+
+pub(crate) fn write_json_durable(
+    path: &Path,
+    value: &impl Serialize,
+) -> Result<(), NativeStorageError> {
+    let mut bytes = serde_json::to_vec(value).map_err(|error| json_error(&error))?;
+    bytes.push(b'\n');
+    durable_replace(path, &bytes)
+}
+
+pub(crate) fn read_bounded_json<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<T, NativeStorageError> {
+    let metadata = fs::symlink_metadata(path).map_err(NativeStorageError::io)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > max_bytes {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "bounded JSON target is unsafe or oversized",
+        ));
+    }
+    let capacity = usize::try_from(metadata.len()).map_err(|_| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::FileTooLarge,
+            "bounded JSON size does not fit this platform",
+        )
+    })?;
+    let mut bytes = Vec::with_capacity(capacity);
+    File::open(path)
+        .map_err(NativeStorageError::io)?
+        .take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(NativeStorageError::io)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::FileTooLarge,
+            "bounded JSON target grew beyond its limit",
+        ));
+    }
+    serde_json::from_slice(&bytes).map_err(|error| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            format!("bounded JSON target is corrupt: {error}"),
+        )
+    })
+}
+
+/// Write a file only when it does not already exist.
+///
+/// Creating a collection that is partly there must finish it without touching
+/// what is already correct: rewriting a populated index with an empty snapshot
+/// would discard every key in it.
+fn write_if_missing(path: &Path, bytes: &[u8]) -> Result<(), NativeStorageError> {
+    if path_exists_no_follow(path)? {
+        return Ok(());
+    }
+    durable_replace(path, bytes)
+}
+
+fn now_millis() -> Result<u64, NativeStorageError> {
+    let millis = super::wall_clock()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::Io,
+                format!("system clock is before the Unix epoch: {error}"),
+            )
+        })?
+        .as_millis();
+    u64::try_from(millis).map_err(|_| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::Io,
+            "system clock exceeds the metadata timestamp range",
+        )
+    })
+}
+
+fn remove_dir_durable(path: &Path) -> Result<(), NativeStorageError> {
+    let parent = path.parent().map(Path::to_owned);
+    fs::remove_dir_all(path).map_err(NativeStorageError::io)?;
+    remove_companion(path);
+    if let Some(parent) = parent {
+        sync_directory(&parent)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn sync_parent(path: &Path) -> Result<(), NativeStorageError> {
+    let parent = path.parent().ok_or_else(|| {
+        NativeStorageError::new(NativeStorageErrorCode::Io, "storage path has no parent")
+    })?;
+    sync_directory(parent)
+}
+
+/// Force a file's modification time back to the value a checksum stamp
+/// recorded, so the stamp and the file agree on every platform.
+fn restore_modified(path: &Path, recorded: &fs::Metadata) -> Result<(), NativeStorageError> {
+    let modified = recorded.modified().map_err(NativeStorageError::io)?;
+    let file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(NativeStorageError::io)?;
+    let times = fs::FileTimes::new()
+        .set_accessed(modified)
+        .set_modified(modified);
+    file.set_times(times).map_err(NativeStorageError::io)
+}
+
+pub(crate) fn sync_directory(path: &Path) -> Result<(), NativeStorageError> {
+    let directory = open_directory(path).map_err(NativeStorageError::io)?;
+    match crate::sync_handle(&directory) {
+        Ok(()) => Ok(()),
+        // Some filesystems refuse to flush a directory handle, and WASI has no
+        // directory sync at all. The rename that preceded this call is still
+        // atomic, so the operation stands. A platform that *can* flush and
+        // fails for another reason still surfaces the error.
+        Err(error) if cfg!(windows) || error.kind() == std::io::ErrorKind::Unsupported => {
+            let _ = error;
+            Ok(())
+        }
+        Err(error) => Err(NativeStorageError::io(error)),
+    }
+}
+
+/// Windows refuses `CreateFile` on a directory without backup semantics, so a
+/// plain `File::open` fails with "Access is denied" and every durable rename
+/// would lose its parent flush. The flag is the documented way to obtain a
+/// directory handle and is available through safe `std`.
+#[cfg(windows)]
+fn open_directory(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_directory(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+
+pub(crate) fn sibling_scratch(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("fylo");
+    path.with_file_name(format!("{name}.{}.tmp", unique_name("rust")))
+}
+
+pub(crate) fn unique_name(prefix: &str) -> String {
+    let sequence = UNIQUE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let nanos = super::wall_clock()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{prefix}-{}-{nanos:x}-{sequence:x}", super::process_id())
+}
+
+/// FYLO's wall clock in Unix milliseconds: `std` natively, the host's clock
+/// in a browser build.
+///
+/// # Errors
+///
+/// Returns an error when the clock predates the Unix epoch, exceeds the
+/// supported range, or (in a browser build) no host clock is installed.
+pub fn unix_millis() -> Result<u64, NativeStorageError> {
+    // `SystemTime::now` panics rather than fails on a target with no clock, so
+    // the host supplies one there. Every other target keeps `std`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        byckr_vfs::host_now_unix_ms().map_err(|message| {
+            NativeStorageError::new(NativeStorageErrorCode::Io, message.to_owned())
+        })
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        unix_millis_from_std()
+    }
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn unix_millis_from_std() -> Result<u64, NativeStorageError> {
+    let millis = super::wall_clock()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::Io,
+                format!("system clock predates the Unix epoch: {error}"),
+            )
+        })?
+        .as_millis();
+    u64::try_from(millis).map_err(|_| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::Io,
+            "system timestamp exceeds the supported range",
+        )
+    })
+}
+
+fn portable_path(path: &Path) -> Result<String, NativeStorageError> {
+    let value = path.to_str().ok_or_else(|| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::UnsafePath,
+            "transaction path is not valid UTF-8",
+        )
+    })?;
+    Ok(value.replace(std::path::MAIN_SEPARATOR, "/"))
+}
+
+fn safe_relative_path(value: &str) -> Result<PathBuf, NativeStorageError> {
+    if value.is_empty() || value.contains('\0') || value.contains('\\') {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::UnsafePath,
+            "transaction path is not a canonical portable relative path",
+        ));
+    }
+    let path = PathBuf::from(value);
+    if path.has_root()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::UnsafePath,
+            "transaction path escapes its root",
+        ));
+    }
+    Ok(path)
+}
+
+fn validate_transaction_segment(value: &str) -> Result<(), NativeStorageError> {
+    if value.is_empty()
+        || value.len() > 128
+        || value.contains('\0')
+        || Path::new(value).file_name() != Some(std::ffi::OsStr::new(value))
+    {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "transaction identifier is not a safe path segment",
+        ));
+    }
+    Ok(())
+}
+
+fn modified_millis(metadata: &fs::Metadata) -> Result<f64, NativeStorageError> {
+    let duration = metadata
+        .modified()
+        .map_err(NativeStorageError::io)?
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("file modification time predates the Unix epoch: {error}"),
+            )
+        })?;
+    Ok(duration.as_secs_f64() * 1000.0)
+}
+
+#[cfg(unix)]
+fn native_mode(metadata: &fs::Metadata) -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    metadata.mode() & 0o777
+}
+
+#[cfg(windows)]
+fn native_mode(_metadata: &fs::Metadata) -> u32 {
+    0o666
+}
+
+#[cfg(not(any(unix, windows)))]
+fn native_mode(_metadata: &fs::Metadata) -> u32 {
+    0o600
+}
+
+#[cfg(unix)]
+fn capture_attributes(path: &Path) -> Result<Vec<CapturedAttribute>, NativeStorageError> {
+    use super::extended_attribute_error::ExtendedAttributeError;
+    use super::extended_attribute_namespace::ExtendedAttributeNamespace;
+    use byckr_xattr::FileExt;
+
+    let file = File::open(path).map_err(NativeStorageError::io)?;
+    let mut attributes = Vec::new();
+    for name in file
+        .list_xattr()
+        .map_err(|error| ExtendedAttributeError::for_file(error, "listxattr", path))?
+        .filter(|name| !ExtendedAttributeNamespace::belongs_to_the_kernel(name))
+    {
+        let name = name.to_str().ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "transaction xattr name is not valid UTF-8",
+            )
+        })?;
+        let Some(value) = file.get_xattr(name).map_err(|error| {
+            ExtendedAttributeError::for_attribute(error, "getxattr", name, path)
+        })?
+        else {
+            continue;
+        };
+        attributes.push(CapturedAttribute {
+            name: name.into(),
+            value: BASE64.encode(value),
+        });
+    }
+    Ok(attributes)
+}
+
+// The signature mirrors the Unix implementation so callers stay platform-free.
+#[allow(clippy::unnecessary_wraps)]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn capture_attributes(path: &Path) -> Result<Vec<CapturedAttribute>, NativeStorageError> {
+    Ok(read_host_manifest(path)?
+        .into_iter()
+        .map(|(name, value)| CapturedAttribute { name, value })
+        .collect())
+}
+
+#[allow(clippy::unnecessary_wraps)]
+#[cfg(all(
+    not(unix),
+    not(windows),
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+fn capture_attributes(_path: &Path) -> Result<Vec<CapturedAttribute>, NativeStorageError> {
+    // The sidecar is captured as a file in its own right, so its contents are
+    // already covered by the transaction's before-image.
+    Ok(Vec::new())
+}
+
+/// Capture a record's alternate data stream so a rollback can restore it.
+///
+/// FYLO metadata lives in one JSON manifest stream on NTFS rather than in
+/// per-name xattrs, and its values are already base64, so the manifest maps
+/// directly onto the captured form the Unix path produces.
+#[cfg(windows)]
+fn capture_attributes(path: &Path) -> Result<Vec<CapturedAttribute>, NativeStorageError> {
+    Ok(read_attribute_stream(path)?
+        .into_iter()
+        .map(|(name, value)| CapturedAttribute { name, value })
+        .collect())
+}
+
+/// Restore a record's alternate data stream from its before-image.
+///
+/// The stream is replaced wholesale, and removed when the before-image had
+/// none, so a rolled-back mutation cannot leave an attribute it added behind.
+#[cfg(windows)]
+pub(crate) fn restore_attributes(
+    path: &Path,
+    attributes: &[CapturedAttribute],
+) -> Result<(), NativeStorageError> {
+    let stream = attribute_stream_path(path);
+    if attributes.is_empty() {
+        match fs::remove_file(&stream) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(NativeStorageError::io(error)),
+        }
+    }
+    let manifest: std::collections::BTreeMap<String, String> = attributes
+        .iter()
+        .map(|attribute| (attribute.name.clone(), attribute.value.clone()))
+        .collect();
+    let encoded = serde_json::to_vec(&manifest).map_err(|error| json_error(&error))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(stream)
+        .map_err(NativeStorageError::io)?;
+    file.write_all(&encoded).map_err(NativeStorageError::io)?;
+    crate::sync_handle(&file).map_err(NativeStorageError::io)
+}
+
+/// Path of the FYLO metadata stream beside a record.
+#[cfg(windows)]
+fn attribute_stream_path(path: &Path) -> PathBuf {
+    use std::ffi::OsString;
+
+    let mut stream = OsString::from(path.as_os_str());
+    stream.push(":fylo.xattrs");
+    PathBuf::from(stream)
+}
+
+/// Read the FYLO metadata stream, treating an absent one as empty.
+#[cfg(windows)]
+fn read_attribute_stream(
+    path: &Path,
+) -> Result<std::collections::BTreeMap<String, String>, NativeStorageError> {
+    match fs::read(attribute_stream_path(path)) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("Windows FYLO ADS manifest is corrupt: {error}"),
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(std::collections::BTreeMap::new())
+        }
+        Err(error) => Err(NativeStorageError::io(error)),
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn restore_attributes(
+    path: &Path,
+    attributes: &[CapturedAttribute],
+) -> Result<(), NativeStorageError> {
+    use super::extended_attribute_error::ExtendedAttributeError;
+    use super::extended_attribute_namespace::ExtendedAttributeNamespace;
+    use byckr_xattr::FileExt;
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(NativeStorageError::io)?;
+    for name in file
+        .list_xattr()
+        .map_err(|error| ExtendedAttributeError::for_file(error, "listxattr", path))?
+        .filter(|name| !ExtendedAttributeNamespace::belongs_to_the_kernel(name))
+    {
+        file.remove_xattr(&name).map_err(|error| {
+            ExtendedAttributeError::for_attribute(
+                error,
+                "removexattr",
+                &name.to_string_lossy(),
+                path,
+            )
+        })?;
+    }
+    for attribute in attributes {
+        let value = BASE64.decode(&attribute.value).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("transaction xattr is not canonical base64: {error}"),
+            )
+        })?;
+        if BASE64.encode(&value) != attribute.value {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "transaction xattr is not canonical base64",
+            ));
+        }
+        file.set_xattr(&attribute.name, &value).map_err(|error| {
+            ExtendedAttributeError::for_attribute(error, "setxattr", &attribute.name, path)
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn restore_attributes(
+    path: &Path,
+    attributes: &[CapturedAttribute],
+) -> Result<(), NativeStorageError> {
+    write_host_manifest(
+        path,
+        &attributes
+            .iter()
+            .map(|attribute| (attribute.name.clone(), attribute.value.clone()))
+            .collect(),
+    )
+}
+
+#[cfg(all(
+    not(unix),
+    not(windows),
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+pub(crate) fn restore_attributes(
+    _path: &Path,
+    attributes: &[CapturedAttribute],
+) -> Result<(), NativeStorageError> {
+    if attributes.is_empty() {
+        Ok(())
+    } else {
+        Err(NativeStorageError::new(
+            NativeStorageErrorCode::Unsupported,
+            "transaction metadata restoration is unavailable on this platform",
+        ))
+    }
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> Result<(), NativeStorageError> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(NativeStorageError::io)
+}
+
+// The signature mirrors the Unix implementation so callers stay platform-free.
+#[allow(clippy::unnecessary_wraps)]
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) -> Result<(), NativeStorageError> {
+    Ok(())
+}
+
+/// Every durable transition a crash test may interrupt.
+///
+/// The list is the contract the crash matrix enumerates, so a new failpoint
+/// must be declared here to be injectable — which is also what stops it from
+/// being added without coverage.
+pub const FAILPOINTS: [&str; 38] = [
+    "before-file-write",
+    "after-file-rename",
+    "after-file-sync",
+    "after-capture",
+    "after-state-writing",
+    "after-metadata-write",
+    "after-delete-rename",
+    "after-restore-rename",
+    "after-reshard-rename",
+    "before-commit-marker",
+    "after-commit-marker",
+    "after-commit-object",
+    "after-record-payload-rename",
+    "after-record-sidecar-rename",
+    "before-log-append",
+    "after-log-append",
+    "before-log-sync",
+    "after-log-sync",
+    "after-log-apply-step",
+    "before-namespace-log-sync",
+    "after-namespace-log-sync",
+    "after-namespace-apply-part",
+    "before-namespace-collection-append",
+    "after-checkpoint-flush",
+    "after-checkpoint-remove",
+    "after-schema-file",
+    "after-schema-record",
+    "after-schemas-snapshot",
+    "after-compaction-copy",
+    "after-compaction-sync",
+    "after-compaction-record",
+    "after-compaction-remove",
+    "after-layout-staging",
+    "after-layout-marker",
+    "after-layout-swap",
+    "after-pack-staging",
+    "after-shrink-relocate",
+    "after-shrink-truncate",
+];
+
+pub(crate) fn failpoint(name: &str) -> Result<(), NativeStorageError> {
+    static HITS: AtomicU64 = AtomicU64::new(0);
+    debug_assert!(
+        FAILPOINTS.contains(&name),
+        "undeclared failpoint: {name}; add it to FAILPOINTS so the crash matrix covers it"
+    );
+    if std::env::var("FYLO_RUST_FAILPOINT").ok().as_deref() != Some(name) {
+        return Ok(());
+    }
+    // `FYLO_RUST_FAILPOINT_SKIP=n` passes the first n hits, so a gate can reach
+    // every occurrence of a transition within one operation, not just the first.
+    let skip = std::env::var("FYLO_RUST_FAILPOINT_SKIP")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    if HITS.fetch_add(1, Ordering::Relaxed) < skip {
+        return Ok(());
+    }
+    match std::env::var("FYLO_RUST_FAILPOINT_ACTION").ok().as_deref() {
+        Some("abort") => std::process::abort(),
+        Some("panic") => panic!("FYLO Rust failpoint: {name}"),
+        // A full volume is the failure a durable writer is most likely to meet
+        // and least likely to be tested against, and it is an ordinary I/O
+        // error rather than a lost process: the writer must roll back in place
+        // and leave nothing for recovery to do.
+        Some("enospc") => Err(NativeStorageError::io(std::io::Error::from_raw_os_error(
+            DISK_FULL_ERRNO,
+        ))),
+        // A filesystem or project quota can be exhausted while the underlying
+        // volume still has free blocks. It follows the same in-process
+        // rollback contract as ENOSPC, but carries a distinct native error so
+        // the matrix proves neither platform path is accidentally special.
+        Some("edquot") => Err(NativeStorageError::io(std::io::Error::from_raw_os_error(
+            DISK_QUOTA_ERRNO,
+        ))),
+        _ => Err(NativeStorageError::new(
+            NativeStorageErrorCode::Io,
+            format!("injected FYLO Rust failpoint: {name}"),
+        )),
+    }
+}
+
+/// `ENOSPC` on Unix, `ERROR_DISK_FULL` on Windows.
+#[cfg(windows)]
+const DISK_FULL_ERRNO: i32 = 112;
+#[cfg(not(windows))]
+const DISK_FULL_ERRNO: i32 = 28;
+
+/// `ERROR_DISK_QUOTA_EXCEEDED` on Windows.
+#[cfg(windows)]
+const DISK_QUOTA_ERRNO: i32 = 1_295;
+/// `EDQUOT` on Linux and Android.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const DISK_QUOTA_ERRNO: i32 = 122;
+/// `EDQUOT` on Darwin and the BSD family supported by Rust.
+#[cfg(all(not(windows), not(any(target_os = "linux", target_os = "android"))))]
+const DISK_QUOTA_ERRNO: i32 = 69;
+
+fn json_error(error: &serde_json::Error) -> NativeStorageError {
+    NativeStorageError::new(
+        NativeStorageErrorCode::CorruptMetadata,
+        format!("cannot encode native transaction metadata: {error}"),
+    )
+}
+
+/// A document body in canonical form, within the native size limit.
+fn canonical_body(encoded: &[u8]) -> Result<Vec<u8>, NativeStorageError> {
+    let document = Document::parse(encoded, DocumentLimits::default()).map_err(|error| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptDocument,
+            format!("document is invalid: {error}"),
+        )
+    })?;
+    let canonical = document.encode().map_err(|error| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptDocument,
+            format!("document cannot be encoded: {error}"),
+        )
+    })?;
+    if canonical.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::FileTooLarge,
+            "document exceeds the native write limit",
+        ));
+    }
+    Ok(canonical)
+}
+
+/// Check a payload the EFS sidecar profile just published: it belongs to
+/// the root's recorded owner and is the file the root opened.
+#[cfg(unix)]
+fn verify_profiled_payload(root: &NativeRoot, path: &Path) -> Result<(), NativeStorageError> {
+    let (file, metadata) = root.open_file(path, super::MAX_RAW_FILE_BYTES)?;
+    super::sidecar_attributes::SidecarAttributes::verify_owner(root, &metadata, false)?;
+    root.verify_open_file_identity(path, &file)?;
+    root.assert_profile_owned()
+}
+
+/// The EFS sidecar profile keeps its owner in POSIX file metadata.
+#[cfg(not(unix))]
+fn verify_profiled_payload(_root: &NativeRoot, _path: &Path) -> Result<(), NativeStorageError> {
+    Err(NativeStorageError::new(
+        NativeStorageErrorCode::Unsupported,
+        "the EFS sidecar profile requires POSIX files",
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn an_unpublished_capture_scratch_is_not_part_of_the_sequence() {
+        let root = byckr_test_support::TestFolder::path()
+            .join(format!("fylo-capture-scratch-{}", unique_name("t")));
+        let captures = root.join("captures");
+        fs::create_dir_all(&captures).unwrap();
+        fs::write(
+            captures.join("000000.json"),
+            br#"{"path":"docs/a.json","present":false}"#,
+        )
+        .unwrap();
+        fs::write(captures.join("000001.json.rust-7-1a2b-3.tmp"), b"{").unwrap();
+        assert_eq!(read_captures(&root).unwrap().len(), 1);
+        fs::write(
+            captures.join("000003.json"),
+            br#"{"path":"docs/b.json","present":false}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_captures(&root).unwrap_err().code(),
+            NativeStorageErrorCode::CorruptMetadata,
+            "a gap in published captures stays corrupt"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    use super::*;
+    use byckr_test_support::{McdcCase, assert_unique_cause_mcdc};
+    use serde_json::json;
+
+    struct TestRoot(PathBuf);
+
+    impl TestRoot {
+        fn create() -> Self {
+            let root = byckr_test_support::TestFolder::path().join(unique_name("fylo-native-write"));
+            fs::create_dir_all(root.join(".collections/users/docs")).unwrap();
+            fs::create_dir_all(root.join(".collections/users/.deleted")).unwrap();
+            fs::create_dir_all(root.join(".collections/users/index")).unwrap();
+            fs::write(root.join(".collections/users/index/keys.snapshot"), b"").unwrap();
+            fs::write(root.join(".collections/users/index/keys.wal"), b"").unwrap();
+            Self(root)
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    fn transaction_manifest_case(
+        name: &'static str,
+        manifest: &TransactionManifest,
+    ) -> McdcCase<6> {
+        McdcCase::new(
+            name,
+            manifest.invalid_conditions("users", "txn-1"),
+            manifest.validate("users", "txn-1").is_err(),
+        )
+    }
+
+    #[test]
+    fn mcdc_storage_transaction_manifest_rejection() {
+        let valid = TransactionManifest {
+            format: TRANSACTION_FORMAT.into(),
+            id: "txn-1".into(),
+            collection: "users".into(),
+            operation: "put".into(),
+            phase: TransactionPhase::Active,
+            generation_before: 7,
+            event_offset: 0,
+            captures: Vec::new(),
+        };
+        let cases = [
+            transaction_manifest_case("valid_baseline", &valid),
+            transaction_manifest_case(
+                "wrong_format",
+                &TransactionManifest {
+                    format: "unknown".into(),
+                    ..valid.clone()
+                },
+            ),
+            transaction_manifest_case(
+                "wrong_id",
+                &TransactionManifest {
+                    id: "txn-2".into(),
+                    ..valid.clone()
+                },
+            ),
+            transaction_manifest_case(
+                "wrong_collection",
+                &TransactionManifest {
+                    collection: "audit".into(),
+                    ..valid.clone()
+                },
+            ),
+            transaction_manifest_case(
+                "empty_operation",
+                &TransactionManifest {
+                    operation: String::new(),
+                    ..valid.clone()
+                },
+            ),
+            transaction_manifest_case(
+                "operation_too_long",
+                &TransactionManifest {
+                    operation: "x".repeat(257),
+                    ..valid.clone()
+                },
+            ),
+            transaction_manifest_case(
+                "unexpected_capture",
+                &TransactionManifest {
+                    captures: vec![Value::Null],
+                    ..valid
+                },
+            ),
+        ];
+        assert_unique_cause_mcdc(
+            "storage.transaction_manifest_rejection",
+            [
+                "format_mismatch",
+                "identifier_mismatch",
+                "collection_mismatch",
+                "operation_empty",
+                "operation_too_long",
+                "captures_present",
+            ],
+            &cases,
+        );
+    }
+
+    #[test]
+    fn puts_a_document_with_a_compatible_transaction_generation() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer
+            .put_document(
+                "users",
+                "4VRNF52JPCO",
+                br#"{"name":"Ada","score":42}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+        let collection = writer.root.collection("users").unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52JPCO").unwrap().bytes,
+            br#"{"name":"Ada","score":42}"#
+        );
+        assert!(
+            fixture
+                .0
+                .join(".collections/users/docs/O/4VRNF52JPCO.json")
+                .is_file()
+        );
+        assert_eq!(collection.generation().unwrap().generation, 2);
+        assert_eq!(
+            collection.index_snapshot().unwrap().as_bytes(),
+            b"name/eq/Ada/4VRNF52JPCO\nname/f/Ada/4VRNF52JPCO\nname/g3/Ada/4VRNF52JPCO\nname/r/adA/4VRNF52JPCO\nscore/eq/42/4VRNF52JPCO\nscore/n/c045000000000000/4VRNF52JPCO\nscore/nr/3fbaffffffffffff/4VRNF52JPCO\n"
+        );
+    }
+
+    #[test]
+    fn patches_and_soft_deletes_without_changing_the_document_identity() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer
+            .put_document(
+                "users",
+                "4VRNF52JPCO",
+                br#"{"name":"Ada","score":42}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+        writer
+            .patch_document("users", "4VRNF52JPCO", br#"{"name":"Grace","score":50}"#)
+            .unwrap();
+        let collection = writer.root.collection("users").unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52JPCO").unwrap().bytes,
+            br#"{"name":"Grace","score":50}"#
+        );
+        assert!(
+            std::str::from_utf8(collection.index_snapshot().unwrap().as_bytes())
+                .unwrap()
+                .contains("name/eq/Grace/4VRNF52JPCO")
+        );
+        writer.delete_document("users", "4VRNF52JPCO").unwrap();
+        assert!(collection.document_ids().unwrap().is_empty());
+        assert_eq!(
+            collection
+                .read_deleted_document("4VRNF52JPCO")
+                .unwrap()
+                .bytes,
+            br#"{"name":"Grace","score":50}"#
+        );
+        assert!(collection.index_snapshot().unwrap().as_bytes().is_empty());
+        assert_eq!(collection.generation().unwrap().generation, 6);
+    }
+
+    #[test]
+    fn shallow_patch_preserves_unspecified_fields() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer
+            .put_document(
+                "users",
+                "4VRNF52JPCO",
+                br#"{"name":"Ada","score":42}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+        writer
+            .patch_document_fields(
+                "users",
+                "4VRNF52JPCO",
+                &serde_json::from_value(json!({"score": 50})).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            writer
+                .root
+                .collection("users")
+                .unwrap()
+                .read_document("4VRNF52JPCO")
+                .unwrap()
+                .bytes,
+            br#"{"name":"Ada","score":50}"#
+        );
+    }
+
+    #[test]
+    fn sql_mutations_insert_update_and_delete_atomically() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        let inserted = writer
+            .execute_sql_mutation("INSERT INTO users (name, score) VALUES ('Ada', 42)")
+            .unwrap();
+        assert_eq!(inserted.kind, SqlMutationResultKind::Insert);
+        assert_eq!(inserted.affected, 1);
+        assert_eq!(inserted.identifiers.len(), 1);
+
+        writer
+            .put_document(
+                "users",
+                "4VRNF52JPCO",
+                br#"{"name":"Grace","score":42}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+        let updated = writer
+            .execute_sql_mutation("UPDATE users SET score = 50 WHERE score = 42")
+            .unwrap();
+        assert_eq!(updated.kind, SqlMutationResultKind::Update);
+        assert_eq!(updated.affected, 2);
+        for identifier in &updated.identifiers {
+            let stored = writer
+                .root
+                .collection("users")
+                .unwrap()
+                .read_document(identifier)
+                .unwrap();
+            assert_eq!(
+                parse_document_fields(&stored.bytes).unwrap().get("score"),
+                Some(&json!(50))
+            );
+        }
+
+        let deleted = writer
+            .execute_sql_mutation("DELETE FROM users WHERE score = 50")
+            .unwrap();
+        assert_eq!(deleted.kind, SqlMutationResultKind::Delete);
+        assert_eq!(deleted.affected, 2);
+        assert!(
+            writer
+                .root
+                .collection("users")
+                .unwrap()
+                .document_ids()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn document_put_writes_initial_metadata_and_skips_null_names() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer
+            .put_document(
+                "users",
+                "4VRNF52JPCO",
+                br#"{"name":"Ada"}"#,
+                PutDocumentOptions {
+                    metadata: serde_json::from_value(json!({
+                        "source": "native-put",
+                        "absent": null
+                    }))
+                    .unwrap(),
+                },
+            )
+            .unwrap();
+        let target = writer
+            .root
+            .collection("users")
+            .unwrap()
+            .read_document("4VRNF52JPCO")
+            .unwrap()
+            .path;
+        let file = File::open(&target).unwrap();
+        let attributes = super::super::read_byckr_attributes(&file, &target).unwrap();
+        assert_eq!(
+            attributes.get("user.fylo.meta.source").map(Vec::as_slice),
+            Some(&br#""native-put""#[..])
+        );
+        assert!(!attributes.contains_key("user.fylo.meta.absent"));
+    }
+
+    #[test]
+    fn metadata_merges_removes_and_advances_the_update_stamp() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer
+            .put_document(
+                "users",
+                "4VRNF52JPCO",
+                br#"{"name":"Ada"}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+        writer
+            .set_record_metadata(
+                "users",
+                "4VRNF52JPCO",
+                &serde_json::from_value(json!({"team": "storage", "draft": true})).unwrap(),
+            )
+            .unwrap();
+        let first = read_meta_stamp(&writer, "4VRNF52JPCO");
+        writer
+            .set_record_metadata(
+                "users",
+                "4VRNF52JPCO",
+                &serde_json::from_value(json!({"draft": Value::Null})).unwrap(),
+            )
+            .unwrap();
+        // Removing an already-absent xattr is idempotent on every supported
+        // Unix platform; Darwin reports ENOATTR as ErrorKind::Other.
+        writer
+            .set_record_metadata(
+                "users",
+                "4VRNF52JPCO",
+                &serde_json::from_value(json!({"draft": Value::Null})).unwrap(),
+            )
+            .unwrap();
+        let target = writer
+            .root
+            .collection("users")
+            .unwrap()
+            .read_document("4VRNF52JPCO")
+            .unwrap()
+            .path;
+        let file = File::open(&target).unwrap();
+        let attributes = super::super::read_byckr_attributes(&file, &target).unwrap();
+        assert!(attributes.contains_key("user.fylo.meta.team"));
+        assert!(!attributes.contains_key("user.fylo.meta.draft"));
+        assert!(read_meta_stamp(&writer, "4VRNF52JPCO") > first);
+    }
+
+    fn read_meta_stamp(writer: &NativeWriteRoot, identifier: &str) -> u64 {
+        let target = writer
+            .root
+            .collection("users")
+            .unwrap()
+            .read_document(identifier)
+            .unwrap()
+            .path;
+        let file = File::open(&target).unwrap();
+        super::super::read_byckr_attributes(&file, &target)
+            .unwrap()
+            .get(super::super::META_UPDATED_XATTR)
+            .map(|value| String::from_utf8_lossy(value).parse::<u64>().unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn a_before_image_restores_the_metadata_a_mutation_replaced() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer
+            .put_document(
+                "users",
+                "4VRNF52JPCO",
+                br#"{"name":"Ada"}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+        let target = writer
+            .root
+            .collection("users")
+            .unwrap()
+            .read_document("4VRNF52JPCO")
+            .unwrap()
+            .path;
+
+        write_byckr_attribute(&target, "user.fylo.meta.team", br#""storage""#).unwrap();
+        let before = capture_attributes(&target).unwrap();
+        assert!(
+            before.iter().any(|a| a.name == "user.fylo.meta.team"),
+            "the before-image captured no metadata to restore"
+        );
+
+        // A mutation replaces one name and adds another.
+        write_byckr_attribute(&target, "user.fylo.meta.team", br#""platform""#).unwrap();
+        write_byckr_attribute(&target, "user.fylo.meta.draft", b"true").unwrap();
+
+        restore_attributes(&target, &before).unwrap();
+
+        let file = File::open(&target).unwrap();
+        let restored = crate::read_byckr_attributes(&file, &target).unwrap();
+        assert_eq!(
+            restored.get("user.fylo.meta.team").map(Vec::as_slice),
+            Some(&br#""storage""#[..]),
+            "rollback did not restore the replaced metadata"
+        );
+        assert!(
+            !restored.contains_key("user.fylo.meta.draft"),
+            "rollback left behind metadata the mutation added"
+        );
+    }
+
+    #[test]
+    fn replacing_metadata_removes_a_name_the_record_omits() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer
+            .put_document(
+                "users",
+                "4VRNF52JPCO",
+                br#"{"name":"Ada"}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+        writer
+            .set_record_metadata(
+                "users",
+                "4VRNF52JPCO",
+                &serde_json::from_value(json!({"team": "storage", "draft": true})).unwrap(),
+            )
+            .unwrap();
+
+        // A merge leaves an omitted name alone; a replace is authoritative.
+        writer
+            .set_record_metadata(
+                "users",
+                "4VRNF52JPCO",
+                &serde_json::from_value(json!({"team": "platform"})).unwrap(),
+            )
+            .unwrap();
+        let merged = writer
+            .root
+            .collection("users")
+            .unwrap()
+            .read_custom_metadata("4VRNF52JPCO")
+            .unwrap();
+        assert_eq!(merged.get("draft"), Some(&json!(true)));
+
+        writer
+            .replace_record_metadata(
+                "users",
+                "4VRNF52JPCO",
+                &serde_json::from_value(json!({"team": "platform"})).unwrap(),
+            )
+            .unwrap();
+        let replaced = writer
+            .root
+            .collection("users")
+            .unwrap()
+            .read_custom_metadata("4VRNF52JPCO")
+            .unwrap();
+        assert_eq!(replaced.get("team"), Some(&json!("platform")));
+        assert!(!replaced.contains_key("draft"));
+    }
+
+    #[test]
+    fn puts_raw_bytes_with_key_metadata_checksum_and_index_entries() {
+        let fixture = TestRoot::create();
+        fs::create_dir_all(fixture.0.join(".fylo-catalog/collections")).unwrap();
+        fs::write(
+            fixture.0.join(".fylo-catalog/collections/assets.json"),
+            br#"{"kind":"file"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(fixture.0.join(".buckets/assets/docs")).unwrap();
+        fs::create_dir_all(fixture.0.join(".buckets/assets/.deleted")).unwrap();
+        fs::create_dir_all(fixture.0.join(".buckets/assets/index")).unwrap();
+        fs::write(fixture.0.join(".buckets/assets/index/keys.snapshot"), b"").unwrap();
+        fs::write(fixture.0.join(".buckets/assets/index/keys.wal"), b"").unwrap();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer
+            .put_raw_file(
+                "assets",
+                "4VRNF52JPCO",
+                &[0, 1, 2, 3, 255],
+                &PutRawFileOptions {
+                    key: "/fixtures/sample.bin".into(),
+                    extension: ".bin".into(),
+                    metadata: [("reviewed".into(), Value::Bool(true))]
+                        .into_iter()
+                        .collect(),
+                },
+            )
+            .unwrap();
+        let collection = writer.root.collection("assets").unwrap();
+        let stored = collection.read_raw_file("4VRNF52JPCO").unwrap();
+        assert_eq!(stored.bytes, [0, 1, 2, 3, 255]);
+        assert_eq!(stored.key, "/fixtures/sample.bin");
+        assert_eq!(
+            stored.custom_metadata.get("reviewed"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(stored.checksum_sha256, crate::sha256_hex(&stored.bytes));
+        let snapshot = collection.index_snapshot().unwrap();
+        let snapshot = std::str::from_utf8(snapshot.as_bytes()).unwrap();
+        assert!(
+            snapshot.contains("key/eq/%252Ffixtures%252Fsample.bin/4VRNF52JPCO"),
+            "{snapshot}"
+        );
+    }
+
+    /// Mutations maintain the index by appending to the WAL rather than
+    /// walking the collection, so the only thing that proves them correct is
+    /// that the merged result still equals what a walk of the records
+    /// produces. Every incremental path is exercised, then rebuilt from truth.
+    #[test]
+    fn incremental_index_updates_match_a_rebuild_from_the_records() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        let identifiers: Vec<String> = (0..60).map(|index| format!("4VRNF52J{index:03}")).collect();
+        for (index, identifier) in identifiers.iter().enumerate() {
+            writer
+                .put_document(
+                    "users",
+                    identifier,
+                    format!(
+                        r#"{{"name":"row-{index}","score":{index},"tag":"t{}"}}"#,
+                        index % 5
+                    )
+                    .as_bytes(),
+                    PutDocumentOptions::default(),
+                )
+                .unwrap();
+        }
+        writer
+            .patch_document("users", &identifiers[0], br#"{"name":"Grace"}"#)
+            .unwrap();
+        writer
+            .patch_document_fields(
+                "users",
+                &identifiers[1],
+                &json!({ "extra": "merged" }).as_object().unwrap().clone(),
+            )
+            .unwrap();
+        writer
+            .set_record_metadata(
+                "users",
+                &identifiers[2],
+                &json!({ "reviewed": true }).as_object().unwrap().clone(),
+            )
+            .unwrap();
+        writer.delete_document("users", &identifiers[3]).unwrap();
+        writer.delete_document("users", &identifiers[4]).unwrap();
+        writer.restore_document("users", &identifiers[4]).unwrap();
+
+        let collection = writer.root.collection("users").unwrap();
+        // The WAL must actually be carrying entries, or this asserts nothing.
+        let index = collection.path.join("index");
+        assert!(
+            fs::metadata(index.join("keys.wal")).unwrap().len() > 0,
+            "incremental updates never reached the WAL"
+        );
+        let incremental = collection.index_snapshot().unwrap().as_bytes().to_vec();
+
+        writer.rebuild_collection("users").unwrap();
+        let rebuilt = writer
+            .root
+            .collection("users")
+            .unwrap()
+            .index_snapshot()
+            .unwrap()
+            .as_bytes()
+            .to_vec();
+        assert_eq!(
+            std::str::from_utf8(&incremental).unwrap(),
+            std::str::from_utf8(&rebuilt).unwrap()
+        );
+    }
+
+    /// The handshake advertises `ttid-binary-ascending` and every query cursor
+    /// depends on it. Directory order is (shard, identifier), and ADR 0006 made
+    /// the shard the identifier's trailing characters, so the two orders now
+    /// disagree — these identifiers sort one way by TTID and the other by
+    /// shard.
+    /// TTID matches case-insensitively, so `4vrnf52jpco` and `4VRNF52JPCO`
+    /// are both valid spellings of one identifier. Naming a file after each
+    /// gives one record on a case-insensitive filesystem and two on a
+    /// case-sensitive one, so the non-canonical spelling is refused where it
+    /// would first become a file.
+    /// A flat collection accepted writes and then failed every read, because
+    /// enumeration walks `docs/` expecting shard directories and refuses a
+    /// file. Refusing the width is what stops a root reaching that state.
+    /// The layout is a property of the root; the configuration is per process.
+    /// A write under a mismatched width would land in a shard the next reader
+    /// does not look in, and relocating every record is bounded only by
+    /// collection size, so it never happens implicitly inside a write.
+    #[test]
+    fn refuses_a_write_whose_configured_width_differs_from_the_collection() {
+        let fixture = TestRoot::create();
+        // Created at the default width, with the descriptor that records it.
+        NativeWriteRoot::open(&fixture.0)
+            .unwrap()
+            .create_collection("audit", CollectionKind::Document, None)
+            .unwrap();
+
+        // This process is configured for a different width.
+        let mismatched =
+            NativeWriteRoot::open(&fixture.0)
+                .unwrap()
+                .with_config(super::super::RootConfig {
+                    shard_width: Some(3),
+                    ..super::super::RootConfig::default()
+                });
+        let error = mismatched
+            .put_document(
+                "audit",
+                "4VRNF52JPCO",
+                br#"{"name":"Ada"}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::ShardWidth);
+        assert_eq!(error.code().as_str(), "ESHARDWIDTH");
+        // The message names the command that resolves it.
+        assert!(error.to_string().contains("fylo reshard audit"), "{error}");
+
+        // Reads are unaffected, and so is the reshard that resolves it.
+        assert!(mismatched.root.collection("audit").is_ok());
+        mismatched.reshard_collection("audit", 3).unwrap();
+        mismatched
+            .put_document(
+                "audit",
+                "4VRNF52JPCO",
+                br#"{"name":"Ada"}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn refuses_a_flat_collection_width() {
+        let fixture = TestRoot::create();
+        let writer =
+            NativeWriteRoot::open(&fixture.0)
+                .unwrap()
+                .with_config(super::super::RootConfig {
+                    shard_width: Some(0),
+                    ..super::super::RootConfig::default()
+                });
+        let error = writer
+            .create_collection("flat", CollectionKind::Document, None)
+            .unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::CorruptMetadata);
+        assert!(error.to_string().contains("must be 1 to 4"), "{error}");
+    }
+
+    #[test]
+    fn refuses_a_non_canonical_identifier_spelling() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        let error = writer
+            .put_document(
+                "users",
+                "4vrnf52jpco",
+                br#"{"name":"Ada"}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::InvalidDocumentId);
+        // The message names the spelling to use, so a caller can repair it.
+        assert!(error.to_string().contains("4VRNF52JPCO"), "{error}");
+        // The canonical spelling is accepted, and nothing was left behind.
+        writer
+            .put_document(
+                "users",
+                "4VRNF52JPCO",
+                br#"{"name":"Ada"}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            writer
+                .root
+                .collection("users")
+                .unwrap()
+                .document_ids()
+                .unwrap(),
+            vec!["4VRNF52JPCO".to_owned()]
+        );
+    }
+
+    #[test]
+    fn enumeration_is_ascending_by_identifier_not_by_shard_directory() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        for identifier in ["4VRNF52AAZZ", "4VRNF52BB11"] {
+            writer
+                .put_document(
+                    "users",
+                    identifier,
+                    br#"{"name":"Ada"}"#,
+                    PutDocumentOptions::default(),
+                )
+                .unwrap();
+        }
+        let collection = writer.root.collection("users").unwrap();
+        assert_eq!(
+            collection.document_ids().unwrap(),
+            vec!["4VRNF52AAZZ".to_owned(), "4VRNF52BB11".to_owned()],
+            "enumeration followed shard directory order"
+        );
+    }
+
+    #[test]
+    fn compacts_the_index_wal_once_it_outgrows_the_snapshot() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        for index in 0..300 {
+            writer
+                .put_document(
+                    "users",
+                    &format!("4VRNF52J{index:03}"),
+                    format!(
+                        r#"{{"name":"row-{index}","score":{index},"tag":"t{}"}}"#,
+                        index % 5
+                    )
+                    .as_bytes(),
+                    PutDocumentOptions::default(),
+                )
+                .unwrap();
+        }
+        let index = fixture.0.join(".collections/users/index");
+        let wal = fs::metadata(index.join("keys.wal")).unwrap().len();
+        let snapshot = fs::metadata(index.join("keys.snapshot")).unwrap().len();
+        assert!(snapshot > 0, "compaction never ran");
+        assert!(
+            !crate::index_limit::IndexLimit::wants_compaction(wal, snapshot),
+            "WAL grew to {wal} bytes against a {snapshot}-byte snapshot"
+        );
+    }
+
+    const MEBIBYTE: usize = 1024 * 1024;
+
+    fn index_path(fixture: &TestRoot, file: &str) -> PathBuf {
+        fixture.0.join(".collections/users/index").join(file)
+    }
+
+    fn index_length(fixture: &TestRoot, file: &str) -> u64 {
+        fs::metadata(index_path(fixture, file)).unwrap().len()
+    }
+
+    /// Append lines that remove and re-add `key` until the log holds
+    /// `bytes`, so it grows without changing what it merges to.
+    fn append_no_op_lines(fixture: &TestRoot, key: &str, bytes: usize) {
+        let pair = format!("-\t{key}\n+\t{key}\n");
+        let lines = pair.repeat(bytes.div_ceil(pair.len()));
+        let mut wal = OpenOptions::new()
+            .append(true)
+            .open(index_path(fixture, "keys.wal"))
+            .unwrap();
+        wal.write_all(lines.as_bytes()).unwrap();
+    }
+
+    /// Sorted index keys that no record produced, `bytes` long in all.
+    fn filler_snapshot(bytes: usize) -> Vec<u8> {
+        let padding = "p".repeat(100);
+        let line_length = format!("filler/{padding}/00000000\n").len();
+        let mut snapshot = Vec::with_capacity(bytes + line_length);
+        for number in 0..bytes.div_ceil(line_length) {
+            writeln!(snapshot, "filler/{padding}/{number:08}").unwrap();
+        }
+        snapshot
+    }
+
+    /// A collection whose `keys.wal` passed the 64 MiB that readers accept,
+    /// as a long load left it before the log was capped. Returns its index.
+    fn collection_with_oversized_index_log(fixture: &TestRoot) -> Vec<u8> {
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer
+            .put_document(
+                "users",
+                "4VRNF52J000",
+                br#"{"name":"kept"}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+        let collection = writer.root.collection("users").unwrap();
+        let index = collection.index_snapshot().unwrap().as_bytes().to_vec();
+        let key = std::str::from_utf8(&index).unwrap().lines().next().unwrap();
+        append_no_op_lines(fixture, key, 65 * MEBIBYTE);
+        assert_eq!(
+            collection.index_snapshot().unwrap_err().code(),
+            NativeStorageErrorCode::FileTooLarge,
+            "readers refuse the oversized log"
+        );
+        index
+    }
+
+    #[test]
+    fn recovery_compacts_an_index_log_that_readers_refuse() {
+        let fixture = TestRoot::create();
+        let index = collection_with_oversized_index_log(&fixture);
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer.recover_collection("users").unwrap();
+        assert_eq!(index_length(&fixture, "keys.wal"), 0);
+        let collection = writer.root.collection("users").unwrap();
+        assert_eq!(collection.index_snapshot().unwrap().as_bytes(), index);
+    }
+
+    #[test]
+    fn a_write_compacts_an_index_log_that_readers_refuse() {
+        let fixture = TestRoot::create();
+        collection_with_oversized_index_log(&fixture);
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer
+            .put_document(
+                "users",
+                "4VRNF52J001",
+                br#"{"name":"added"}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+        assert!(index_length(&fixture, "keys.wal") < MEBIBYTE as u64);
+        let collection = writer.root.collection("users").unwrap();
+        let index = collection.index_snapshot().unwrap();
+        let keys = std::str::from_utf8(index.as_bytes()).unwrap();
+        assert!(
+            keys.contains("4VRNF52J000"),
+            "the first record stays indexed"
+        );
+        assert!(keys.contains("4VRNF52J001"), "the new record is indexed");
+    }
+
+    /// A snapshot over 64 MiB once let the log grow as large as it, past
+    /// what readers accept. The log is now folded at a quarter of the read
+    /// limit however large the snapshot is; 17 MiB stands in for 64.
+    #[test]
+    fn the_index_log_is_compacted_at_a_quarter_of_the_read_limit() {
+        let fixture = TestRoot::create();
+        fs::write(
+            index_path(&fixture, "keys.snapshot"),
+            filler_snapshot(17 * MEBIBYTE),
+        )
+        .unwrap();
+        let first_filler_key = format!("filler/{}/00000000", "p".repeat(100));
+        append_no_op_lines(&fixture, &first_filler_key, 16 * MEBIBYTE + MEBIBYTE / 2);
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer
+            .put_document(
+                "users",
+                "4VRNF52J000",
+                br#"{"name":"row"}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+        let wal = index_length(&fixture, "keys.wal");
+        assert!(
+            wal <= 16 * MEBIBYTE as u64,
+            "a {wal}-byte log was left beside a 17 MiB snapshot"
+        );
+    }
+
+    const INDEX_FULL_PADDING: usize = 1000;
+    const LONG_NAME_BYTES: usize = 4000;
+
+    /// Sorted filler keys in whole lines, as many as fit in `bytes`.
+    fn filler_snapshot_within(bytes: u64) -> Vec<u8> {
+        let padding = "p".repeat(INDEX_FULL_PADDING);
+        let line_length = format!("filler/{padding}/00000000\n").len() as u64;
+        let mut snapshot = Vec::with_capacity(usize::try_from(bytes).unwrap());
+        for number in 0..bytes / line_length {
+            writeln!(snapshot, "filler/{padding}/{number:08}").unwrap();
+        }
+        snapshot
+    }
+
+    /// Give a collection's `keys.snapshot` a length of `bytes` without
+    /// storing any: for writes that only measure the index, never read it.
+    fn sized_index_snapshot(index: &Path, bytes: u64) {
+        fs::File::create(index.join("keys.snapshot"))
+            .unwrap()
+            .set_len(bytes)
+            .unwrap();
+    }
+
+    fn put_named(
+        writer: &NativeWriteRoot,
+        identifier: &str,
+        name: &str,
+    ) -> Result<(), NativeStorageError> {
+        writer.put_document(
+            "users",
+            identifier,
+            serde_json::to_vec(&json!({ "name": name }))
+                .unwrap()
+                .as_slice(),
+            PutDocumentOptions::default(),
+        )
+    }
+
+    /// A write whose keys would take the merged index past the 256 MiB that
+    /// readers accept used to commit, and every read of the collection then
+    /// failed with `CorruptIndex`. It is now refused, and nothing changes.
+    #[test]
+    fn a_write_that_would_overfill_the_index_is_refused_and_the_collection_stays_readable() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        put_named(&writer, "4VRNF52J000", "kept").unwrap();
+        fs::write(
+            index_path(&fixture, "keys.snapshot"),
+            filler_snapshot_within(crate::index_limit::IndexLimit::INDEX_BYTES - 2000),
+        )
+        .unwrap();
+        let index_before =
+            index_length(&fixture, "keys.snapshot") + index_length(&fixture, "keys.wal");
+
+        let refused = put_named(&writer, "4VRNF52J001", &"n".repeat(LONG_NAME_BYTES)).unwrap_err();
+
+        assert_eq!(refused.code(), NativeStorageErrorCode::IndexFull);
+        assert_eq!(refused.code().as_str(), "EINDEX_FULL");
+        assert!(refused.message().contains("collection users is full"));
+        assert!(refused.message().contains("251658240 bytes"));
+        let collection = writer.root.collection("users").unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52J001").unwrap_err().code(),
+            NativeStorageErrorCode::NotFound
+        );
+        assert_eq!(
+            index_length(&fixture, "keys.snapshot") + index_length(&fixture, "keys.wal"),
+            index_before
+        );
+        let index = collection.index_snapshot().unwrap();
+        assert!(
+            std::str::from_utf8(index.as_bytes())
+                .unwrap()
+                .contains("4VRNF52J000")
+        );
+    }
+
+    #[test]
+    fn a_write_that_fits_under_the_write_limit_is_accepted() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        put_named(&writer, "4VRNF52J000", "first").unwrap();
+        sized_index_snapshot(
+            &fixture.0.join(".collections/users/index"),
+            crate::index_limit::IndexLimit::WRITE_BYTES - 10_000,
+        );
+
+        put_named(&writer, "4VRNF52J001", "second").unwrap();
+
+        let collection = writer.root.collection("users").unwrap();
+        assert!(collection.read_document("4VRNF52J001").is_ok());
+    }
+
+    #[test]
+    fn a_full_collection_still_takes_deletes_and_in_place_updates() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        put_named(&writer, "4VRNF52J000", "row-1").unwrap();
+        put_named(&writer, "4VRNF52J001", "gone").unwrap();
+        sized_index_snapshot(
+            &fixture.0.join(".collections/users/index"),
+            crate::index_limit::IndexLimit::WRITE_BYTES,
+        );
+
+        writer
+            .patch_document("users", "4VRNF52J000", br#"{"name":"row-2"}"#)
+            .unwrap();
+        writer.delete_document("users", "4VRNF52J001").unwrap();
+
+        let refused = put_named(&writer, "4VRNF52J002", "new").unwrap_err();
+        assert_eq!(refused.code(), NativeStorageErrorCode::IndexFull);
+    }
+
+    #[test]
+    fn a_full_collection_refuses_a_whole_batch() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        put_named(&writer, "4VRNF52J000", "first").unwrap();
+        sized_index_snapshot(
+            &fixture.0.join(".collections/users/index"),
+            crate::index_limit::IndexLimit::WRITE_BYTES,
+        );
+        let batch = [
+            DocumentWrite::Delete {
+                identifier: "4VRNF52J000".into(),
+            },
+            DocumentWrite::Put {
+                identifier: "4VRNF52J001".into(),
+                fields: json!({ "name": "a much longer name than the first one had" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            },
+        ];
+
+        let refused = writer
+            .commit_document_writes_with("users", &batch, &PlainDocumentCodec)
+            .unwrap_err();
+
+        assert_eq!(refused.code(), NativeStorageErrorCode::IndexFull);
+        let collection = writer.root.collection("users").unwrap();
+        assert!(collection.read_document("4VRNF52J000").is_ok());
+        assert_eq!(
+            collection.read_document("4VRNF52J001").unwrap_err().code(),
+            NativeStorageErrorCode::NotFound
+        );
+    }
+
+    /// A file collection writes through a transaction rather than the log.
+    /// Its refusal restores the record without rebuilding the index from
+    /// every record, which would also drop the filler keys measured here.
+    #[test]
+    fn a_full_file_collection_refuses_a_put_without_rebuilding_its_index() {
+        let fixture = TestRoot::create();
+        fs::create_dir_all(fixture.0.join(".fylo-catalog/collections")).unwrap();
+        fs::write(
+            fixture.0.join(".fylo-catalog/collections/assets.json"),
+            br#"{"kind":"file"}"#,
+        )
+        .unwrap();
+        let index = fixture.0.join(".buckets/assets/index");
+        fs::create_dir_all(fixture.0.join(".buckets/assets/docs")).unwrap();
+        fs::create_dir_all(fixture.0.join(".buckets/assets/.deleted")).unwrap();
+        fs::create_dir_all(&index).unwrap();
+        fs::write(index.join("keys.wal"), b"").unwrap();
+        sized_index_snapshot(&index, crate::index_limit::IndexLimit::WRITE_BYTES);
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+
+        let refused = writer
+            .put_raw_file(
+                "assets",
+                "4VRNF52JPCO",
+                &[0, 1, 2, 3],
+                &PutRawFileOptions {
+                    key: "/fixtures/sample.bin".into(),
+                    extension: ".bin".into(),
+                    metadata: std::collections::BTreeMap::new(),
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(refused.code(), NativeStorageErrorCode::IndexFull);
+        assert!(refused.message().contains("collection assets is full"));
+        let collection = writer.root.collection("assets").unwrap();
+        assert_eq!(
+            collection.read_raw_file("4VRNF52JPCO").unwrap_err().code(),
+            NativeStorageErrorCode::NotFound
+        );
+        assert_eq!(
+            fs::metadata(index.join("keys.snapshot")).unwrap().len(),
+            crate::index_limit::IndexLimit::WRITE_BYTES
+        );
+    }
+
+    /// Rejects any document with a `bad` field, as a schema would.
+    struct RejectsBad;
+
+    impl DocumentCodec for RejectsBad {
+        fn decode(
+            &self,
+            _collection: &str,
+            fields: Map<String, Value>,
+        ) -> Result<Map<String, Value>, NativeStorageError> {
+            Ok(fields)
+        }
+
+        fn validate(
+            &self,
+            _collection: &str,
+            fields: &Map<String, Value>,
+        ) -> Result<Option<String>, NativeStorageError> {
+            Ok(fields
+                .contains_key("bad")
+                .then(|| "Property 'bad' does not exist in schema 'users'".to_owned()))
+        }
+
+        fn encode(
+            &self,
+            _collection: &str,
+            fields: Map<String, Value>,
+        ) -> Result<Vec<u8>, NativeStorageError> {
+            encode_document_fields(fields)
+        }
+    }
+
+    fn fields(value: &Value) -> Map<String, Value> {
+        value.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn the_record_builder_refuses_counts_or_ignores_a_rejected_body_by_mode() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        let bad = fields(&json!({"name":"Ada","bad":true}));
+        let violations = || schema_violations(writer.path(), "users");
+
+        writer
+            .set_validation_mode("users", super::super::ValidationMode::Strict)
+            .unwrap();
+        let error = writer
+            .put_document_fields_with(
+                "users",
+                "4VRNF52JPCO",
+                bad.clone(),
+                PutDocumentOptions::default(),
+                &RejectsBad,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::SchemaViolation);
+        assert_eq!(error.code().as_str(), "ESCHEMA");
+        assert_eq!(
+            error.message(),
+            "Property 'bad' does not exist in schema 'users'"
+        );
+        let collection = writer.root.collection("users").unwrap();
+        assert!(collection.document_ids().unwrap().is_empty());
+
+        writer
+            .set_validation_mode("users", super::super::ValidationMode::Warn)
+            .unwrap();
+        writer
+            .put_document_fields_with(
+                "users",
+                "4VRNF52JPCO",
+                bad.clone(),
+                PutDocumentOptions::default(),
+                &RejectsBad,
+            )
+            .unwrap();
+        writer
+            .put_document_fields_with(
+                "users",
+                "4VRNF52JPCP",
+                fields(&json!({"name":"Grace"})),
+                PutDocumentOptions::default(),
+                &RejectsBad,
+            )
+            .unwrap();
+        assert_eq!(violations(), 1);
+        // Both rows end up with `bad`, so both count, once each, whichever
+        // path the update commits through.
+        writer
+            .execute_sql_mutation_with("UPDATE users SET bad = 1", &RejectsBad)
+            .unwrap();
+        assert_eq!(violations(), 3);
+
+        writer
+            .set_validation_mode("users", super::super::ValidationMode::Off)
+            .unwrap();
+        writer
+            .patch_document_fields_with(
+                "users",
+                "4VRNF52JPCP",
+                &fields(&json!({"bad":2})),
+                &RejectsBad,
+            )
+            .unwrap();
+        assert_eq!(violations(), 3);
+        assert_eq!(
+            collection.read_document("4VRNF52JPCP").unwrap().bytes,
+            br#"{"name":"Grace","bad":2}"#
+        );
+    }
+
+    #[test]
+    fn a_recorded_validation_mode_outranks_strict_schema_and_keeps_the_descriptor() {
+        let fixture = TestRoot::create();
+        let lenient = NativeWriteRoot::open(&fixture.0).unwrap();
+        let strict =
+            NativeWriteRoot::open(&fixture.0)
+                .unwrap()
+                .with_config(super::super::RootConfig {
+                    strict_schema: true,
+                    ..Default::default()
+                });
+        // A collection with no descriptor at all follows the host.
+        assert_eq!(
+            lenient.validation_mode("users").unwrap(),
+            super::super::ValidationMode::Off
+        );
+        assert_eq!(
+            strict.validation_mode("users").unwrap(),
+            super::super::ValidationMode::Strict
+        );
+
+        assert_eq!(
+            lenient
+                .set_validation_mode("users", super::super::ValidationMode::Warn)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            strict.validation_mode("users").unwrap(),
+            super::super::ValidationMode::Warn
+        );
+        let descriptor: Value = serde_json::from_slice(
+            &fs::read(fixture.0.join(".fylo-catalog/collections/users.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            descriptor,
+            json!({"version":1,"kind":"document","validation":"warn"})
+        );
+
+        // Recording a mode leaves the rest of an existing descriptor alone.
+        lenient
+            .create_collection("orders", CollectionKind::Document, Some(false))
+            .unwrap();
+        let path = fixture.0.join(".fylo-catalog/collections/orders.json");
+        let before: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(before.get("validation").is_none());
+        assert_eq!(
+            strict
+                .set_validation_mode("orders", super::super::ValidationMode::Off)
+                .unwrap(),
+            None
+        );
+        let mut after: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(after["validation"], "off");
+        after.as_object_mut().unwrap().remove("validation");
+        assert_eq!(after, before);
+        assert_eq!(
+            strict
+                .set_validation_mode("orders", super::super::ValidationMode::Strict)
+                .unwrap(),
+            Some(super::super::ValidationMode::Off)
+        );
+    }
+}

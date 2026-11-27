@@ -1,7 +1,7 @@
 #![no_main]
 
-use fylo_format::{Document, DocumentLimits};
-use fylo_query::{QueryLimits, StructuredQuery, parse_queries, prepare_sql};
+use byckr_format::{Document, DocumentLimits};
+use byckr_query::{QueryLimits, StructuredQuery, parse_queries, prepare_sql};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: &[u8]| {

@@ -1,37 +1,37 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/fylo-xattr",
-    "crates/fylo-chex",
-    "crates/fylo-format",
-    "crates/fylo-engine",
-    "crates/fylo-query",
-    "crates/fylo-vfs",
-    "crates/fylo-storage-native",
-    "crates/fylo-machine",
-    "crates/fylo-wasm",
-    "crates/fylo-cli",
-    "crates/fylo",
-    "crates/fylo-ffi",
-    "crates/fylo-identity",
-    "crates/fylo-test-support",
+    "crates/byckr-xattr",
+    "crates/byckr-chex",
+    "crates/byckr-format",
+    "crates/byckr-engine",
+    "crates/byckr-query",
+    "crates/byckr-vfs",
+    "crates/byckr-storage-native",
+    "crates/byckr-machine",
+    "crates/byckr-wasm",
+    "crates/byckr-cli",
+    "crates/byckr",
+    "crates/byckr-ffi",
+    "crates/byckr-identity",
+    "crates/byckr-test-support",
     "src/browser/wasm",
     "xtask",
 ]
 default-members = [
-    "crates/fylo-xattr",
-    "crates/fylo-chex",
-    "crates/fylo-format",
-    "crates/fylo-engine",
-    "crates/fylo-query",
-    "crates/fylo-vfs",
-    "crates/fylo-storage-native",
-    "crates/fylo-machine",
-    "crates/fylo-wasm",
-    "crates/fylo-cli",
-    "crates/fylo",
-    "crates/fylo-ffi",
-    "crates/fylo-identity",
+    "crates/byckr-xattr",
+    "crates/byckr-chex",
+    "crates/byckr-format",
+    "crates/byckr-engine",
+    "crates/byckr-query",
+    "crates/byckr-vfs",
+    "crates/byckr-storage-native",
+    "crates/byckr-machine",
+    "crates/byckr-wasm",
+    "crates/byckr-cli",
+    "crates/byckr",
+    "crates/byckr-ffi",
+    "crates/byckr-identity",
     "xtask",
 ]
 
@@ -73,7 +73,7 @@ regex = { version = "1.13.1", default-features = false, features = ["std", "unic
 # CHEX's compiled form (ADR 0017 section 4): each leaf pattern as a sparse
 # DFA. Already in the graph under `regex`; only DFA search is on here, so the
 # browser build links a DFA loader and searcher but no regex compiler.
-# `fylo-chex`'s `compile` feature adds the parser and the DFA builder natively.
+# `byckr-chex`'s `compile` feature adds the parser and the DFA builder natively.
 regex-automata = { version = "0.4.18", default-features = false, features = ["alloc", "dfa-search"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls-no-provider"] }
 # `.vdbx` zstd frames in the browser (ADR 0016 section 8): pure Rust, decode
@@ -115,7 +115,7 @@ opt-level = 3
 panic = "abort"
 strip = true
 
-# Phone builds of `fylo-ffi` (ADR 0026): a panic unwinds so the C entry can
+# Phone builds of `byckr-ffi` (ADR 0026): a panic unwinds so the C entry can
 # catch it and return FYLO_PANIC instead of aborting the app.
 [profile.mobile]
 inherits = "release"

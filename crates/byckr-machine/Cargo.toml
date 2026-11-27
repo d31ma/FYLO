@@ -1,0 +1,38 @@
+[package]
+name = "byckr-machine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+byckr-engine = { version = "0.1.0", path = "../byckr-engine" }
+byckr-format = { version = "0.1.0", path = "../byckr-format" }
+# The identity a protected `.vdbx` database opens with (ADR 0021).
+byckr-identity = { version = "0.1.0", path = "../byckr-identity" }
+byckr-query = { version = "0.1.0", path = "../byckr-query" }
+byckr-storage-native = { version = "0.1.0", path = "../byckr-storage-native" }
+byckr-vfs = { version = "0.1.0", path = "../byckr-vfs" }
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# A browser build uses the host's fetch, so it carries no TLS client.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest.workspace = true
+rustls.workspace = true
+
+[dev-dependencies]
+byckr-test-support = { version = "0.1.0", path = "../byckr-test-support" }
+# The tests turn namespace separation on with `NamespaceSeparation::enable_for_tests`.
+byckr-machine = { version = "0.1.0", path = ".", features = ["test-support"] }
+
+[features]
+# Hooks for tests only, such as turning namespace separation on before
+# slice L1-5 does.
+test-support = []
+
+[lints]
+workspace = true

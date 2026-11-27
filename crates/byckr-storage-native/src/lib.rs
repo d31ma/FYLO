@@ -1,0 +1,5782 @@
+//! Read-only native access to the existing FYLO filesystem layout.
+//!
+//! This crate never creates, renames, truncates, deletes, changes metadata, or
+//! acquires a writer lock. It rejects linked components below the canonical
+//! root and bounds every metadata, document, and index read.
+
+use byckr_vfs::{self as fs, File, Metadata};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::io::{Read, Take};
+use std::path::{Component, Path, PathBuf};
+
+use byckr_format::TtidTimestamps;
+use byckr_query::IndexSnapshot;
+#[cfg(not(target_family = "wasm"))]
+use same_file::Handle as FileIdentity;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+mod access_action;
+mod access_audit_entry;
+mod access_binding;
+mod access_document;
+mod access_grant_request;
+mod access_grants;
+mod access_json;
+mod access_key_wrap;
+mod access_policy;
+mod access_policy_chain;
+mod access_policy_change;
+mod access_policy_envelope;
+mod access_policy_identity;
+mod access_rule;
+mod access_signature;
+mod access_trust;
+mod beneath_open;
+#[cfg(not(target_family = "wasm"))]
+mod byte_range_lock;
+mod catalog_keys;
+mod catalog_rotation_notice;
+mod change_feed;
+mod change_lineage;
+mod change_page;
+mod collection_incarnation;
+mod collection_keys;
+mod collection_layout;
+mod collection_stamp;
+mod commit_check_scope;
+#[cfg(not(target_family = "wasm"))]
+mod container_access;
+mod container_allocator;
+mod container_cipher;
+mod container_codec;
+mod container_database;
+mod container_file;
+#[cfg(not(target_family = "wasm"))]
+mod container_lease;
+mod container_object;
+mod container_object_chunk;
+mod container_object_error;
+mod container_object_move;
+mod container_object_mover;
+mod container_object_opener;
+mod container_object_orphans;
+mod container_object_reader;
+mod container_object_sealer;
+mod container_object_target;
+mod container_object_writer;
+mod container_record;
+mod database_access;
+mod database_access_error;
+mod database_identity;
+mod database_key;
+mod database_key_material;
+mod document_change;
+mod document_rekey;
+mod durability;
+#[cfg(unix)]
+mod extended_attribute_error;
+#[cfg(unix)]
+mod extended_attribute_namespace;
+#[cfg(unix)]
+mod extended_attribute_probe;
+mod field_keys;
+mod file_access_log;
+mod file_stamp;
+#[cfg(not(target_family = "wasm"))]
+mod filesystem_check;
+mod filesystem_profile;
+mod fresh_read;
+mod index_cache;
+mod index_limit;
+pub mod layout;
+mod lease;
+mod legacy_access_warning;
+mod log_position;
+mod namespaces;
+mod network_roots;
+mod platform_companion;
+#[cfg(windows)]
+mod process_start_time;
+mod profile_manifest;
+mod queue;
+mod read_scope;
+mod read_scope_state;
+mod record_attributes;
+#[cfg(not(target_family = "wasm"))]
+#[expect(
+    dead_code,
+    unused_imports,
+    reason = "FYLO-L1-4b and FYLO-PERF1 move the metadata writes onto this module; remove when both call it"
+)]
+mod record_metadata;
+mod root_damage;
+mod root_filesystem;
+mod root_open_options;
+mod root_verification;
+mod root_verification_report;
+mod segments;
+mod session_certificate;
+mod sidecar_attributes;
+mod spelling_cache;
+mod system_disk;
+mod temp_tier;
+#[cfg(not(target_family = "wasm"))]
+mod tier_index_reads;
+#[cfg(not(target_family = "wasm"))]
+mod tier_reads;
+#[cfg(target_family = "wasm")]
+mod tier_reads_wasm;
+mod validation_mode;
+mod verified_manifest;
+mod volume_root_rule;
+mod word_witness;
+mod write;
+mod writer_session;
+
+use beneath_open::BeneathOpen;
+use legacy_access_warning::LegacyAccessWarning;
+use spelling_cache::SpellingCache;
+
+pub use access_action::AccessAction;
+pub use access_audit_entry::AccessAuditEntry;
+pub use access_document::AccessDocument;
+pub use access_grant_request::AccessGrantRequest;
+pub use access_grants::AccessGrants;
+pub use access_key_wrap::AccessKeyWrap;
+pub use access_policy::AccessPolicy;
+pub use access_policy_change::AccessPolicyChange;
+pub use access_policy_envelope::AccessPolicyEnvelope;
+pub use access_policy_identity::AccessPolicyIdentity;
+pub use access_rule::AccessRule;
+pub use access_signature::AccessSignature;
+pub use access_trust::AccessTrust;
+#[cfg(not(target_family = "wasm"))]
+pub use byte_range_lock::{
+    ByteLockGuard, ByteRangeLockFile, COLLECTION_COMPACTOR_START, COLLECTION_WRITER_START,
+    FilesystemInfo, LOCK_RANGE_START, LockByte, LockMode, MAX_POLL_INTERVAL, TURN_LEVELS,
+    TURN_STRIDE,
+};
+pub use catalog_rotation_notice::CatalogRotationNotice;
+pub use change_page::ChangePage;
+pub use collection_incarnation::CollectionIncarnation;
+pub use collection_layout::CollectionLayout;
+pub use collection_stamp::CollectionStamp;
+#[cfg(not(target_family = "wasm"))]
+pub use container_access::{ContainerWriteAccess, ContainerWriteOptions};
+pub use container_allocator::{
+    ContainerAllocatorError, ContainerExtentAllocation, ContainerExtentAllocator,
+    ContainerExtentCensus, ContainerKindCensus, ContainerShrinkPlan,
+};
+pub use container_cipher::{
+    ContainerCipher, ContainerCipherError, ContainerSealContext, KEY_CHECK_BYTES, NONCE_BYTES,
+    SALT_BYTES, TAG_BYTES,
+};
+#[cfg(not(target_family = "wasm"))]
+pub use container_codec::train_dictionary;
+pub use container_codec::{
+    ContainerCodecError, ContainerDictionary, ContainerEncodedBody, ContainerFrameCodec,
+    DICTIONARY_TRAINING_BYTES, MAX_DICTIONARY_BYTES, ZSTD_SEALED_LEVEL, ZSTD_WRITE_LEVEL,
+};
+pub use container_file::{
+    ContainerCollection, ContainerCollectionReport, ContainerError, ContainerFile,
+    ContainerProblem, ContainerProblemSeverity, ContainerReport, ContainerSealedReport,
+    ContainerVerifyReport,
+};
+#[cfg(not(target_family = "wasm"))]
+pub use container_lease::{ContainerLease, ContainerLeaseError, ContainerLeaseTiming};
+pub use container_object::ContainerObject;
+pub use container_object_chunk::ContainerObjectChunk;
+pub use container_object_error::ContainerObjectError;
+pub use container_object_move::ContainerObjectMove;
+pub use container_object_mover::ContainerObjectMover;
+pub use container_object_opener::ContainerObjectOpener;
+pub use container_object_orphans::ContainerObjectOrphans;
+pub use container_object_reader::ContainerObjectReader;
+pub use container_object_sealer::ContainerObjectSealer;
+pub use container_object_target::ContainerObjectTarget;
+pub use container_object_writer::ContainerObjectWriter;
+pub use container_record::{ContainerRecordError, ContainerStoredBody};
+pub use database_access::DatabaseAccess;
+pub use database_access_error::DatabaseAccessError;
+pub use database_identity::DatabaseIdentity;
+pub use database_key::DatabaseKey;
+pub use document_change::DocumentChange;
+pub use document_rekey::DocumentRekey;
+pub use durability::Durability;
+pub use field_keys::{FieldKey, FieldKeys};
+pub use file_access_log::FileAccessLog;
+pub use file_stamp::FileStamp;
+#[cfg(not(target_family = "wasm"))]
+pub use filesystem_check::FilesystemProbe;
+pub use filesystem_profile::FilesystemProfile;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use byckr_vfs::host_now_unix_ms;
+pub use lease::{LeaseTiming, RootLease};
+pub use log_position::LogPosition;
+pub use namespaces::NamespaceAdmin;
+pub use platform_companion::is_platform_companion;
+pub use queue::{
+    NativeQueue, QueueAckResult, QueueClaimOptions, QueueDeadLetter, QueueDelivery,
+    QueueNackResult, QueuePublishOptions, QueuePublishResult, QueueStats,
+};
+pub use read_scope::ReadScope;
+pub use root_damage::RootDamage;
+pub use root_filesystem::RootFilesystem;
+pub use root_open_options::RootOpenOptions;
+pub use root_verification::RootVerification;
+pub use root_verification_report::RootVerificationReport;
+pub use system_disk::{
+    AppId, OptOutSource, PlacementKind, PlacementReport, PlacementSettings, RootPlacement,
+};
+#[cfg(unix)]
+pub use temp_tier::FolderOwner;
+#[cfg(not(target_family = "wasm"))]
+pub use temp_tier::{
+    CacheBudget, CacheSweep, CacheUsage, PrivateFolder, SweepReport, TempCache, TempCacheReason,
+    TempCacheRoot, TempCacheState, TempCacheStatus, TempCacheTier,
+};
+pub use temp_tier::{TempCacheMode, TempCacheSettings};
+pub use validation_mode::ValidationMode;
+pub use write::FAILPOINTS;
+pub use write::schema_counts::SchemaVersionCounts;
+pub use write::schema_registry::{MAX_SCHEMA_VERSION_BYTES, utc_timestamp};
+pub use write::version::RepositoryStatus;
+pub use write::{
+    CollectionAccessReport, CompactionReport, DatabaseCompactionReport, DatabasePackReport,
+    DatabaseRekey, DatabaseSalvageReport, LayoutMigrationReport, PackedCollection,
+    RecordAccessGroup, RecordAccessMigration, RootAccessReport, SalvageReport, SegmentVerification,
+};
+pub use write::{
+    CollectionWrites, DocumentCodec, DocumentWrite, NativeWriteRoot, PlainDocumentCodec,
+    PutDocumentOptions, PutRawFileOptions, schema_violations,
+};
+pub use write::{SqlMutationResult, SqlMutationResultKind, unix_millis};
+
+/// Maximum collection descriptor bytes.
+pub const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024;
+/// Maximum generation-state bytes.
+pub const MAX_GENERATION_BYTES: u64 = 16 * 1024;
+/// Maximum document bytes read by the native preview.
+pub const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
+/// Maximum raw-file bytes returned by one native preview read.
+pub const MAX_RAW_FILE_BYTES: u64 = 256 * 1024 * 1024;
+/// Maximum prefix-index WAL bytes merged by one read.
+pub const MAX_INDEX_WAL_BYTES: u64 = index_limit::IndexLimit::LOG_READ_BYTES;
+/// Maximum developer metadata value accepted from one xattr/ADS entry.
+pub const MAX_META_VALUE_BYTES: usize = 60 * 1024;
+/// Maximum aggregate FYLO metadata accepted from one raw file.
+pub const MAX_FILE_METADATA_BYTES: usize = 1024 * 1024;
+/// Maximum version-control ref or commit-manifest bytes.
+pub const MAX_VERSION_METADATA_BYTES: u64 = 1024 * 1024;
+/// Maximum bytes accepted for one content-addressed version tree node.
+pub const MAX_VERSION_TREE_BYTES: u64 = 16 * 1024 * 1024;
+/// Maximum bytes hashed for one content-addressed historical blob.
+pub const MAX_VERSION_BLOB_BYTES: u64 = MAX_RAW_FILE_BYTES;
+/// Maximum unique version objects traversed by one verification.
+pub const MAX_VERSION_OBJECTS: usize = 1_000_000;
+/// Maximum aggregate version-object bytes traversed by one verification.
+pub const MAX_VERSION_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+
+const KEY_XATTR: &str = "user.fylo.key";
+const CHECKSUM_XATTR: &str = "user.fylo.checksum";
+const META_XATTR_PREFIX: &str = "user.fylo.meta.";
+const META_UPDATED_XATTR: &str = "user.fylo.meta-updated-at";
+const ACCESS_XATTR: &str = "user.fylo.access";
+
+const RESERVED_COLLECTIONS: &[&str] = &[
+    "sql",
+    "as",
+    "then",
+    "db",
+    "engine",
+    "cache",
+    "queue",
+    "startup",
+    "importBulkData",
+    "join",
+    "ready",
+    "close",
+    "_sql",
+];
+
+/// Canonical read-only FYLO root.
+#[derive(Clone, Debug)]
+pub struct NativeRoot {
+    canonical: PathBuf,
+    catalog_root: PathBuf,
+    repository_root: PathBuf,
+    profile: FilesystemProfile,
+    lease: Option<RootLease>,
+    descriptor: Option<profile_manifest::ProfileManifest>,
+    /// The `.vdbx` file this root is, when it is one.
+    database: Option<std::sync::Arc<container_database::ContainerDatabase>>,
+    /// Whether an ownership check made earlier in the same [`ReadScope`]
+    /// stands for this one. A writer's root never reuses one.
+    reuses_checks: bool,
+    /// The temp-disk read tier this root's document reads go through.
+    tier: temp_tier::TierLink,
+}
+
+impl NativeRoot {
+    /// Open and canonicalize an existing directory, or an existing `.vdbx`
+    /// database: a root path that names a regular file is opened as one
+    /// (ADR 0016 section 11).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the root is absent, inaccessible, or neither a
+    /// directory nor a `.vdbx` database.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, NativeStorageError> {
+        Self::open_with_roots(path.as_ref(), path.as_ref())
+    }
+
+    /// Open a materialized worktree whose catalog and version repository live
+    /// at a separate canonical FYLO root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either root is absent, inaccessible, or not a
+    /// directory.
+    pub fn open_with_repository(
+        path: impl AsRef<Path>,
+        repository_root: impl AsRef<Path>,
+    ) -> Result<Self, NativeStorageError> {
+        Self::open_with_roots(path.as_ref(), repository_root.as_ref())
+    }
+
+    fn open_with_roots(path: &Path, repository_root: &Path) -> Result<Self, NativeStorageError> {
+        Self::open_profiled(RootOpenOptions::new(path).with_repository(repository_root))
+    }
+
+    /// Open an explicitly selected representation without initializing it.
+    ///
+    /// # Errors
+    /// Rejects mismatched descriptors, unsafe roots or an absent/lost EFS owner.
+    pub fn open_profiled(options: RootOpenOptions) -> Result<Self, NativeStorageError> {
+        let path = options.root.as_path();
+        let repository_root = options.repository.as_deref().unwrap_or(path);
+        let canonical = ReadScope::canonicalize(path).map_err(NativeStorageError::io)?;
+        Self::admit_root(&canonical, options.repository.as_deref(), options.profile)?;
+        let metadata = fs::metadata(&canonical).map_err(NativeStorageError::io)?;
+        if metadata.is_file() {
+            return Self::open_database(canonical, options);
+        }
+        if !metadata.is_dir() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::WrongType,
+                "FYLO root is not a directory",
+            ));
+        }
+        let repository_root =
+            ReadScope::canonicalize(repository_root).map_err(NativeStorageError::io)?;
+        Self::admit_repository(&canonical, &repository_root, options.profile)?;
+        if !fs::metadata(&repository_root)
+            .map_err(NativeStorageError::io)?
+            .is_dir()
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::WrongType,
+                "FYLO repository root is not a directory",
+            ));
+        }
+        if let Some(lease) = options.lease.as_ref() {
+            lease.assert_owned()?;
+            if lease.root() != repository_root {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost,
+                    "supplied lease does not own the selected canonical repository",
+                ));
+            }
+        }
+        if options.profile == FilesystemProfile::EfsSidecarV1 {
+            let lease = options.lease.as_ref().ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost,
+                    "EFS profile requires its owning root lease",
+                )
+            })?;
+            lease.assert_owned()?;
+            if !lease.kernel_enforced()
+                || lease.root() != repository_root
+                || !canonical.starts_with(&repository_root)
+            {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost,
+                    "EFS worktree does not belong to the owning kernel lease",
+                ));
+            }
+        }
+        let descriptor =
+            profile_manifest::ProfileManifest::admit_selection(&repository_root, options.profile)?;
+        if options.profile == FilesystemProfile::EfsSidecarV1 && descriptor.is_none() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "EFS profile descriptor is absent; read opens never initialize it",
+            ));
+        }
+        let tier = options.tier.bind(&canonical);
+        Ok(Self {
+            canonical,
+            catalog_root: repository_root.clone(),
+            repository_root,
+            profile: options.profile,
+            lease: options.lease,
+            descriptor,
+            database: None,
+            reuses_checks: true,
+            tier,
+        })
+    }
+
+    /// A root opened inside another repository root is a branch worktree:
+    /// its repository root carries the mount-point test (ADR 0033 section
+    /// 5.1). A repository root that cannot be resolved here leaves the root
+    /// judged in full.
+    fn admit_root(
+        canonical: &Path,
+        repository: Option<&Path>,
+        profile: FilesystemProfile,
+    ) -> Result<(), NativeStorageError> {
+        let repository = repository.and_then(|root| ReadScope::canonicalize(root).ok());
+        if repository.is_some_and(|root| root != canonical) {
+            return RootFilesystem::admit_worktree(canonical, profile).map(drop);
+        }
+        RootFilesystem::admit(canonical, profile).map(drop)
+    }
+
+    /// A worktree's separate repository root may sit on another filesystem,
+    /// so it is admitted too.
+    fn admit_repository(
+        canonical: &Path,
+        repository_root: &Path,
+        profile: FilesystemProfile,
+    ) -> Result<(), NativeStorageError> {
+        if repository_root == canonical {
+            return Ok(());
+        }
+        RootFilesystem::admit(repository_root, profile).map(drop)
+    }
+
+    /// Open the `.vdbx` database at `canonical`. It is its own catalog and
+    /// repository root, and only the native profile has a `.vdbx` form.
+    fn open_database(
+        canonical: PathBuf,
+        options: RootOpenOptions,
+    ) -> Result<Self, NativeStorageError> {
+        if options.profile != FilesystemProfile::Native {
+            return Err(Self::database_unsupported(
+                "the EFS sidecar profile has no .vdbx form",
+            ));
+        }
+        if let Some(repository) = options.repository.as_deref()
+            && fs::canonicalize(repository).map_err(NativeStorageError::io)? != canonical
+        {
+            return Err(Self::database_unsupported(
+                "a .vdbx database has no separate worktree or repository root",
+            ));
+        }
+        if let Some(lease) = options.lease.as_ref() {
+            lease.assert_owned()?;
+        }
+        let database = container_database::ContainerDatabase::open(
+            &canonical,
+            options.database_key.as_ref(),
+            options.identity.as_ref(),
+        )?;
+        Ok(Self {
+            catalog_root: canonical.clone(),
+            repository_root: canonical.clone(),
+            canonical,
+            profile: FilesystemProfile::Native,
+            lease: options.lease,
+            descriptor: None,
+            database: Some(database),
+            reuses_checks: true,
+            tier: temp_tier::TierLink::default(),
+        })
+    }
+
+    /// Create an empty `.vdbx` database at `path`, which must not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `path` exists or the file cannot be created.
+    pub fn create_database(path: impl AsRef<Path>) -> Result<(), NativeStorageError> {
+        container_database::ContainerDatabase::create(path.as_ref(), None)
+    }
+
+    /// Create an empty, encrypted `.vdbx` database at `path`, which must not
+    /// exist (ADR 0016 section 9). Its records, collection directory,
+    /// dictionaries and snapshots are sealed with a file key derived from
+    /// `key` and a random salt; a root opens it with the same key
+    /// ([`RootOpenOptions::with_database_key`]). Encryption is opt-in:
+    /// [`Self::create_database`] makes a plain database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `path` exists, the file cannot be created, or
+    /// no random salt can be drawn.
+    pub fn create_encrypted_database(
+        path: impl AsRef<Path>,
+        key: &DatabaseKey,
+    ) -> Result<(), NativeStorageError> {
+        container_database::ContainerDatabase::create(path.as_ref(), Some(key))
+    }
+
+    /// Create an empty, protected `.vdbx` database at `path`, which must not
+    /// exist (ADR 0021). It is encrypted with a random catalog key and a key
+    /// per collection, wrapped for application identities under a signed
+    /// policy. Policy version 1 makes `admin` its admin and trust anchor; a
+    /// root opens it with an identity ([`RootOpenOptions::with_identity`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `path` exists, the file cannot be created, or
+    /// the key wrap or policy signature fails.
+    pub fn create_protected_database(
+        path: impl AsRef<Path>,
+        admin: &byckr_identity::Identity,
+    ) -> Result<(), NativeStorageError> {
+        container_database::ContainerDatabase::create_protected(path.as_ref(), admin)
+    }
+
+    /// Close this process's handle on the `.vdbx` database at `path`: give
+    /// up its write access and forget what it read, so the next open reads
+    /// the file afresh, as a new process would. Handles opened before keep
+    /// working on what they read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `path` cannot be resolved.
+    pub fn close_database(path: impl AsRef<Path>) -> Result<(), NativeStorageError> {
+        let canonical = fs::canonicalize(path.as_ref()).map_err(NativeStorageError::io)?;
+        container_database::ContainerDatabase::close(&canonical);
+        Ok(())
+    }
+
+    /// Whether `path` names a `.vdbx` database: a regular file, or a path
+    /// ending in `.vdbx` that names no directory. A host that creates a
+    /// missing root on first use creates a database for such a path
+    /// ([`Self::create_database`]), never a directory.
+    #[must_use]
+    pub fn names_database(path: impl AsRef<Path>) -> bool {
+        let path = path.as_ref();
+        match fs::metadata(path) {
+            Ok(metadata) => metadata.is_file(),
+            Err(_) => path
+                .extension()
+                .is_some_and(|extension| extension == "vdbx"),
+        }
+    }
+
+    /// Whether this root is a `.vdbx` database rather than a directory.
+    #[must_use]
+    pub fn is_database(&self) -> bool {
+        self.database().is_some()
+    }
+
+    /// Whether this root is an encrypted `.vdbx` database, and whether it
+    /// was opened without its key, which leaves it locked: `None` for a
+    /// directory root.
+    #[must_use]
+    pub fn database_encryption(&self) -> Option<(bool, bool)> {
+        self.database()
+            .map(|database| (database.is_encrypted(), database.is_locked()))
+    }
+
+    /// Whether this root is a protected `.vdbx` database (ADR 0021), and
+    /// the access this process opened it with: `None` for a directory root
+    /// or a database that is not protected, `Some(None)` for a protected one
+    /// opened without an identity.
+    #[must_use]
+    pub fn database_access(&self) -> Option<Option<std::sync::Arc<DatabaseAccess>>> {
+        self.database()
+            .filter(|database| database.is_protected())
+            .map(|database| database.access())
+    }
+
+    /// The `$encrypted` field keys of `collection` in a protected `.vdbx`
+    /// database (ADR 0021 section 7), newest epoch first; `None` for a
+    /// directory root or a database that is not protected, whose fields use
+    /// `fylo.encryption.key`.
+    ///
+    /// # Errors
+    ///
+    /// `ENOIDENTITY` for a protected database opened without an identity,
+    /// and `EACCES` when the identity holds no key of the collection.
+    pub fn field_keys(&self, collection: &str) -> Result<Option<FieldKeys>, NativeStorageError> {
+        let Some(access) = self.database_access() else {
+            return Ok(None);
+        };
+        access
+            .ok_or(DatabaseAccessError::NoIdentity)
+            .and_then(|access| access.field_keys(collection))
+            .map(Some)
+            .map_err(|error| {
+                NativeStorageError::new(
+                    segments::ContainerMedium::access_code(&error),
+                    format!("{error} ({})", error.code()),
+                )
+            })
+    }
+
+    /// The live collections of a `.vdbx` database root, in the order they
+    /// were created; `None` for a directory root. A locked one lists none.
+    #[must_use]
+    pub fn database_collection_names(&self) -> Option<Vec<String>> {
+        self.database().map(|database| database.collection_names())
+    }
+
+    pub(crate) fn database(
+        &self,
+    ) -> Option<&std::sync::Arc<container_database::ContainerDatabase>> {
+        self.database.as_ref()
+    }
+
+    /// What a `.vdbx` database answers for a feature it does not hold.
+    pub(crate) fn database_unsupported(feature: &str) -> NativeStorageError {
+        NativeStorageError::new(
+            NativeStorageErrorCode::LayoutUnsupported,
+            format!("{feature} (ADR 0016 section 1)"),
+        )
+    }
+
+    /// Refuse a feature a `.vdbx` database does not hold.
+    pub(crate) fn refuse_in_database(&self, feature: &str) -> Result<(), NativeStorageError> {
+        if self.is_database() {
+            return Err(Self::database_unsupported(feature));
+        }
+        Ok(())
+    }
+
+    /// Refuse an operation a `.vdbx` database will hold but does not yet.
+    pub(crate) fn not_yet_in_database(&self, operation: &str) -> Result<(), NativeStorageError> {
+        if self.is_database() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                format!("{operation} is not supported in a .vdbx database yet"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Selected immutable metadata representation.
+    #[must_use]
+    pub const fn filesystem_profile(&self) -> FilesystemProfile {
+        self.profile
+    }
+
+    /// Clone of the owning lease, retaining the same root-owner generation.
+    #[must_use]
+    pub fn owning_lease(&self) -> Option<RootLease> {
+        self.lease.clone()
+    }
+
+    pub(crate) fn assert_profile_owned(&self) -> Result<(), NativeStorageError> {
+        let key = self.owner_check_key();
+        let verified = key.is_some_and(|key| self.check_reused(key));
+        self.check_profile_owned_unless(verified)?;
+        self.remember_check(key);
+        Ok(())
+    }
+
+    /// The owner check at a commit point: it reads the owner record even
+    /// inside a [`commit_check_scope::CommitCheckScope`].
+    pub(crate) fn assert_profile_owned_fresh(&self) -> Result<(), NativeStorageError> {
+        commit_check_scope::CommitCheckScope::forget_verified();
+        self.check_profile_owned()?;
+        self.remember_check(self.owner_check_key());
+        Ok(())
+    }
+
+    /// The same root under a writer: a check reads the owner again unless a
+    /// commit check scope already did, and no read goes through the temp
+    /// tier, whose entries a writer's own changes would make stale before its
+    /// next generation read.
+    pub(crate) fn without_check_reuse(mut self) -> Self {
+        self.reuses_checks = false;
+        self.tier = temp_tier::TierLink::default();
+        self
+    }
+
+    fn owner_check_key(&self) -> Option<u64> {
+        self.lease.as_ref().map(|lease| self.check_key(lease))
+    }
+
+    fn check_reused(&self, key: u64) -> bool {
+        if self.reuses_checks {
+            return ReadScope::is_verified(key);
+        }
+        commit_check_scope::CommitCheckScope::is_verified(key)
+    }
+
+    fn remember_check(&self, key: Option<u64>) {
+        let Some(key) = key else {
+            return;
+        };
+        self.remember_in_scope(key);
+    }
+
+    fn remember_in_scope(&self, key: u64) {
+        if self.reuses_checks {
+            return ReadScope::remember_verified(key);
+        }
+        commit_check_scope::CommitCheckScope::remember_verified(key);
+    }
+
+    fn check_key(&self, lease: &RootLease) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(
+            &(
+                lease.owner_generation(),
+                &self.repository_root,
+                &self.canonical,
+            ),
+            &mut hasher,
+        );
+        std::hash::Hasher::finish(&hasher)
+    }
+
+    fn check_profile_owned_unless(&self, verified: bool) -> Result<(), NativeStorageError> {
+        if verified {
+            return Ok(());
+        }
+        self.check_profile_owned()
+    }
+
+    fn check_profile_owned(&self) -> Result<(), NativeStorageError> {
+        if let Some(lease) = self.lease.as_ref() {
+            lease.assert_owned_fresh()?;
+            if lease.root() != self.repository_root {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost,
+                    "supplied lease no longer owns this repository",
+                ));
+            }
+        }
+        if self.profile == FilesystemProfile::EfsSidecarV1 {
+            let lease = self.lease.as_ref().ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost,
+                    "EFS owner is absent",
+                )
+            })?;
+            // Ownership was asserted above; reading the owner record again would
+            // only repeat a network round trip.
+            if !lease.kernel_enforced() || lease.root() != self.repository_root {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost,
+                    "EFS owning kernel lease differs",
+                ));
+            }
+            let expected = self.descriptor.as_ref().ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "EFS descriptor is absent",
+                )
+            })?;
+            let current = profile_manifest::ProfileManifest::read(&self.repository_root)?;
+            if current.as_ref() != Some(expected) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "EFS profile descriptor was removed or changed after admission",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn efs_identity(&self) -> Option<(u32, u32)> {
+        self.descriptor.as_ref().map(|value| (value.uid, value.gid))
+    }
+
+    pub(crate) fn options_for(&self, path: &Path) -> RootOpenOptions {
+        let mut options = RootOpenOptions::new(path)
+            .with_repository(&self.repository_root)
+            .with_profile(self.profile);
+        if let Some(lease) = self.owning_lease() {
+            options = options.with_lease(lease);
+        }
+        options
+    }
+
+    /// Return the canonical root identity.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.canonical
+    }
+
+    /// Root that owns the unversioned collection catalog.
+    #[must_use]
+    pub fn catalog_root(&self) -> &Path {
+        &self.catalog_root
+    }
+
+    /// Root that owns `.fylo-vcs` metadata.
+    #[must_use]
+    pub fn repository_root(&self) -> &Path {
+        &self.repository_root
+    }
+
+    /// Open one existing collection without modifying the root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid names, corrupt descriptors, unsafe paths,
+    /// or missing collection directories.
+    pub fn collection(&self, name: &str) -> Result<NativeCollection, NativeStorageError> {
+        self.assert_profile_owned()?;
+        validate_collection_name(name)?;
+        if let Some(database) = self.database() {
+            return self.database_collection(database, name);
+        }
+        let descriptor = self
+            .collection_descriptor(name)?
+            .unwrap_or(CollectionDescriptor {
+                kind: CollectionKind::Document,
+                shard_width: None,
+                previous_shard_widths: None,
+                layout: CollectionLayout::Files,
+                validation: None,
+                schemas: None,
+                schema_head: None,
+                encrypted: None,
+                words: None,
+                change_lineage: None,
+            });
+        let kind_folder = descriptor.kind.folder_name();
+        let path = self.canonical.join(kind_folder).join(name);
+        self.verify_path(&path, ExpectedType::Directory)
+            .map_err(|error| Self::named_missing_collection(error, name))?;
+        if !NativeCollection::SEGMENTS_SUPPORTED && descriptor.layout == CollectionLayout::Segments
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "this build cannot open a collection with the segment layout",
+            ));
+        }
+        let schema_head = descriptor.schema_head()?;
+        Ok(NativeCollection {
+            root: self.clone(),
+            name: name.to_owned(),
+            path,
+            kind: descriptor.kind,
+            layout: descriptor.layout,
+            kind_folder: kind_folder.to_owned(),
+            shard_width: validate_shard_width(descriptor.shard_width)?,
+            previous_shard_widths: descriptor
+                .previous_shard_widths
+                .unwrap_or_default()
+                .into_iter()
+                .map(|width| validate_shard_width(Some(width)))
+                .collect::<Result<Vec<_>, _>>()?,
+            validation: descriptor.validation,
+            schema_head,
+            word_fields: descriptor.words.unwrap_or_default(),
+            block: None,
+            window: temp_tier::ReadWindow::default(),
+        })
+    }
+
+    fn named_missing_collection(error: NativeStorageError, name: &str) -> NativeStorageError {
+        if error.code() != NativeStorageErrorCode::NotFound {
+            return error;
+        }
+        NativeStorageError::new(
+            NativeStorageErrorCode::NotFound,
+            format!("collection \"{name}\" does not exist"),
+        )
+    }
+
+    /// Open the collection of a `.vdbx` database named `name`: its directory
+    /// block, whose descriptor is the catalog's. It has no directory; its
+    /// path only names it to in-process caches.
+    fn database_collection(
+        &self,
+        database: &container_database::ContainerDatabase,
+        name: &str,
+    ) -> Result<NativeCollection, NativeStorageError> {
+        database.require_key()?;
+        let collection = database.collection(name).ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::NotFound,
+                format!("collection \"{name}\" does not exist"),
+            )
+        })?;
+        let descriptor = Self::database_descriptor(&collection.header.descriptor)?;
+        if descriptor.kind != CollectionKind::Document
+            || descriptor.layout != CollectionLayout::Segments
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("collection \"{name}\" is not a document collection in segments"),
+            ));
+        }
+        Ok(NativeCollection {
+            root: self.clone(),
+            name: name.to_owned(),
+            path: self.canonical.join(".collections").join(name),
+            kind: CollectionKind::Document,
+            layout: CollectionLayout::Segments,
+            kind_folder: ".collections".to_owned(),
+            shard_width: validate_shard_width(descriptor.shard_width)?,
+            previous_shard_widths: Vec::new(),
+            validation: descriptor.validation,
+            schema_head: descriptor.schema_head()?,
+            word_fields: descriptor.words.unwrap_or_default(),
+            block: Some(collection.block),
+            window: temp_tier::ReadWindow::default(),
+        })
+    }
+
+    /// The collection's encrypted-fields record: the `$encrypted` paths a
+    /// keyed writer with a `fylo.schema` folder last recorded for it, or
+    /// `None` when none has. A collection of a `.fxdb` database is read
+    /// from the directory as it is now, since another process may have
+    /// replaced its descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name or a corrupt descriptor.
+    pub fn recorded_encrypted_fields(
+        &self,
+        name: &str,
+    ) -> Result<Option<Vec<String>>, NativeStorageError> {
+        self.assert_profile_owned()?;
+        validate_collection_name(name)?;
+        if let Some(database) = self.database() {
+            database.refresh();
+        }
+        Ok(self
+            .collection_descriptor(name)?
+            .and_then(|descriptor| descriptor.encrypted))
+    }
+
+    /// Ordinal of a collection's schema registry head, or `None` while its
+    /// schemas are read from `fylo.schema` (ADR 0017 section 3).
+    ///
+    /// On the file layout it reads only the catalog descriptor, so it answers
+    /// for a collection whose directory does not exist yet. A segment collection's head is its
+    /// newest schema record, read through its schemas snapshot; its
+    /// descriptor follows the records and is not trusted on its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name, a corrupt descriptor, or a
+    /// segment collection whose schema records cannot be read.
+    pub fn schema_registry_head(&self, name: &str) -> Result<Option<u32>, NativeStorageError> {
+        self.assert_profile_owned()?;
+        validate_collection_name(name)?;
+        let Some(descriptor) = self.collection_descriptor(name)? else {
+            return Ok(None);
+        };
+        if let Some(schemas) = self.segment_schemas_of(name, &descriptor)? {
+            return Ok(schemas.head());
+        }
+        descriptor.schema_head()
+    }
+
+    fn database_descriptor(bytes: &[u8]) -> Result<CollectionDescriptor, NativeStorageError> {
+        serde_json::from_slice::<CollectionDescriptor>(bytes).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("collection descriptor is corrupt: {error}"),
+            )
+        })
+    }
+
+    /// Whether a collection named `name` exists. It reads the collection's
+    /// catalog descriptor and checks its folder, and reads no document,
+    /// index or transaction file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name, a corrupt descriptor or an
+    /// unsafe path; a missing collection is `Ok(false)`.
+    pub fn collection_exists(&self, name: &str) -> Result<bool, NativeStorageError> {
+        Self::found(self.collection(name))
+    }
+
+    /// The names of the root's collections, document and file, sorted. Like
+    /// [`Self::collection_exists`] it reads only the catalog and the
+    /// collection folders.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a corrupt descriptor, an unsafe path or a
+    /// storage failure.
+    pub fn collection_names(&self) -> Result<Vec<String>, NativeStorageError> {
+        self.assert_profile_owned()?;
+        let candidates = self.collection_candidates()?;
+        self.existing_names(candidates)
+    }
+
+    fn found(
+        collection: Result<NativeCollection, NativeStorageError>,
+    ) -> Result<bool, NativeStorageError> {
+        match collection {
+            Ok(_) => Ok(true),
+            Err(error) if error.code() == NativeStorageErrorCode::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn collection_candidates(&self) -> Result<BTreeSet<String>, NativeStorageError> {
+        if let Some(names) = self.database_collection_names() {
+            return Ok(names.into_iter().collect());
+        }
+        let mut names = BTreeSet::new();
+        for namespace in [".collections", ".buckets"] {
+            names.extend(self.folder_names(&self.canonical.join(namespace))?);
+        }
+        Ok(names)
+    }
+
+    fn folder_names(&self, namespace: &Path) -> Result<Vec<String>, NativeStorageError> {
+        if !path_exists_no_follow(namespace)? {
+            return Ok(Vec::new());
+        }
+        self.verify_path(namespace, ExpectedType::Directory)?;
+        Ok(read_dir_sorted(namespace)?
+            .into_iter()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| validate_collection_name(name).is_ok())
+            .collect())
+    }
+
+    fn existing_names(
+        &self,
+        candidates: BTreeSet<String>,
+    ) -> Result<Vec<String>, NativeStorageError> {
+        let mut names = Vec::with_capacity(candidates.len());
+        for name in candidates {
+            if self.collection_exists(&name)? {
+                names.push(name);
+            }
+        }
+        Ok(names)
+    }
+
+    fn collection_descriptor(
+        &self,
+        name: &str,
+    ) -> Result<Option<CollectionDescriptor>, NativeStorageError> {
+        if let Some(database) = self.database() {
+            return database
+                .collection(name)
+                .map(|collection| Self::database_descriptor(&collection.header.descriptor))
+                .transpose();
+        }
+        let descriptor_path = self
+            .catalog_root
+            .join(".fylo-catalog")
+            .join("collections")
+            .join(format!("{name}.json"));
+        Self::descriptor_bytes(&descriptor_path)?
+            .map(|bytes| Self::parse_descriptor(&bytes))
+            .transpose()
+    }
+
+    /// A descriptor's bytes, read once per [`ReadScope`]: every collection
+    /// handle and schema lookup of one read operation asks for them again.
+    fn descriptor_bytes(path: &Path) -> Result<Option<Vec<u8>>, NativeStorageError> {
+        if let Some(known) = ReadScope::known_descriptor(path) {
+            return Ok(Some(known));
+        }
+        let bytes = Self::read_descriptor_bytes(path)?;
+        if let Some(bytes) = &bytes {
+            ReadScope::remember_descriptor(path, bytes);
+        }
+        Ok(bytes)
+    }
+
+    fn read_descriptor_bytes(path: &Path) -> Result<Option<Vec<u8>>, NativeStorageError> {
+        if !path_exists_no_follow(path)? {
+            return Ok(None);
+        }
+        let metadata = fs::symlink_metadata(path).map_err(NativeStorageError::io)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath,
+                "collection descriptor is not a regular file",
+            ));
+        }
+        if metadata.len() > MAX_DESCRIPTOR_BYTES {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                "collection descriptor exceeds its size limit",
+            ));
+        }
+        FileAccessLog::record_open(path);
+        fs::read(path).map(Some).map_err(NativeStorageError::io)
+    }
+
+    fn parse_descriptor(bytes: &[u8]) -> Result<CollectionDescriptor, NativeStorageError> {
+        serde_json::from_slice::<CollectionDescriptor>(bytes).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("collection descriptor is corrupt: {error}"),
+            )
+        })
+    }
+
+    /// Read the active branch's first-parent commit history without
+    /// materializing or modifying any version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for corrupt refs/manifests, unsafe paths, cycles,
+    /// invalid identifiers, or an excessive limit.
+    pub fn version_history(&self, limit: usize) -> Result<RepositoryHistory, NativeStorageError> {
+        self.assert_profile_owned()?;
+        self.refuse_in_database("a .vdbx database has no version control")?;
+        if limit == 0 || limit > 1000 {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "version history limit must be between 1 and 1000",
+            ));
+        }
+        let Some((branch, reference)) = self.active_repository_reference()? else {
+            return Ok(RepositoryHistory {
+                enabled: false,
+                branch: None,
+                head: None,
+                commits: Vec::new(),
+                truncated: false,
+            });
+        };
+        let mut next = reference.head.clone();
+        let mut seen = BTreeSet::new();
+        let mut commits = Vec::new();
+        while commits.len() < limit {
+            let Some(identifier) = next.take() else {
+                break;
+            };
+            if !seen.insert(identifier.clone()) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "FYLO commit history contains a cycle",
+                ));
+            }
+            let path = self
+                .repository_root
+                .join(".fylo-vcs")
+                .join("commits")
+                .join(&identifier)
+                .join("manifest.json");
+            let commit: VersionCommit = serde_json::from_slice(
+                &self.read_repository_file(&path, MAX_VERSION_METADATA_BYTES)?,
+            )
+            .map_err(|error| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    format!("FYLO commit manifest is corrupt: {error}"),
+                )
+            })?;
+            commit.validate(&identifier)?;
+            next = commit.parents.first().cloned();
+            commits.push(commit);
+        }
+        Ok(RepositoryHistory {
+            enabled: true,
+            branch: Some(branch),
+            head: reference.head,
+            commits,
+            truncated: next.is_some(),
+        })
+    }
+
+    fn active_repository_reference(
+        &self,
+    ) -> Result<Option<(String, BranchReference)>, NativeStorageError> {
+        let head_path = self.repository_root.join(".fylo-vcs").join("HEAD");
+        if !path_exists_no_follow(&head_path)? {
+            return Ok(None);
+        }
+        let head =
+            String::from_utf8(self.read_repository_file(&head_path, 4096)?).map_err(|error| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    format!("FYLO repository HEAD is not valid UTF-8: {error}"),
+                )
+            })?;
+        let branch = head
+            .trim()
+            .strip_prefix("ref: refs/heads/")
+            .ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "FYLO repository HEAD is corrupt",
+                )
+            })?;
+        validate_branch_name(branch)?;
+        let reference_path = self
+            .repository_root
+            .join(".fylo-vcs")
+            .join("refs")
+            .join("heads")
+            .join(format!("{branch}.json"));
+        let reference: BranchReference = serde_json::from_slice(
+            &self.read_repository_file(&reference_path, MAX_VERSION_METADATA_BYTES)?,
+        )
+        .map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("FYLO branch ref is corrupt: {error}"),
+            )
+        })?;
+        if reference.name != branch {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "FYLO branch ref name does not match HEAD",
+            ));
+        }
+        if let Some(head) = &reference.head {
+            validate_ttid_shape(head).map_err(|error| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    format!("FYLO branch head is invalid: {error}"),
+                )
+            })?;
+        }
+        Ok(Some((branch.to_owned(), reference)))
+    }
+
+    /// Verify every commit, tree, and blob reachable from the active branch
+    /// head, bounded by the requested commit limit.
+    ///
+    /// Objects are hashed through verified file descriptors and tree nodes are
+    /// schema-, ordering-, type-, and path-validated. No historical version is
+    /// materialized and no repository state is modified.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for corrupt manifests, tree pointers, objects, unsafe
+    /// paths, excessive limits, object-count exhaustion, or byte-budget
+    /// exhaustion.
+    pub fn verify_version_history(
+        &self,
+        limit: usize,
+    ) -> Result<VersionVerification, NativeStorageError> {
+        self.assert_profile_owned()?;
+        self.refuse_in_database("a .vdbx database has no version control")?;
+        if limit == 0 || limit > 1000 {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "version verification commit limit must be between 1 and 1000",
+            ));
+        }
+        let history = self.version_history(1)?;
+        let mut state = VersionVerificationState::default();
+        let mut pending = history
+            .head
+            .iter()
+            .cloned()
+            .map(VersionTraversal::Enter)
+            .collect::<Vec<_>>();
+        let mut active = BTreeSet::new();
+        let mut verified = BTreeSet::new();
+        let mut graph_complete = true;
+        while let Some(event) = pending.pop() {
+            match event {
+                VersionTraversal::Exit(identifier) => {
+                    active.remove(&identifier);
+                    verified.insert(identifier);
+                }
+                VersionTraversal::Enter(identifier) => {
+                    if verified.contains(&identifier) {
+                        continue;
+                    }
+                    if !active.insert(identifier.clone()) {
+                        return Err(NativeStorageError::new(
+                            NativeStorageErrorCode::CorruptMetadata,
+                            "FYLO commit graph contains a cycle",
+                        ));
+                    }
+                    if state.commits_verified >= limit {
+                        graph_complete = false;
+                        break;
+                    }
+                    let commit = self.read_version_commit(&identifier)?;
+                    self.verify_version_commit_tree(&identifier, &mut state)?;
+                    state.commits_verified += 1;
+                    pending.push(VersionTraversal::Exit(identifier));
+                    pending.extend(
+                        commit
+                            .parents
+                            .into_iter()
+                            .rev()
+                            .map(VersionTraversal::Enter),
+                    );
+                }
+            }
+        }
+        let tree_objects = state
+            .objects
+            .values()
+            .filter(|kind| matches!(kind, VersionObjectKind::Tree(_)))
+            .count();
+        let blob_objects = state.objects.len().saturating_sub(tree_objects);
+        Ok(VersionVerification {
+            enabled: history.enabled,
+            branch: history.branch,
+            head: history.head,
+            commits_verified: state.commits_verified,
+            history_complete: graph_complete,
+            tree_objects,
+            blob_objects,
+            verified_bytes: state.verified_bytes,
+            content_integrity: true,
+        })
+    }
+
+    fn read_version_commit(&self, identifier: &str) -> Result<VersionCommit, NativeStorageError> {
+        validate_ttid_shape(identifier).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("FYLO commit identifier is invalid: {error}"),
+            )
+        })?;
+        let path = self
+            .repository_root
+            .join(".fylo-vcs")
+            .join("commits")
+            .join(identifier)
+            .join("manifest.json");
+        let commit: VersionCommit =
+            serde_json::from_slice(&self.read_repository_file(&path, MAX_VERSION_METADATA_BYTES)?)
+                .map_err(|error| {
+                    NativeStorageError::new(
+                        NativeStorageErrorCode::CorruptMetadata,
+                        format!("FYLO commit manifest is corrupt: {error}"),
+                    )
+                })?;
+        commit.validate(identifier)?;
+        Ok(commit)
+    }
+
+    fn verify_version_commit_tree(
+        &self,
+        identifier: &str,
+        state: &mut VersionVerificationState,
+    ) -> Result<(), NativeStorageError> {
+        let tree_path = self
+            .repository_root
+            .join(".fylo-vcs")
+            .join("commits")
+            .join(identifier)
+            .join("tree.json");
+        let pointer: VersionTreePointer = serde_json::from_slice(
+            &self.read_repository_file(&tree_path, MAX_VERSION_METADATA_BYTES)?,
+        )
+        .map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("FYLO commit tree pointer is corrupt: {error}"),
+            )
+        })?;
+        if let Some(root) = pointer.root {
+            self.verify_version_tree_node(
+                root.as_str(),
+                VersionTreeLevel::Collection,
+                None,
+                state,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn verify_version_tree_node(
+        &self,
+        hash: &str,
+        level: VersionTreeLevel,
+        expected_shard: Option<&str>,
+        state: &mut VersionVerificationState,
+    ) -> Result<(), NativeStorageError> {
+        if !state.register(hash, VersionObjectKind::Tree(level))? {
+            return Ok(());
+        }
+        let bytes = self.read_version_object(hash, MAX_VERSION_TREE_BYTES)?;
+        state.record_bytes(bytes.len() as u64)?;
+        let node: VersionTreeNode = serde_json::from_slice(&bytes).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("FYLO version tree object is corrupt: {error}"),
+            )
+        })?;
+        if node.entries.is_empty()
+            || node
+                .entries
+                .windows(2)
+                .any(|pair| pair[0].name >= pair[1].name)
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "FYLO version tree entries are empty, duplicated, or unsorted",
+            ));
+        }
+        for entry in node.entries {
+            entry.validate(level, expected_shard)?;
+            if level == VersionTreeLevel::Blob {
+                if state.register(&entry.hash, VersionObjectKind::Blob)? {
+                    let bytes = self.verify_version_object(&entry.hash, MAX_VERSION_BLOB_BYTES)?;
+                    state.record_bytes(bytes)?;
+                }
+            } else {
+                let child_shard = if level == VersionTreeLevel::Shard {
+                    Some(entry.name.as_str())
+                } else {
+                    expected_shard
+                };
+                self.verify_version_tree_node(&entry.hash, level.next(), child_shard, state)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn read_version_object(
+        &self,
+        hash: &str,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, NativeStorageError> {
+        let path = self.version_object_path(hash)?;
+        let bytes = self.read_file(&path, max_bytes)?;
+        if sha256_hex(&bytes) != hash {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("FYLO version object {hash} failed content-hash verification"),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    fn verify_version_object(&self, hash: &str, max_bytes: u64) -> Result<u64, NativeStorageError> {
+        let path = self.version_object_path(hash)?;
+        let (mut file, metadata) = self.open_file(&path, max_bytes)?;
+        let mut digest = Sha256::new();
+        let mut buffer = vec![0_u8; 64 * 1024];
+        let mut total = 0_u64;
+        loop {
+            let read = file.read(&mut buffer).map_err(NativeStorageError::io)?;
+            if read == 0 {
+                break;
+            }
+            total = total.checked_add(read as u64).ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::FileTooLarge,
+                    "FYLO version object byte count overflow",
+                )
+            })?;
+            if total > max_bytes {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::FileTooLarge,
+                    "FYLO version object exceeds the verification byte limit",
+                ));
+            }
+            digest.update(&buffer[..read]);
+        }
+        let actual = hex_bytes(&digest.finalize());
+        if actual != hash || total != metadata.len() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("FYLO version object {hash} failed content-hash verification"),
+            ));
+        }
+        Ok(total)
+    }
+
+    fn version_object_path(&self, hash: &str) -> Result<PathBuf, NativeStorageError> {
+        validate_version_hash(hash)?;
+        Ok(self
+            .repository_root
+            .join(".fylo-vcs")
+            .join("objects")
+            .join(&hash[..2])
+            .join(&hash[2..]))
+    }
+
+    fn verify_path(
+        &self,
+        target: &Path,
+        expected: ExpectedType,
+    ) -> Result<Metadata, NativeStorageError> {
+        match self.open_beneath(target, expected) {
+            BeneathOpen::Opened(_, metadata) => Ok(metadata),
+            BeneathOpen::Missing | BeneathOpen::Unavailable => {
+                self.verify_path_by_walk(target, expected)
+            }
+        }
+    }
+
+    /// Open `target` in one call that refuses a link in any component, then
+    /// check its spelling and type. Only a complete success is returned as
+    /// `Opened`; every failure is left to `verify_path_by_walk`, which reports
+    /// it exactly as before.
+    fn open_beneath(&self, target: &Path, expected: ExpectedType) -> BeneathOpen {
+        if !BeneathOpen::SUPPORTED {
+            return BeneathOpen::Unavailable;
+        }
+        let Ok(relative) = target.strip_prefix(&self.canonical) else {
+            return BeneathOpen::Unavailable;
+        };
+        match BeneathOpen::attempt(target, expected == ExpectedType::Directory) {
+            BeneathOpen::Opened(file, metadata)
+                if expected.matches(&metadata) && self.has_canonical_spelling(relative) =>
+            {
+                BeneathOpen::Opened(file, metadata)
+            }
+            BeneathOpen::Missing => BeneathOpen::Missing,
+            BeneathOpen::Opened(..) | BeneathOpen::Unavailable => BeneathOpen::Unavailable,
+        }
+    }
+
+    fn open_beneath_for_read(&self, target: &Path) -> BeneathOpen {
+        if self.profile != FilesystemProfile::Native {
+            return BeneathOpen::Unavailable;
+        }
+        let opened = self.open_beneath(target, ExpectedType::File);
+        Self::record_opened(target, &opened);
+        opened
+    }
+
+    fn record_opened(target: &Path, opened: &BeneathOpen) {
+        if matches!(opened, BeneathOpen::Opened(..)) {
+            FileAccessLog::record_open(target);
+        }
+    }
+
+    fn has_canonical_spelling(&self, relative: &Path) -> bool {
+        let components = relative.components().collect::<Vec<_>>();
+        let mut current = self.canonical.clone();
+        for (index, component) in components.iter().enumerate() {
+            let Component::Normal(segment) = component else {
+                return false;
+            };
+            let listed = SpellingCache::shared()
+                .contains(&current, segment)
+                .unwrap_or(false);
+            if !listed && !Self::case_insensitive_shard_alias(&components, index) {
+                return false;
+            }
+            current.push(segment);
+        }
+        true
+    }
+
+    fn verify_path_by_walk(
+        &self,
+        target: &Path,
+        expected: ExpectedType,
+    ) -> Result<Metadata, NativeStorageError> {
+        let relative = target.strip_prefix(&self.canonical).map_err(|_| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath,
+                "storage path escapes the canonical FYLO root",
+            )
+        })?;
+        let mut current = self.canonical.clone();
+        let components = relative.components().collect::<Vec<_>>();
+        for (index, component) in components.iter().enumerate() {
+            let Component::Normal(segment) = component else {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    "storage path contains a non-normal component",
+                ));
+            };
+            let alias = Self::case_insensitive_shard_alias(&components, index);
+            if !SpellingCache::shared().contains(&current, segment)? && !alias {
+                return Err(self.unlisted_component(&current.join(segment)));
+            }
+            let parent = current.clone();
+            current.push(segment);
+            let metadata = self.walked_metadata(&parent, segment, &current, alias)?;
+            if is_link_or_reparse(&metadata) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    format!(
+                        "storage path contains a symbolic link or reparse point: {}",
+                        current.display()
+                    ),
+                ));
+            }
+        }
+        let metadata = fs::symlink_metadata(target).map_err(NativeStorageError::io)?;
+        if !expected.matches(&metadata) {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::WrongType,
+                format!("storage path has the wrong type: {}", target.display()),
+            ));
+        }
+        let canonical = fs::canonicalize(target).map_err(NativeStorageError::io)?;
+        if !canonical.starts_with(&self.canonical) {
+            return Err(self.escaped_or_replaced(target));
+        }
+        Ok(metadata)
+    }
+
+    /// On Windows a file replaced by rename while it is being resolved can
+    /// resolve to its orphaned name under `\$Extend\$Deleted`, outside the
+    /// root. A second resolution tells that race, which is a changed path,
+    /// from a real escape, which resolves outside the root again.
+    fn escaped_or_replaced(&self, target: &Path) -> NativeStorageError {
+        let replaced =
+            fs::canonicalize(target).is_ok_and(|canonical| canonical.starts_with(&self.canonical));
+        let message = if replaced {
+            "storage path changed while an open file was being read"
+        } else {
+            "canonical storage path escapes the FYLO root"
+        };
+        NativeStorageError::new(NativeStorageErrorCode::UnsafePath, message)
+    }
+
+    fn unlisted_component(&self, path: &Path) -> NativeStorageError {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => self.missing_path(path),
+            _ => Self::non_canonical_spelling(path),
+        }
+    }
+
+    fn missing_path(&self, path: &Path) -> NativeStorageError {
+        let relative = path.strip_prefix(&self.canonical).unwrap_or(path);
+        NativeStorageError::new(
+            NativeStorageErrorCode::NotFound,
+            format!("storage path does not exist: {}", relative.display()),
+        )
+    }
+
+    fn non_canonical_spelling(path: &Path) -> NativeStorageError {
+        NativeStorageError::new(
+            NativeStorageErrorCode::UnsafePath,
+            format!(
+                "storage path component has non-canonical spelling: {}",
+                path.display()
+            ),
+        )
+    }
+
+    /// A cached listing can still name an entry that was removed since; a
+    /// fresh listing then tells a removed entry from a listed one.
+    fn walked_metadata(
+        &self,
+        parent: &Path,
+        segment: &std::ffi::OsStr,
+        current: &Path,
+        alias: bool,
+    ) -> Result<Metadata, NativeStorageError> {
+        match fs::symlink_metadata(current) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(self.missing_component(parent, segment, current, alias, error))
+            }
+            result => result.map_err(NativeStorageError::io),
+        }
+    }
+
+    fn missing_component(
+        &self,
+        parent: &Path,
+        segment: &std::ffi::OsStr,
+        current: &Path,
+        alias: bool,
+        error: std::io::Error,
+    ) -> NativeStorageError {
+        SpellingCache::shared().forget(parent);
+        match SpellingCache::shared().contains(parent, segment) {
+            Ok(false) if !alias => self.missing_path(current),
+            Ok(_) => NativeStorageError::io(error),
+            Err(listing_error) => listing_error,
+        }
+    }
+
+    fn case_insensitive_shard_alias(components: &[Component<'_>], index: usize) -> bool {
+        if !cfg!(any(target_os = "macos", windows)) || index != 3 || components.len() < 5 {
+            return false;
+        }
+        let normal = |at: usize| match components.get(at) {
+            Some(Component::Normal(value)) => value.to_str(),
+            _ => None,
+        };
+        let Some(data_directory) = normal(0) else {
+            return false;
+        };
+        let Some(state_folder) = normal(2) else {
+            return false;
+        };
+        let Some(shard) = normal(3) else {
+            return false;
+        };
+        matches!(data_directory, ".collections" | ".buckets")
+            && matches!(state_folder, "docs" | ".deleted" | ".metadata")
+            && (1..=MAX_SHARD_WIDTH as usize).contains(&shard.len())
+            && shard.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    }
+
+    fn read_repository_file(
+        &self,
+        target: &Path,
+        maximum: u64,
+    ) -> Result<Vec<u8>, NativeStorageError> {
+        self.assert_profile_owned()?;
+        let relative = target.strip_prefix(&self.repository_root).map_err(|_| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath,
+                "version path escapes the repository root",
+            )
+        })?;
+        let mut current = self.repository_root.clone();
+        for component in relative.components() {
+            let Component::Normal(segment) = component else {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    "version path contains an unsafe component",
+                ));
+            };
+            if !SpellingCache::shared().contains(&current, segment)? {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    "version path component has non-canonical spelling",
+                ));
+            }
+            current.push(segment);
+            let metadata = fs::symlink_metadata(&current).map_err(NativeStorageError::io)?;
+            if is_link_or_reparse(&metadata) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    "version path contains a symbolic link or reparse point",
+                ));
+            }
+        }
+        let metadata = fs::symlink_metadata(target).map_err(NativeStorageError::io)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath,
+                "version path is not a regular file",
+            ));
+        }
+        if metadata.len() > maximum {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                "version file exceeds its size limit",
+            ));
+        }
+        FileAccessLog::record_open(target);
+        fs::read(target).map_err(NativeStorageError::io)
+    }
+
+    fn read_file(&self, path: &Path, max_bytes: u64) -> Result<Vec<u8>, NativeStorageError> {
+        let (file, _) = self.open_file(path, max_bytes)?;
+        read_bounded(file.take(max_bytes.saturating_add(1)), max_bytes)
+    }
+
+    /// `state.json`'s bytes with the identity of the handle they were read
+    /// from. The stamp is `None` where the target has no file identities.
+    fn read_stamped_generation_file(
+        &self,
+        path: &Path,
+    ) -> Result<(Vec<u8>, Option<FileStamp>), NativeStorageError> {
+        let mismatch = NativeStorageErrorCode::ConcurrentWrite;
+        let (mut file, _) =
+            self.open_file_with_identity_error(path, (MAX_GENERATION_BYTES, mismatch))?;
+        let bytes = read_bounded(
+            (&mut file).take(MAX_GENERATION_BYTES.saturating_add(1)),
+            MAX_GENERATION_BYTES,
+        )?;
+        let stamp = FileStamp::of_file(&file).ok();
+        self.verify_file_identity_with_error(path, (&file, mismatch))?;
+        self.assert_profile_owned()?;
+        Ok((bytes, stamp))
+    }
+
+    fn read_generation_file(&self, path: &Path) -> Result<Vec<u8>, NativeStorageError> {
+        if self.profile == FilesystemProfile::Native {
+            return self.read_file(path, MAX_GENERATION_BYTES);
+        }
+        let mismatch = NativeStorageErrorCode::ConcurrentWrite;
+        let (mut file, _) =
+            self.open_file_with_identity_error(path, (MAX_GENERATION_BYTES, mismatch))?;
+        let bytes = read_bounded(
+            (&mut file).take(MAX_GENERATION_BYTES.saturating_add(1)),
+            MAX_GENERATION_BYTES,
+        )?;
+        self.verify_file_identity_with_error(path, (&file, mismatch))?;
+        self.assert_profile_owned()?;
+        Ok(bytes)
+    }
+
+    fn open_file(
+        &self,
+        path: &Path,
+        max_bytes: u64,
+    ) -> Result<(File, Metadata), NativeStorageError> {
+        self.open_file_with_identity_error(path, (max_bytes, NativeStorageErrorCode::UnsafePath))
+    }
+
+    fn open_file_with_identity_error(
+        &self,
+        path: &Path,
+        limits: (u64, NativeStorageErrorCode),
+    ) -> Result<(File, Metadata), NativeStorageError> {
+        self.assert_profile_owned()?;
+        match self.open_beneath_for_read(path) {
+            BeneathOpen::Opened(file, metadata) => {
+                Self::within_size_limit(path, (file, metadata), limits.0)
+            }
+            BeneathOpen::Missing | BeneathOpen::Unavailable => self.open_file_by_walk(path, limits),
+        }
+    }
+
+    fn within_size_limit(
+        path: &Path,
+        (file, metadata): (File, Metadata),
+        max_bytes: u64,
+    ) -> Result<(File, Metadata), NativeStorageError> {
+        if metadata.len() > max_bytes {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                format!(
+                    "{} contains {} bytes; limit is {max_bytes}",
+                    path.display(),
+                    metadata.len()
+                ),
+            ));
+        }
+        Ok((file, metadata))
+    }
+
+    /// An open made by `open_beneath` is the path check itself, so a record read
+    /// through it has no window between check and open to re-verify. The EFS
+    /// profile keeps the re-check, because its sidecar is a second file.
+    fn verify_record_identity(&self, path: &Path, file: &File) -> Result<(), NativeStorageError> {
+        if BeneathOpen::SUPPORTED && self.profile == FilesystemProfile::Native {
+            return Ok(());
+        }
+        self.verify_open_file_identity(path, file)
+    }
+
+    fn open_file_by_walk(
+        &self,
+        path: &Path,
+        (max_bytes, mismatch): (u64, NativeStorageErrorCode),
+    ) -> Result<(File, Metadata), NativeStorageError> {
+        let before = self.verify_path(path, ExpectedType::File)?;
+        if before.len() > max_bytes {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                format!(
+                    "{} contains {} bytes; limit is {max_bytes}",
+                    path.display(),
+                    before.len()
+                ),
+            ));
+        }
+        FileAccessLog::record_open(path);
+        let file = File::open(path).map_err(NativeStorageError::io)?;
+        let opened = file.metadata().map_err(NativeStorageError::io)?;
+        #[cfg(unix)]
+        if self.profile == FilesystemProfile::EfsSidecarV1 {
+            use std::os::unix::fs::MetadataExt;
+            if !opened.is_file() {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    "EFS path changed while opening a file",
+                ));
+            }
+            if (before.dev(), before.ino()) != (opened.dev(), opened.ino()) {
+                return Err(NativeStorageError::new(
+                    mismatch,
+                    "EFS path changed while opening a file",
+                ));
+            }
+        }
+        if opened.len() > max_bytes {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                format!(
+                    "{} contains {} bytes; limit is {max_bytes}",
+                    path.display(),
+                    opened.len()
+                ),
+            ));
+        }
+        self.verify_file_identity_with_error(path, (&file, mismatch))?;
+        Ok((file, opened))
+    }
+
+    /// Prove the open handle still names the path it was opened from.
+    ///
+    /// The native check compares inode identity, which is what catches a
+    /// symlink or rename swapped in between `verify_path` and the read. No
+    /// WebAssembly target can answer it: a browser host has no inodes, and WASI
+    /// scopes the guest to preopened directories it cannot escape or symlink
+    /// out of. The path check alone is the guarantee there (ADR 0008).
+    fn verify_open_file_identity(
+        &self,
+        path: &Path,
+        file: &File,
+    ) -> Result<(), NativeStorageError> {
+        self.verify_file_identity_with_error(path, (file, NativeStorageErrorCode::UnsafePath))
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn verify_file_identity_with_error(
+        &self,
+        path: &Path,
+        (_file, _mismatch): (&File, NativeStorageErrorCode),
+    ) -> Result<(), NativeStorageError> {
+        self.verify_path(path, ExpectedType::File)?;
+        Ok(())
+    }
+
+    #[cfg(all(not(target_family = "wasm"), not(unix)))]
+    fn verify_file_identity_with_error(
+        &self,
+        path: &Path,
+        (file, mismatch): (&File, NativeStorageErrorCode),
+    ) -> Result<(), NativeStorageError> {
+        self.verify_path(path, ExpectedType::File)?;
+        let opened = FileIdentity::from_file(file.try_clone().map_err(NativeStorageError::io)?)
+            .map_err(NativeStorageError::io)?;
+        let current = FileIdentity::from_path(path).map_err(NativeStorageError::io)?;
+        if opened == current {
+            Ok(())
+        } else {
+            Err(NativeStorageError::new(
+                mismatch,
+                "storage path changed while an open file was being read",
+            ))
+        }
+    }
+
+    /// The same check with one open of the path: an open that refuses a
+    /// link in any component is the path check and the identity at once.
+    #[cfg(unix)]
+    fn verify_file_identity_with_error(
+        &self,
+        path: &Path,
+        (file, mismatch): (&File, NativeStorageErrorCode),
+    ) -> Result<(), NativeStorageError> {
+        let current = self.path_identity(path)?;
+        let opened = Self::unix_identity(&file.metadata().map_err(NativeStorageError::io)?);
+        if opened == current {
+            Ok(())
+        } else {
+            Err(NativeStorageError::new(
+                mismatch,
+                "storage path changed while an open file was being read",
+            ))
+        }
+    }
+
+    /// The device and inode `path` names now. Opening the path, rather than
+    /// asking for its attributes, revalidates them on a network share.
+    #[cfg(unix)]
+    fn path_identity(&self, path: &Path) -> Result<(u64, u64), NativeStorageError> {
+        if let BeneathOpen::Opened(_, metadata) = self.open_beneath(path, ExpectedType::File) {
+            return Ok(Self::unix_identity(&metadata));
+        }
+        self.verify_path(path, ExpectedType::File)?;
+        let file = File::open(path).map_err(NativeStorageError::io)?;
+        Ok(Self::unix_identity(
+            &file.metadata().map_err(NativeStorageError::io)?,
+        ))
+    }
+
+    #[cfg(unix)]
+    fn unix_identity(metadata: &Metadata) -> (u64, u64) {
+        use std::os::unix::fs::MetadataExt;
+        (metadata.dev(), metadata.ino())
+    }
+}
+
+/// Existing collection kind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CollectionKind {
+    /// JSON document collection.
+    Document,
+    /// Raw byte/file collection.
+    File,
+}
+
+impl CollectionKind {
+    /// The kind folder under a root of the current layout that holds this
+    /// kind of collection: `.collections` or `.buckets`.
+    #[must_use]
+    pub const fn folder_name(self) -> &'static str {
+        match self {
+            Self::Document => ".collections",
+            Self::File => ".buckets",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CollectionDescriptor {
+    kind: CollectionKind,
+    /// Characters of the creation segment a record's shard directory uses.
+    ///
+    /// A descriptor written before shard widths existed records none, and its
+    /// records sit under the default this release uses.
+    #[serde(default)]
+    shard_width: Option<u32>,
+    /// Widths an unfinished reshard is moving this collection away from.
+    #[serde(default)]
+    previous_shard_widths: Option<Vec<u32>>,
+    /// How documents are stored. A descriptor without it uses files.
+    #[serde(default)]
+    layout: CollectionLayout,
+    /// What writes do about the collection's schema. A descriptor written
+    /// before validation modes existed records none, and the host's
+    /// `strict_schema` setting decides (ADR 0017 section 2).
+    #[serde(default)]
+    validation: Option<ValidationMode>,
+    /// `"registry"` once the collection's schemas live in the root (ADR 0017
+    /// section 3); absent while they are read from `fylo.schema`.
+    #[serde(default)]
+    schemas: Option<String>,
+    /// Ordinal of the schema registry's head version.
+    #[serde(default)]
+    schema_head: Option<u32>,
+    /// The encrypted-fields record: the `$encrypted` paths of the head
+    /// schema, as the last keyed writer whose `fylo.schema` folder declares
+    /// the collection recorded them, so a writer without that folder still
+    /// encrypts them, or is refused without the key.
+    #[serde(default)]
+    encrypted: Option<Vec<String>>,
+    /// Field paths whose string values get word keys (ADR 0023 section 1).
+    #[serde(default)]
+    words: Option<Vec<String>>,
+    /// The change-feed lineage (ADR 0024); absent before lineages existed.
+    #[serde(default)]
+    change_lineage: Option<String>,
+}
+
+impl CollectionDescriptor {
+    /// The only `schemas` value this release writes.
+    const SCHEMAS_REGISTRY: &'static str = "registry";
+
+    /// The registry head, refusing a descriptor whose schema fields disagree:
+    /// an unknown `schemas` value is a layout this build cannot honour.
+    fn schema_head(&self) -> Result<Option<u32>, NativeStorageError> {
+        match (self.schemas.as_deref(), self.schema_head) {
+            (None, None) => Ok(None),
+            (Some(Self::SCHEMAS_REGISTRY), Some(head)) if head >= 1 => Ok(Some(head)),
+            _ => Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "collection descriptor has an invalid schema registry",
+            )),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct BranchReference {
+    name: String,
+    head: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VersionTreePointer {
+    root: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VersionTreeNode {
+    entries: Vec<VersionTreeEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VersionTreeEntry {
+    name: String,
+    #[serde(rename = "type")]
+    kind: VersionTreeEntryKind,
+    hash: String,
+}
+
+impl VersionTreeEntry {
+    fn validate(
+        &self,
+        level: VersionTreeLevel,
+        expected_shard: Option<&str>,
+    ) -> Result<(), NativeStorageError> {
+        validate_version_hash(&self.hash)?;
+        let valid_name = !self.name.is_empty()
+            && self.name.len() <= 255
+            && !self.name.contains(['/', '\\'])
+            && self.name != "."
+            && self.name != "..";
+        let valid_kind = match level {
+            VersionTreeLevel::Blob => self.kind == VersionTreeEntryKind::Blob,
+            _ => self.kind == VersionTreeEntryKind::Tree,
+        };
+        let valid_level = match level {
+            VersionTreeLevel::Collection => validate_collection_name(&self.name).is_ok(),
+            VersionTreeLevel::State => {
+                matches!(self.name.as_str(), "docs" | ".deleted" | ".metadata")
+            }
+            VersionTreeLevel::Shard => {
+                self.name.len() == 2 && self.name.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            }
+            VersionTreeLevel::Blob => raw_file_identifier(&self.name).is_some_and(|identifier| {
+                validate_ttid_shape(identifier).is_ok()
+                    && expected_shard.is_some_and(|shard| {
+                        // A tree written before the shard change buckets by the
+                        // leading characters, so an old commit stays verifiable.
+                        (0..=MAX_SHARD_WIDTH).any(|width| shard == shard_of(identifier, width))
+                            || shard == legacy_shard_of(identifier)
+                    })
+            }),
+        };
+        if valid_name && valid_kind && valid_level {
+            Ok(())
+        } else {
+            Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "FYLO version tree entry has an invalid schema",
+            ))
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum VersionTreeEntryKind {
+    Tree,
+    Blob,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum VersionTreeLevel {
+    Collection,
+    State,
+    Shard,
+    Blob,
+}
+
+impl VersionTreeLevel {
+    const fn next(self) -> Self {
+        match self {
+            Self::Collection => Self::State,
+            Self::State => Self::Shard,
+            Self::Shard | Self::Blob => Self::Blob,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VersionObjectKind {
+    Tree(VersionTreeLevel),
+    Blob,
+}
+
+enum VersionTraversal {
+    Enter(String),
+    Exit(String),
+}
+
+#[derive(Default)]
+struct VersionVerificationState {
+    objects: BTreeMap<String, VersionObjectKind>,
+    verified_bytes: u64,
+    commits_verified: usize,
+}
+
+impl VersionVerificationState {
+    fn register(
+        &mut self,
+        hash: &str,
+        kind: VersionObjectKind,
+    ) -> Result<bool, NativeStorageError> {
+        validate_version_hash(hash)?;
+        if let Some(existing) = self.objects.get(hash) {
+            if *existing == kind {
+                return Ok(false);
+            }
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "FYLO version object is referenced with conflicting types",
+            ));
+        }
+        if self.objects.len() >= MAX_VERSION_OBJECTS {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                "FYLO version verification exceeds the object-count limit",
+            ));
+        }
+        self.objects.insert(hash.to_owned(), kind);
+        Ok(true)
+    }
+
+    fn record_bytes(&mut self, bytes: u64) -> Result<(), NativeStorageError> {
+        self.verified_bytes = self.verified_bytes.checked_add(bytes).ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                "FYLO version verification byte count overflow",
+            )
+        })?;
+        if self.verified_bytes > MAX_VERSION_TOTAL_BYTES {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                "FYLO version verification exceeds the aggregate byte limit",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Read-only handle for one collection.
+#[derive(Clone, Debug)]
+pub struct NativeCollection {
+    root: NativeRoot,
+    name: String,
+    path: PathBuf,
+    kind: CollectionKind,
+    layout: CollectionLayout,
+    kind_folder: String,
+    shard_width: u32,
+    previous_shard_widths: Vec<u32>,
+    validation: Option<ValidationMode>,
+    schema_head: Option<u32>,
+    /// Field paths with word keys, from the descriptor (ADR 0023).
+    word_fields: Vec<String>,
+    /// The directory block of a collection in a `.vdbx` database.
+    block: Option<u32>,
+    /// The collection's stamp as the temp tier last saw it.
+    #[cfg_attr(
+        target_family = "wasm",
+        expect(dead_code, reason = "the browser engine never has a temp tier")
+    )]
+    window: temp_tier::ReadWindow,
+}
+
+impl NativeCollection {
+    /// Field paths whose string values get word keys, slash-separated, as the
+    /// descriptor records them (ADR 0023 section 1).
+    #[must_use]
+    pub fn word_fields(&self) -> &[String] {
+        &self.word_fields
+    }
+
+    /// The word fields whose word keys are complete, so a `$match` on them
+    /// can be planned from the index. A field an older release wrote to
+    /// after its words were indexed is left out until the index is rebuilt
+    /// (ADR 0023 section 8).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unreadable generation state or index keys.
+    pub fn complete_word_fields(&self) -> Result<Vec<String>, NativeStorageError> {
+        word_witness::WordWitness::complete_fields(self)
+    }
+
+    /// This collection as it would be with a different word-field list, for
+    /// a rebuild that must write the new list's keys before the descriptor
+    /// names it.
+    #[must_use]
+    pub(crate) fn with_word_fields(&self, word_fields: Vec<String>) -> Self {
+        Self {
+            word_fields,
+            ..self.clone()
+        }
+    }
+
+    /// Validation mode this collection's descriptor records, if any.
+    ///
+    /// `None` means the host's `strict_schema` setting decides; see
+    /// [`ValidationMode::resolve`].
+    #[must_use]
+    pub const fn validation(&self) -> Option<ValidationMode> {
+        self.validation
+    }
+
+    /// Ordinal of the schema registry's head version, or `None` while this
+    /// collection's schemas are read from `fylo.schema` (ADR 0017 section 3).
+    #[must_use]
+    pub const fn schema_head(&self) -> Option<u32> {
+        self.schema_head
+    }
+
+    /// Whether a generation state written now must carry the registry fence:
+    /// the descriptor names a registry, or the state already carries it. The
+    /// fence is sticky so that a writer whose descriptor was read before a
+    /// push cannot take it down again.
+    pub(crate) fn generation_fenced(&self, stored: &GenerationState) -> bool {
+        self.schema_head.is_some() || stored.schema_fenced()
+    }
+
+    /// How this collection stores its documents.
+    #[must_use]
+    pub const fn layout(&self) -> CollectionLayout {
+        self.layout
+    }
+
+    /// Whether this build carries segment collections kept in a directory,
+    /// and the maintenance (migration, compaction, export, verification,
+    /// salvage) that runs on segments. The WASI and browser builds do not
+    /// (ADR 0015 section 1), so that code compiles away instead of growing
+    /// the engine they ship. A `.vdbx` database's collections are segments
+    /// in every build: the browser engine reads and edits them (ADR 0016).
+    pub(crate) const SEGMENTS_SUPPORTED: bool = cfg!(not(target_family = "wasm"));
+
+    pub(crate) fn uses_segments(&self) -> bool {
+        self.layout == CollectionLayout::Segments
+            && (Self::SEGMENTS_SUPPORTED || self.block.is_some())
+    }
+
+    /// Where this segment collection keeps its segments, slots and
+    /// location files.
+    pub(crate) fn segment_medium(
+        &self,
+    ) -> Result<std::sync::Arc<dyn segments::SegmentMedium>, NativeStorageError> {
+        if let (Some(database), Some(block)) = (self.root.database(), self.block) {
+            return Ok(std::sync::Arc::new(database.medium(block)?));
+        }
+        segments::medium_of(&self.path)
+    }
+
+    /// The directory block of a collection in a `.vdbx` database.
+    pub(crate) const fn database_block(&self) -> Option<u32> {
+        self.block
+    }
+
+    /// Whether this collection's segment medium keeps its prefix index, so
+    /// it has no `index/` files.
+    pub(crate) fn index_in_medium(&self) -> Result<bool, NativeStorageError> {
+        Ok(self.uses_segments() && self.segment_medium()?.keeps_index())
+    }
+
+    fn segment_store(&self) -> Result<segments::SegmentStore, NativeStorageError> {
+        segments::SegmentStore::open(self.segment_medium()?)
+    }
+
+    fn segment_generation(&self) -> Result<GenerationState, NativeStorageError> {
+        let Some(slot) = self.segment_medium()?.read_slot()? else {
+            return Ok(GenerationState {
+                format: GenerationState::FORMAT_V2.into(),
+                generation: 0,
+                state: GenerationStatus::Writing,
+                transaction_id: Some(segments::SlotRecord::LOST_TRANSACTION.into()),
+                log: None,
+            });
+        };
+        let position = LogPosition {
+            nonce: format!("{:016x}", slot.segment),
+            length: slot.length,
+            next_lsn: slot.next_lsn,
+            records: slot.records,
+        };
+        Ok(GenerationState {
+            format: GenerationState::FORMAT_V2.into(),
+            generation: slot.generation,
+            state: if slot.writing {
+                GenerationStatus::Writing
+            } else {
+                GenerationStatus::Stable
+            },
+            transaction_id: slot
+                .writing
+                .then(|| format!("{}{}", Self::SEGMENT_TRANSACTION_PREFIX, position.nonce)),
+            log: Some(position),
+        })
+    }
+
+    /// Transaction identifiers a segment collection's slots report while
+    /// writing. They share the log's prefix, so recovery treats them alike.
+    pub(crate) const SEGMENT_TRANSACTION_PREFIX: &'static str = "log-segment-";
+
+    /// Characters of the creation segment this collection's shards use.
+    #[must_use]
+    pub const fn shard_width(&self) -> u32 {
+        self.shard_width
+    }
+
+    /// Widths an unfinished reshard is moving this collection away from.
+    #[must_use]
+    pub fn previous_shard_widths(&self) -> &[u32] {
+        &self.previous_shard_widths
+    }
+
+    /// Collection name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Collection kind.
+    #[must_use]
+    pub const fn kind(&self) -> CollectionKind {
+        self.kind
+    }
+
+    /// Canonical collection directory path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Read the current transaction generation.
+    ///
+    /// A missing state file represents generation zero in a stable state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for corrupt, oversized, linked, or inaccessible state.
+    pub fn generation(&self) -> Result<GenerationState, NativeStorageError> {
+        if self.reads_through_tier() {
+            return self.observed_generation();
+        }
+        self.plain_generation()
+    }
+
+    /// The generation as a handle without a temp tier reads it.
+    pub(crate) fn plain_generation(&self) -> Result<GenerationState, NativeStorageError> {
+        let state = self.stored_generation()?;
+        if state.state == GenerationStatus::Writing && self.block.is_some() {
+            // A database collection's slot is published `writing` before
+            // anything is appended, so it has no unapplied record to find.
+            let state = self.database_reader_generation(state)?;
+            SpellingCache::shared().observe_generation(&self.path, state.generation);
+            return Ok(state);
+        }
+        SpellingCache::shared().observe_generation(&self.path, state.generation);
+        self.unapplied_log_check(state)
+    }
+
+    /// The generation exactly as `state.json` records it, without checking
+    /// the write-ahead log against it.
+    pub(crate) fn stored_generation(&self) -> Result<GenerationState, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        if self.uses_segments() {
+            return self.segment_generation();
+        }
+        let path = self.generation_state_path();
+        if !path_exists_no_follow(&path)? {
+            return Ok(Self::missing_generation());
+        }
+        let bytes = self
+            .root
+            .read_generation_file(&path)
+            .map_err(Self::replaced_while_read)?;
+        Self::parse_generation(&bytes)
+    }
+
+    /// What this collection is right now, for a cache to check what it kept
+    /// against (ADR 0030 section 3.1). It reads `state.json` from an open
+    /// handle, with that handle's identity, and the incarnation file.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of reading the generation: a lost owner, an unsafe
+    /// path, or a corrupt or replaced `state.json`.
+    pub fn collection_stamp(&self) -> Result<CollectionStamp, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let files_layout = self.has_stampable_layout();
+        let (state, state_file) = self.stamped_generation(files_layout)?;
+        let state = self.unapplied_log_check(state)?;
+        let incarnation = CollectionIncarnation::read(&self.incarnation_path());
+        Ok(CollectionStamp::new(
+            state,
+            state_file,
+            incarnation,
+            files_layout,
+        ))
+    }
+
+    pub(crate) fn incarnation_path(&self) -> PathBuf {
+        self.generation_state_path()
+            .with_file_name(CollectionIncarnation::FILE_NAME)
+    }
+
+    fn has_stampable_layout(&self) -> bool {
+        !self.uses_segments() && !self.root.is_database()
+    }
+
+    fn stamped_generation(
+        &self,
+        files_layout: bool,
+    ) -> Result<(GenerationState, Option<FileStamp>), NativeStorageError> {
+        if !files_layout {
+            return Ok((self.stored_generation()?, None));
+        }
+        self.stamped_generation_file()
+    }
+
+    fn stamped_generation_file(
+        &self,
+    ) -> Result<(GenerationState, Option<FileStamp>), NativeStorageError> {
+        let path = self.generation_state_path();
+        if !path_exists_no_follow(&path)? {
+            return Ok((Self::missing_generation(), None));
+        }
+        let (bytes, stamp) = self
+            .root
+            .read_stamped_generation_file(&path)
+            .map_err(Self::replaced_while_read)?;
+        Ok((Self::parse_generation(&bytes)?, stamp))
+    }
+
+    fn generation_state_path(&self) -> PathBuf {
+        self.root
+            .canonical
+            .join(".fylo-transactions")
+            .join(&self.kind_folder)
+            .join(&self.name)
+            .join("state.json")
+    }
+
+    fn missing_generation() -> GenerationState {
+        GenerationState {
+            format: GenerationState::FORMAT_V1.into(),
+            generation: 0,
+            state: GenerationStatus::Stable,
+            transaction_id: None,
+            log: None,
+        }
+    }
+
+    fn parse_generation(bytes: &[u8]) -> Result<GenerationState, NativeStorageError> {
+        let state: GenerationState = serde_json::from_slice(bytes).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("collection generation state is corrupt: {error}"),
+            )
+        })?;
+        state.validate()?;
+        Ok(state)
+    }
+
+    /// A stable generation whose log has grown past, or lost, the position it
+    /// recorded has a committed record that is not applied yet: a writer died
+    /// between its commit and its publication. Readers must treat that as an
+    /// in-progress write, which also routes them to recovery.
+    fn unapplied_log_check(
+        &self,
+        state: GenerationState,
+    ) -> Result<GenerationState, NativeStorageError> {
+        if self.lags_namespace_log(&state)? {
+            return Ok(GenerationState {
+                state: GenerationStatus::Writing,
+                transaction_id: Some(Self::UNAPPLIED_NAMESPACE_TRANSACTION.into()),
+                ..state
+            });
+        }
+        self.unapplied_collection_log_check(state)
+    }
+
+    /// A stable collection below a part the namespace log committed for it
+    /// lost that part's publication in a power cut; readers wait for a
+    /// writer to settle the namespace (ADR 0013, "Readers after a power
+    /// cut"). A `.vdbx` database and a segment collection keep no
+    /// namespace log.
+    fn lags_namespace_log(&self, state: &GenerationState) -> Result<bool, NativeStorageError> {
+        if state.state == GenerationStatus::Writing || self.block.is_some() || self.uses_segments()
+        {
+            return Ok(false);
+        }
+        write::NamespaceView::lags(&self.root.canonical, &self.name, state.generation)
+    }
+
+    fn unapplied_collection_log_check(
+        &self,
+        state: GenerationState,
+    ) -> Result<GenerationState, NativeStorageError> {
+        let Some(position) = state.log.as_ref() else {
+            return Ok(state);
+        };
+        if state.state == GenerationStatus::Writing {
+            return Ok(state);
+        }
+        let length = if self.uses_segments() {
+            let number = u64::from_str_radix(&position.nonce, 16).unwrap_or(u64::MAX);
+            Some(self.segment_medium()?.segment_length(number)?)
+        } else {
+            match fs::symlink_metadata(self.log_segment_path()) {
+                Ok(metadata) => Some(metadata.len()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(NativeStorageError::io(error)),
+            }
+        };
+        if length == Some(position.length) {
+            return Ok(state);
+        }
+        Ok(GenerationState {
+            state: GenerationStatus::Writing,
+            transaction_id: Some(Self::UNAPPLIED_LOG_TRANSACTION.into()),
+            ..state
+        })
+    }
+
+    /// `state.json` is replaced by rename on every commit. A reader that loses
+    /// that race sees the file vanish, or on Windows sees its pending delete
+    /// as access denied. Both mean the generation moved, which readers retry.
+    fn replaced_while_read(error: NativeStorageError) -> NativeStorageError {
+        let kind = error.source.as_ref().map(std::io::Error::kind);
+        let replaced = kind == Some(std::io::ErrorKind::NotFound)
+            || (cfg!(windows) && kind == Some(std::io::ErrorKind::PermissionDenied));
+        if !replaced {
+            return error;
+        }
+        NativeStorageError::new(
+            NativeStorageErrorCode::ConcurrentWrite,
+            "collection state was replaced while it was read",
+        )
+    }
+
+    /// Transaction identifier a reader sees for an unapplied log record.
+    pub(crate) const UNAPPLIED_LOG_TRANSACTION: &'static str = "log-unapplied";
+    /// Transaction identifier a reader sees for a part only the namespace
+    /// log holds.
+    pub(crate) const UNAPPLIED_NAMESPACE_TRANSACTION: &'static str = "log-namespace-unapplied";
+
+    /// Directory of the collection's write-ahead log.
+    pub(crate) fn log_directory(&self) -> PathBuf {
+        self.root
+            .canonical
+            .join(".fylo-transactions")
+            .join(&self.kind_folder)
+            .join(&self.name)
+            .join("log")
+    }
+
+    /// The collection's single write-ahead log segment.
+    pub(crate) fn log_segment_path(&self) -> PathBuf {
+        self.log_directory().join("segment.log")
+    }
+
+    /// List validated live document identifiers in ascending TTID order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when linked components, unexpected files, invalid
+    /// identifiers, or filesystem failures are encountered.
+    pub fn document_ids(&self) -> Result<Vec<String>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        if self.kind != CollectionKind::Document {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "document enumeration is not available for file collections",
+            ));
+        }
+        if self.uses_segments() {
+            return Ok(self.segment_store()?.ids(segments::LocationState::Live));
+        }
+        self.document_ids_at(&self.path.join("docs"))
+    }
+
+    /// One page of the collection's change feed: each document whose newest
+    /// change follows `after` (a sequence number and an identifier), at most
+    /// `limit` of them, oldest first (ADR 0024).
+    ///
+    /// # Errors
+    ///
+    /// Returns `LayoutUnsupported` for a collection outside the segments
+    /// layout, and an error for a collection whose log cannot be read.
+    pub fn changes_after(
+        &self,
+        after: (u64, &str),
+        limit: usize,
+    ) -> Result<ChangePage, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        change_feed::ChangeFeed::page(self, after, limit)
+    }
+
+    pub(crate) fn change_lineage(&self) -> Result<Option<String>, NativeStorageError> {
+        Ok(self
+            .root
+            .collection_descriptor(&self.name)?
+            .and_then(|descriptor| descriptor.change_lineage))
+    }
+
+    /// List validated retained tombstone identifiers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for non-document collections or unsafe/corrupt
+    /// tombstone paths.
+    pub fn deleted_document_ids(&self) -> Result<Vec<String>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        if self.kind != CollectionKind::Document {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "deleted-document enumeration is not available for file collections",
+            ));
+        }
+        if self.uses_segments() {
+            return Ok(self.segment_store()?.ids(segments::LocationState::Deleted));
+        }
+        self.document_ids_at(&self.path.join(".deleted"))
+    }
+
+    fn document_ids_at(&self, state_folder: &Path) -> Result<Vec<String>, NativeStorageError> {
+        self.root
+            .verify_path(state_folder, ExpectedType::Directory)?;
+        let mut ids = Vec::new();
+        let mut shards = read_dir_sorted(state_folder)?;
+        for shard in &mut shards {
+            let shard_path = shard.path();
+            let file_type = shard.file_type().map_err(NativeStorageError::io)?;
+            if file_type.is_symlink() || !file_type.is_dir() {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    format!(
+                        "document shard is not a regular directory: {}",
+                        shard_path.display()
+                    ),
+                ));
+            }
+            self.root
+                .verify_path(&shard_path, ExpectedType::Directory)?;
+            for entry in read_dir_sorted(&shard_path)? {
+                let path = entry.path();
+                let file_type = entry.file_type().map_err(NativeStorageError::io)?;
+                if file_type.is_symlink() || !file_type.is_file() {
+                    return Err(NativeStorageError::new(
+                        NativeStorageErrorCode::UnsafePath,
+                        format!("document entry is not a regular file: {}", path.display()),
+                    ));
+                }
+                let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                    return Err(NativeStorageError::new(
+                        NativeStorageErrorCode::InvalidDocumentId,
+                        "document filename is not valid UTF-8",
+                    ));
+                };
+                if is_scratch_file(file_name) {
+                    continue;
+                }
+                let Some(identifier) = file_name.strip_suffix(".json") else {
+                    continue;
+                };
+                validate_ttid_shape(identifier)?;
+                if !shard_matches(
+                    identifier,
+                    &shard_path,
+                    self.shard_width,
+                    &self.previous_shard_widths,
+                ) {
+                    return Err(NativeStorageError::new(
+                        NativeStorageErrorCode::InvalidDocumentId,
+                        "document identifier does not match its shard",
+                    ));
+                }
+                ids.push(identifier.to_owned());
+            }
+        }
+        // Directory order is (shard, identifier), and ADR 0006 made the shard
+        // the identifier's *trailing* characters. While it was the leading
+        // ones the two orders coincided and this sort was invisible; now they
+        // do not, and the `ttid-binary-ascending` ordering the handshake
+        // advertises — and every query cursor depends on — has to be restored
+        // explicitly. Raw files already sort: they collect into a `BTreeSet`.
+        ids.sort();
+        Ok(ids)
+    }
+
+    /// List validated live raw-file identifiers in lexical path order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for non-file collections, linked or malformed
+    /// entries, duplicate identifiers, or filesystem failures.
+    pub fn raw_file_ids(&self) -> Result<Vec<String>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        if self.kind != CollectionKind::File {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "raw-file enumeration is available only for file collections",
+            ));
+        }
+        self.raw_file_ids_at(&self.path.join("docs"))
+    }
+
+    /// List validated retained raw-file tombstone identifiers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for non-file collections or unsafe/corrupt tombstone
+    /// paths.
+    pub fn deleted_raw_file_ids(&self) -> Result<Vec<String>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        if self.kind != CollectionKind::File {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "deleted raw-file enumeration is available only for file collections",
+            ));
+        }
+        self.raw_file_ids_at(&self.path.join(".deleted"))
+    }
+
+    fn raw_file_ids_at(&self, state_folder: &Path) -> Result<Vec<String>, NativeStorageError> {
+        self.root
+            .verify_path(state_folder, ExpectedType::Directory)?;
+        let mut ids = BTreeSet::new();
+        for shard in read_dir_sorted(state_folder)? {
+            let shard_path = shard.path();
+            let file_type = shard.file_type().map_err(NativeStorageError::io)?;
+            if file_type.is_symlink() || !file_type.is_dir() {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    format!(
+                        "raw-file shard is not a regular directory: {}",
+                        shard_path.display()
+                    ),
+                ));
+            }
+            self.root
+                .verify_path(&shard_path, ExpectedType::Directory)?;
+            let shard_name = path_utf8_name(&shard_path, "raw-file shard")?;
+            for entry in read_dir_sorted(&shard_path)? {
+                let path = entry.path();
+                let file_type = entry.file_type().map_err(NativeStorageError::io)?;
+                if file_type.is_symlink() || !file_type.is_file() {
+                    return Err(NativeStorageError::new(
+                        NativeStorageErrorCode::UnsafePath,
+                        format!("raw-file entry is not a regular file: {}", path.display()),
+                    ));
+                }
+                let filename = path_utf8_name(&path, "raw-file")?;
+                if is_scratch_file(filename) {
+                    continue;
+                }
+                let Some(identifier) = raw_file_identifier(filename) else {
+                    continue;
+                };
+                validate_ttid_shape(identifier)?;
+                validate_raw_extension(filename, identifier)?;
+                if !shard_candidates(identifier, self.shard_width, &self.previous_shard_widths)
+                    .iter()
+                    .any(|candidate| candidate == shard_name)
+                {
+                    return Err(NativeStorageError::new(
+                        NativeStorageErrorCode::InvalidDocumentId,
+                        "raw-file identifier does not match its shard",
+                    ));
+                }
+                if !ids.insert(identifier.to_owned()) {
+                    return Err(NativeStorageError::new(
+                        NativeStorageErrorCode::CorruptMetadata,
+                        format!("multiple raw files found for document ID: {identifier}"),
+                    ));
+                }
+            }
+        }
+        Ok(ids.into_iter().collect())
+    }
+
+    /// Read one document body and native file metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid IDs, unsafe paths, oversized files, or I/O
+    /// failures.
+    pub fn read_document(&self, identifier: &str) -> Result<StoredBytes, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        validate_ttid_shape(identifier)?;
+        if self.kind != CollectionKind::Document {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "JSON document reads are not available for file collections",
+            ));
+        }
+        if self.uses_segments() {
+            return self.read_segment_document(identifier, segments::LocationState::Live);
+        }
+        self.read_live_document(identifier)
+    }
+
+    /// Read many live documents, in the order given.
+    ///
+    /// A segment collection reads neighbouring records together; a file
+    /// collection reads each document as [`Self::read_document`] does.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error any document's read would return.
+    pub fn read_documents(
+        &self,
+        identifiers: &[String],
+    ) -> Result<Vec<StoredBytes>, NativeStorageError> {
+        if !self.uses_segments() {
+            return identifiers
+                .iter()
+                .map(|identifier| self.read_document(identifier))
+                .collect();
+        }
+        self.root.assert_profile_owned()?;
+        for identifier in identifiers {
+            validate_ttid_shape(identifier)?;
+        }
+        let store = self.segment_store()?;
+        Ok(store
+            .documents(identifiers, segments::LocationState::Live)?
+            .into_iter()
+            .map(|document| {
+                let path = store.medium().segment_path(document.location.segment);
+                document.into_stored(path)
+            })
+            .collect())
+    }
+
+    fn read_segment_document(
+        &self,
+        identifier: &str,
+        state: segments::LocationState,
+    ) -> Result<StoredBytes, NativeStorageError> {
+        let store = self.segment_store()?;
+        let document = store.document(identifier, state)?;
+        let path = store.medium().segment_path(document.location.segment);
+        Ok(document.into_stored(path))
+    }
+
+    /// Read one live record's developer metadata (`user.fylo.meta.*` xattrs).
+    ///
+    /// Works for both collection kinds, because the JavaScript engine stores
+    /// document and raw-file developer metadata the same way.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid IDs, unsafe paths, oversized metadata, or
+    /// I/O failures.
+    pub fn read_custom_metadata(
+        &self,
+        identifier: &str,
+    ) -> Result<BTreeMap<String, Value>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        validate_ttid_shape(identifier)?;
+        if self.uses_segments() {
+            let document = self
+                .segment_store()?
+                .document(identifier, segments::LocationState::Live)?;
+            return decode_custom_metadata(&document.attributes()?);
+        }
+        let path = if self.kind == CollectionKind::Document {
+            self.read_document(identifier)?.path
+        } else {
+            self.read_raw_file(identifier)?.path
+        };
+        let (file, _) = self.root.open_file(&path, MAX_RAW_FILE_BYTES)?;
+        let attributes = record_attributes::RecordAttributes::read(&self.root, &file, &path)?;
+        attributes.verify(&self.root, &file, &path)?;
+        decode_custom_metadata(&attributes)
+    }
+
+    /// Read one retained soft-deleted JSON document. Its modification time is
+    /// the deletion timestamp established by the JavaScript engine.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid IDs, unsafe paths, oversized files, or I/O
+    /// failures.
+    pub fn read_deleted_document(
+        &self,
+        identifier: &str,
+    ) -> Result<StoredBytes, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        validate_ttid_shape(identifier)?;
+        if self.kind != CollectionKind::Document {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "deleted JSON document reads are not available for file collections",
+            ));
+        }
+        if self.uses_segments() {
+            return self.read_segment_document(identifier, segments::LocationState::Deleted);
+        }
+        self.read_document_at(&self.path.join(".deleted"), identifier)
+    }
+
+    fn read_document_at(
+        &self,
+        state_folder: &Path,
+        identifier: &str,
+    ) -> Result<StoredBytes, NativeStorageError> {
+        self.read_document_file(state_folder, identifier, |_| (), |_, _| ())
+            .map(|(stored, (), ())| stored)
+    }
+
+    /// Read one document as [`Self::read_document_at`] does, with what
+    /// `before` saw of the file once it was open and before anything was
+    /// read from it, and what `after` saw of the file and its verified
+    /// attributes once the read passed every check.
+    fn read_document_file<T, U>(
+        &self,
+        state_folder: &Path,
+        identifier: &str,
+        before: impl FnOnce(&File) -> T,
+        after: impl FnOnce(&File, &record_attributes::RecordAttributes) -> U,
+    ) -> Result<(StoredBytes, T, U), NativeStorageError> {
+        let (path, (mut file, metadata)) = self.open_document(state_folder, identifier)?;
+        let seen = before(&file);
+        let attributes = record_attributes::RecordAttributes::read(&self.root, &file, &path)?;
+        let bytes = read_sized(&mut file, metadata.len(), MAX_DOCUMENT_BYTES)?;
+        attributes.verify(&self.root, &file, &path)?;
+        attributes.verify_contents(&self.root, &path, &bytes)?;
+        LegacyAccessWarning::notice(&attributes);
+        let checked = after(&file, &attributes);
+        let stored = StoredBytes {
+            bytes,
+            modified_millis: modified_millis(&metadata)?,
+            path,
+        };
+        Ok((stored, seen, checked))
+    }
+
+    /// Try each shard a document may live in with one open per candidate. A
+    /// candidate that is absent moves on to the next; anything else, or no
+    /// candidate at all, takes the checked lookup that reports it exactly.
+    fn open_document(
+        &self,
+        state_folder: &Path,
+        identifier: &str,
+    ) -> Result<(PathBuf, (File, Metadata)), NativeStorageError> {
+        let filename = format!("{identifier}.json");
+        for shard in shard_candidates(identifier, self.shard_width, &self.previous_shard_widths) {
+            let path = state_folder.join(shard).join(&filename);
+            match self.root.open_beneath_for_read(&path) {
+                BeneathOpen::Opened(file, metadata) => {
+                    let opened =
+                        NativeRoot::within_size_limit(&path, (file, metadata), MAX_DOCUMENT_BYTES)?;
+                    return Ok((path, opened));
+                }
+                BeneathOpen::Missing => {}
+                BeneathOpen::Unavailable => break,
+            }
+        }
+        self.open_document_by_walk(state_folder, identifier, &filename)
+    }
+
+    fn open_document_by_walk(
+        &self,
+        state_folder: &Path,
+        identifier: &str,
+        filename: &str,
+    ) -> Result<(PathBuf, (File, Metadata)), NativeStorageError> {
+        let path = existing_shard_path(
+            state_folder,
+            identifier,
+            filename,
+            self.shard_width,
+            &self.previous_shard_widths,
+        )?;
+        if !path_exists_no_follow(&path)? {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::NotFound,
+                format!("document not found: {identifier}"),
+            ));
+        }
+        let opened = self.root.open_file(&path, MAX_DOCUMENT_BYTES)?;
+        Ok((path, opened))
+    }
+
+    /// Read one raw file with its durable object key, custom metadata and
+    /// checksum.
+    ///
+    /// Native Unix data and xattrs use the same verified open file. The EFS
+    /// profile retains separate verified payload and manifest handles; trusted
+    /// engine reads additionally check the stable generation before and after.
+    /// Windows reads the existing `fylo.xattrs` ADS representation; native
+    /// Windows race-hardening remains qualification-gated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid IDs, duplicate files, missing durable
+    /// keys, corrupt metadata, unsafe paths, oversized files, or I/O failures.
+    pub fn read_raw_file(&self, identifier: &str) -> Result<StoredRawFile, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        validate_ttid_shape(identifier)?;
+        if self.kind != CollectionKind::File {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "raw-file reads are available only for file collections",
+            ));
+        }
+        self.read_raw_file_at(&self.path.join("docs"), identifier)
+    }
+
+    /// Read one retained soft-deleted raw file. Its modification time is the
+    /// deletion timestamp established by the JavaScript engine.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid IDs, duplicate files, corrupt metadata,
+    /// unsafe paths, oversized files, or I/O failures.
+    pub fn read_deleted_raw_file(
+        &self,
+        identifier: &str,
+    ) -> Result<StoredRawFile, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        validate_ttid_shape(identifier)?;
+        if self.kind != CollectionKind::File {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "deleted raw-file reads are available only for file collections",
+            ));
+        }
+        self.read_raw_file_at(&self.path.join(".deleted"), identifier)
+    }
+
+    fn read_raw_file_at(
+        &self,
+        state_folder: &Path,
+        identifier: &str,
+    ) -> Result<StoredRawFile, NativeStorageError> {
+        let path = self.find_raw_file_path(state_folder, identifier)?;
+        let filename = path_utf8_name(&path, "raw-file")?;
+        let extension = validate_raw_extension(filename, identifier)?.to_owned();
+        let (mut file, metadata) = self.root.open_file(&path, MAX_RAW_FILE_BYTES)?;
+        let attributes = record_attributes::RecordAttributes::read(&self.root, &file, &path)?;
+        attributes.verify(&self.root, &file, &path)?;
+        let location = path
+            .strip_prefix(&self.root.canonical)
+            .unwrap_or(Path::new(filename));
+        let key = required_utf8_attribute(&attributes, KEY_XATTR, identifier, location)?;
+        validate_raw_key(&key)?;
+        let custom_metadata = decode_custom_metadata(&attributes)?;
+        LegacyAccessWarning::notice(&attributes);
+        let bytes = read_bounded(
+            (&mut file).take(MAX_RAW_FILE_BYTES.saturating_add(1)),
+            MAX_RAW_FILE_BYTES,
+        )?;
+        attributes.verify(&self.root, &file, &path)?;
+        attributes.verify_contents(&self.root, &path, &bytes)?;
+        let computed_checksum = sha256_hex(&bytes);
+        let modified_millis = modified_millis(&metadata)?;
+        let cached = cached_checksum(
+            attributes.get(CHECKSUM_XATTR),
+            metadata.len(),
+            modified_millis,
+        );
+        let checksum_sha256 = if self.root.profile == FilesystemProfile::EfsSidecarV1 {
+            if cached.as_deref() != Some(computed_checksum.as_str()) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    format!(
+                        "EFS raw payload checksum, size or mtime does not match its manifest: {}",
+                        path.display()
+                    ),
+                ));
+            }
+            computed_checksum
+        } else {
+            matching_checksum(cached, computed_checksum, &path)?
+        };
+        Ok(StoredRawFile {
+            bytes,
+            key,
+            extension: extension.clone(),
+            content_type: raw_file_content_type(&extension).to_owned(),
+            checksum_sha256,
+            custom_metadata,
+            modified_millis,
+            path,
+        })
+    }
+
+    fn find_raw_file_path(
+        &self,
+        state_folder: &Path,
+        identifier: &str,
+    ) -> Result<PathBuf, NativeStorageError> {
+        let mut shard = state_folder.join(shard_of(identifier, self.shard_width));
+        for candidate in shard_candidates(identifier, self.shard_width, &self.previous_shard_widths)
+        {
+            let path = state_folder.join(candidate);
+            if path_exists_no_follow(&path)? {
+                shard = path;
+                break;
+            }
+        }
+        if !path_exists_no_follow(&shard)? {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::NotFound,
+                format!("raw file not found: {identifier}"),
+            ));
+        }
+        self.root.verify_path(&shard, ExpectedType::Directory)?;
+        let mut match_path = None;
+        for entry in read_dir_sorted(&shard)? {
+            let path = entry.path();
+            let filename = path_utf8_name(&path, "raw-file")?;
+            // A record's sidecar shares its identifier prefix, so the same
+            // rule the enumerators use has to apply here or the resolver picks
+            // the sidecar and rejects its extension.
+            if is_scratch_file(filename) {
+                continue;
+            }
+            if raw_file_identifier(filename) != Some(identifier) {
+                continue;
+            }
+            let file_type = entry.file_type().map_err(NativeStorageError::io)?;
+            if file_type.is_symlink() || !file_type.is_file() {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath,
+                    format!("raw file is not a regular, non-link file: {identifier}"),
+                ));
+            }
+            validate_raw_extension(filename, identifier)?;
+            if match_path.replace(path).is_some() {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    format!("multiple raw files found for document ID: {identifier}"),
+                ));
+            }
+        }
+        let path = match_path.ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::NotFound,
+                format!("raw file not found: {identifier}"),
+            )
+        })?;
+        self.root.verify_path(&path, ExpectedType::File)?;
+        Ok(path)
+    }
+
+    /// Read and validate the prefix index with its complete WAL overlay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsafe paths, oversized files, I/O failures, or an
+    /// invalid snapshot.
+    pub fn index_snapshot(&self) -> Result<IndexSnapshot, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        self.shared_index_snapshot()
+            .map(|snapshot| (*snapshot).clone())
+    }
+
+    /// Read index inputs and reuse an immutable view when their bytes are unchanged.
+    ///
+    /// The process retains at most one 64 MiB entry, including inputs and the
+    /// merged view. Caller-held views and temporary read buffers are separate.
+    /// Every call checks paths and reads both inputs, including on a cache
+    /// hit, unless the temp tier holds them for the collection's current
+    /// stamp (ADR 0030 slice S5).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same path, size, I/O, and validation errors as `index_snapshot`.
+    pub fn shared_index_snapshot(
+        &self,
+    ) -> Result<std::sync::Arc<IndexSnapshot>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        self.index_snapshot_with_cache(index_cache::IndexCache::shared(), MAX_INDEX_WAL_BYTES)
+    }
+
+    /// The merged index for compaction, which also folds a log too large for
+    /// readers, as only a release without the log ceiling could leave it.
+    pub(crate) fn index_snapshot_for_compaction(
+        &self,
+    ) -> Result<std::sync::Arc<IndexSnapshot>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        self.index_snapshot_with_cache(
+            index_cache::IndexCache::shared(),
+            index_limit::IndexLimit::compaction_read_bytes(),
+        )
+    }
+
+    fn index_snapshot_with_cache(
+        &self,
+        cache: &index_cache::IndexCache,
+        log_limit: u64,
+    ) -> Result<std::sync::Arc<IndexSnapshot>, NativeStorageError> {
+        if self.index_in_medium()? {
+            let (snapshot, log) = self.medium_index()?;
+            return cache.load(index_cache::IndexInputs {
+                snapshot,
+                log: Some(log),
+            });
+        }
+        cache.load(self.index_inputs(log_limit)?)
+    }
+
+    /// Read only the prefix-index keys in `ranges`, with the complete WAL
+    /// overlay applied to them.
+    ///
+    /// The result equals [`Self::index_snapshot`] with every key outside the
+    /// ranges removed. A collection's own index snapshot file is searched in
+    /// place, so only the parts holding those keys are read and the cost
+    /// follows the size of the ranges and the WAL, not of the index. The
+    /// keys read are validated; the rest of the snapshot is not, which is
+    /// what `verify_index` is for.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsafe paths, oversized files, I/O failures, or a
+    /// malformed run of keys in a range.
+    pub fn index_snapshot_in_ranges(
+        &self,
+        ranges: &[byckr_query::IndexKeyRange],
+    ) -> Result<IndexSnapshot, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let reader = index_cache::IndexRangeReader::new(ranges);
+        if self.index_in_medium()? {
+            let (snapshot, log) = self.medium_index()?;
+            let length = snapshot.len() as u64;
+            return reader.read((std::io::Cursor::new(snapshot), length), &log);
+        }
+        if let Some(inputs) = self.index_inputs_for_ranges()? {
+            let length = inputs.snapshot.len() as u64;
+            let log = inputs.log.unwrap_or_default();
+            return reader.read((std::io::Cursor::new(inputs.snapshot), length), &log);
+        }
+        let log = self.index_log(MAX_INDEX_WAL_BYTES)?.unwrap_or_default();
+        let (snapshot, metadata) = self.root.open_file(
+            &self.index_snapshot_path(),
+            index_limit::IndexLimit::INDEX_BYTES,
+        )?;
+        reader.read((snapshot, metadata.len()), &log)
+    }
+
+    fn medium_index(&self) -> Result<(Vec<u8>, Vec<u8>), NativeStorageError> {
+        let medium = self.segment_medium()?;
+        let to = medium
+            .read_slot()?
+            .map_or(segments::RecordPosition::START, |slot| {
+                segments::RecordPosition::published(&slot)
+            });
+        medium.read_index(to)
+    }
+
+    fn index_snapshot_path(&self) -> PathBuf {
+        self.path.join("index").join("keys.snapshot")
+    }
+
+    fn index_log(&self, log_limit: u64) -> Result<Option<Vec<u8>>, NativeStorageError> {
+        let wal_path = self.path.join("index").join("keys.wal");
+        if !path_exists_no_follow(&wal_path)? {
+            return Ok(None);
+        }
+        self.read_index_log(&wal_path, log_limit)
+            .map(Some)
+            .map_err(index_limit::IndexLimit::explain_refusal)
+    }
+
+    fn read_index_log(&self, path: &Path, log_limit: u64) -> Result<Vec<u8>, NativeStorageError> {
+        let (mut file, metadata) = self.root.open_file(path, log_limit)?;
+        read_sized(&mut file, metadata.len(), log_limit)
+    }
+
+    /// Verify that every merged snapshot/WAL key is structurally valid and
+    /// references a live document or raw file.
+    ///
+    /// This is an integrity check, not yet full rebuild-equivalence proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for corrupt keys, orphaned identifiers, unsafe paths,
+    /// or storage failures.
+    pub fn verify_index_references(&self) -> Result<IndexVerification, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let live = self.live_ids()?;
+        let snapshot = self.shared_index_snapshot()?;
+        Self::index_references(&live, &snapshot)
+    }
+
+    /// The identifiers of this collection's live documents, or of its live
+    /// raw files for a file collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsafe or corrupt paths, or storage failures.
+    pub fn live_ids(&self) -> Result<Vec<String>, NativeStorageError> {
+        match self.kind {
+            CollectionKind::Document => self.document_ids(),
+            CollectionKind::File => self.raw_file_ids(),
+        }
+    }
+
+    /// [`Self::verify_index_references`] over identifiers and an index the
+    /// caller already read, so one operation reads each of them once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for corrupt keys or orphaned identifiers.
+    pub fn index_references(
+        live: &[String],
+        snapshot: &IndexSnapshot,
+    ) -> Result<IndexVerification, NativeStorageError> {
+        let live: BTreeSet<&str> = live.iter().map(String::as_str).collect();
+        let mut indexed = BTreeSet::new();
+        let mut key_count = 0_usize;
+        for key in snapshot
+            .as_bytes()
+            .split(|byte| *byte == b'\n')
+            .filter(|key| !key.is_empty())
+        {
+            key_count = key_count.checked_add(1).ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::FileTooLarge,
+                    "index key count overflow",
+                )
+            })?;
+            let key = std::str::from_utf8(key).map_err(|error| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptIndex,
+                    format!("index key is not valid UTF-8: {error}"),
+                )
+            })?;
+            let segments: Vec<&str> = key.split('/').collect();
+            if segments.len() < 4 {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptIndex,
+                    "index key has too few segments",
+                ));
+            }
+            let identifier = segments.last().copied().unwrap_or_default();
+            if identifier.contains('%') {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptIndex,
+                    "index document identifier must use canonical TTID bytes",
+                ));
+            }
+            validate_ttid_shape(identifier).map_err(|error| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptIndex,
+                    format!("index contains an invalid document identifier: {error}"),
+                )
+            })?;
+            if !live.contains(identifier) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptIndex,
+                    format!("index contains an orphaned document identifier: {identifier}"),
+                ));
+            }
+            indexed.insert(identifier.to_owned());
+        }
+        Ok(IndexVerification {
+            key_count,
+            indexed_documents: indexed.len(),
+            live_documents: live.len(),
+            reference_integrity: true,
+            rebuild_equivalent: false,
+            expected_key_count: None,
+            missing_keys: None,
+            missing_key_sample: Vec::new(),
+            extra_key_sample: Vec::new(),
+            extra_keys: None,
+        })
+    }
+}
+
+/// Bounded stored bytes plus canonical native metadata.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredBytes {
+    /// Document bytes.
+    pub bytes: Vec<u8>,
+    /// Filesystem modification time in whole Unix milliseconds.
+    pub modified_millis: u64,
+    /// Verified native path.
+    pub path: PathBuf,
+}
+
+/// Raw-file bytes and metadata bound to one verified native file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredRawFile {
+    /// Unwrapped file bytes.
+    pub bytes: Vec<u8>,
+    /// Durable logical object key from FYLO metadata.
+    pub key: String,
+    /// Safe final filename extension, including the leading dot.
+    pub extension: String,
+    /// Content type inferred using the existing FYLO extension table.
+    pub content_type: String,
+    /// SHA-256 checksum of the returned bytes.
+    pub checksum_sha256: String,
+    /// Developer-defined JSON metadata.
+    pub custom_metadata: BTreeMap<String, Value>,
+    /// Filesystem modification time in whole Unix milliseconds.
+    pub modified_millis: u64,
+    /// Verified native path.
+    pub path: PathBuf,
+}
+
+/// POSTIX access descriptor an old record keeps in `user.fylo.access`,
+/// read only by `fylo access report` and `fylo pack --protect` (ADR 0021).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AccessDescriptor {
+    /// Descriptor format version.
+    pub version: u8,
+    /// Owning user ID.
+    pub uid: u32,
+    /// Owning group ID.
+    pub gid: u32,
+    /// POSIX-compatible permission bits.
+    pub mode: u32,
+}
+
+/// Read-only prefix-index reference verification.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexVerification {
+    /// Number of merged snapshot/WAL keys checked.
+    pub key_count: usize,
+    /// Unique live identifiers represented by at least one key.
+    pub indexed_documents: usize,
+    /// Total live records in the authoritative document tree.
+    pub live_documents: usize,
+    /// Always true when this report is returned.
+    pub reference_integrity: bool,
+    /// Whether merged index state exactly matches an independent rebuild.
+    pub rebuild_equivalent: bool,
+    /// Independently derived key count when rebuild comparison ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_key_count: Option<usize>,
+    /// Expected keys absent from merged snapshot/WAL state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missing_keys: Option<usize>,
+    /// Merged snapshot/WAL keys absent from the independent rebuild.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_keys: Option<usize>,
+    /// Bounded sample of expected keys the merged state is missing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missing_key_sample: Vec<String>,
+    /// Bounded sample of merged keys the rebuild did not derive.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extra_key_sample: Vec<String>,
+}
+
+/// Active first-parent FYLO repository history.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryHistory {
+    /// Whether `.fylo-vcs/HEAD` exists.
+    pub enabled: bool,
+    /// Active branch when versioning is initialized.
+    pub branch: Option<String>,
+    /// Active branch head commit.
+    pub head: Option<String>,
+    /// Newest-to-oldest first-parent commits, bounded by the requested limit.
+    pub commits: Vec<VersionCommit>,
+    /// Whether an older first-parent commit exists beyond the requested limit.
+    pub truncated: bool,
+}
+
+/// Bounded content-integrity report for the active head's reachable graph.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionVerification {
+    /// Whether versioning is initialized.
+    pub enabled: bool,
+    /// Active branch when versioning is initialized.
+    pub branch: Option<String>,
+    /// Active branch head commit.
+    pub head: Option<String>,
+    /// Number of reachable commits whose trees were traversed.
+    pub commits_verified: usize,
+    /// Whether the requested bound covered the complete reachable graph.
+    pub history_complete: bool,
+    /// Number of unique content-addressed tree objects verified.
+    pub tree_objects: usize,
+    /// Number of unique content-addressed document/file/metadata blobs verified.
+    pub blob_objects: usize,
+    /// Aggregate bytes hashed across unique objects.
+    pub verified_bytes: u64,
+    /// True only when all reported objects passed schema and hash verification.
+    pub content_integrity: bool,
+}
+
+/// Validated immutable FYLO commit manifest.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionCommit {
+    /// Commit TTID.
+    pub id: String,
+    /// Branch that originally produced the commit.
+    pub branch: String,
+    /// Parent commit TTIDs.
+    pub parents: Vec<String>,
+    /// Operator/developer commit message.
+    pub message: String,
+    /// ISO timestamp emitted by the JavaScript engine.
+    pub created_at: String,
+    /// Repository-relative immutable commit directory.
+    ///
+    /// The JavaScript engine writes this with `path.relative`, so a repository
+    /// created on Windows stores backslashes. Both spellings name the same
+    /// directory and are accepted; the native writer always emits the
+    /// forward-slash form so a Rust-written repository stays portable.
+    pub root: String,
+}
+
+impl VersionCommit {
+    pub(crate) fn validate(&self, expected_identifier: &str) -> Result<(), NativeStorageError> {
+        if self.id != expected_identifier {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "FYLO commit manifest ID does not match its directory",
+            ));
+        }
+        validate_ttid_shape(&self.id).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("FYLO commit manifest ID is invalid: {error}"),
+            )
+        })?;
+        validate_branch_name(&self.branch)?;
+        if self.parents.len() > 2
+            || self
+                .parents
+                .iter()
+                .any(|parent| parent == &self.id || validate_ttid_shape(parent).is_err())
+            || self.message.trim().is_empty()
+            || self.message.len() > 64 * 1024
+            || self.created_at.is_empty()
+            || self.root.replace('\\', "/") != format!(".fylo-vcs/commits/{}", self.id)
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "FYLO commit manifest has an invalid schema",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Parsed collection generation state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+pub struct GenerationState {
+    /// Storage format identifier.
+    pub format: String,
+    /// Monotonic generation number.
+    pub generation: u64,
+    /// Stable or writing state.
+    pub state: GenerationStatus,
+    /// Transaction ID present only while writing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_id: Option<String>,
+    /// End of the write-ahead log, present only in the v2 format while the
+    /// collection has commits since its last checkpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<LogPosition>,
+}
+
+impl GenerationState {
+    /// Format of a collection whose write-ahead log is checkpointed away.
+    pub const FORMAT_V1: &'static str = "fylo.collection-generation.v1";
+    /// Format of a collection with commits in its write-ahead log.
+    pub const FORMAT_V2: &'static str = "fylo.collection-generation.v2";
+    /// Format of a collection whose schemas live in the root's registry, with
+    /// or without a write-ahead log (ADR 0017 section 3). A release that
+    /// predates the registry refuses it as corrupt metadata, which is the
+    /// fence that stops it writing documents it cannot validate.
+    pub const FORMAT_V3: &'static str = "fylo.collection-generation.v3";
+
+    /// Whether a reader sees this collection held back by a part only the
+    /// namespace log holds: a writer must open the root to settle it.
+    #[must_use]
+    pub fn awaits_namespace_settling(&self) -> bool {
+        self.state == GenerationStatus::Writing
+            && self.transaction_id.as_deref()
+                == Some(NativeCollection::UNAPPLIED_NAMESPACE_TRANSACTION)
+    }
+
+    /// Whether this state carries the schema registry fence.
+    #[must_use]
+    pub fn schema_fenced(&self) -> bool {
+        self.format == Self::FORMAT_V3
+    }
+
+    fn validate(&self) -> Result<(), NativeStorageError> {
+        let valid_transaction = match self.state {
+            GenerationStatus::Stable => self.transaction_id.is_none(),
+            GenerationStatus::Writing => self
+                .transaction_id
+                .as_ref()
+                .is_some_and(|identifier| !identifier.is_empty()),
+        };
+        let valid_format = match self.log {
+            _ if self.schema_fenced() => true,
+            None => self.format == Self::FORMAT_V1,
+            Some(_) => self.format == Self::FORMAT_V2,
+        };
+        if !valid_format || !valid_transaction {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "collection generation state has an invalid schema",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Collection generation status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GenerationStatus {
+    /// No transaction is publishing changes.
+    Stable,
+    /// A writer has published an in-progress generation.
+    Writing,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ExpectedType {
+    File,
+    Directory,
+}
+
+impl ExpectedType {
+    fn matches(self, metadata: &Metadata) -> bool {
+        match self {
+            Self::File => metadata.is_file(),
+            Self::Directory => metadata.is_dir(),
+        }
+    }
+}
+
+/// Stable native storage failure codes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeStorageErrorCode {
+    /// Filesystem I/O failed.
+    Io,
+    /// A path contained a linked or escaping component.
+    UnsafePath,
+    /// A path had an unexpected type.
+    WrongType,
+    /// A bounded file was oversized.
+    FileTooLarge,
+    /// Collection metadata was corrupt.
+    CorruptMetadata,
+    /// A document body was malformed or unsupported.
+    CorruptDocument,
+    /// Prefix-index bytes were corrupt.
+    CorruptIndex,
+    /// A write could grow a collection's prefix index past its write limit,
+    /// which stays below the size a reader accepts, so it was refused.
+    IndexFull,
+    /// Collection name was invalid or reserved.
+    InvalidCollection,
+    /// Document ID syntax was invalid.
+    InvalidDocumentId,
+    /// Requested record was not found.
+    NotFound,
+    /// A create named a document or file identifier that already exists.
+    DocumentExists,
+    /// Another writer owns the collection or recovery is required.
+    ConcurrentWrite,
+    /// The identity this root was opened with may not do the operation.
+    PermissionDenied,
+    /// Another live process owns this root.
+    RootLocked,
+    /// This process's exclusive ownership of the root was lost.
+    RootLeaseLost,
+    /// The root is on a network filesystem, where locks do not stop another
+    /// machine from writing it (ADR 0029).
+    RemoteRoot,
+    /// The root is on the system disk, or a disk FYLO cannot tell, and
+    /// neither the opt-out nor app mode admits it (ADR 0032).
+    SystemDisk,
+    /// The file system failed the probe when the app folder was created, or
+    /// no longer does what the app folder recorded in `format.json` (ADR
+    /// 0033 section 6).
+    FilesystemProbe,
+    /// The root's parent folder is not a mount point, and neither the
+    /// opt-out nor app mode admits it (ADR 0033 section 5.2).
+    NotVolumeRoot,
+    /// A SQL mutation was malformed or used an unsupported execution shape.
+    InvalidQuery,
+    /// A record write targeted a collection whose recorded shard width differs
+    /// from the one this process is configured for.
+    ShardWidth,
+    /// The preview does not support the requested collection/operation.
+    Unsupported,
+    /// A `.vdbx` database does not hold this kind of collection or support
+    /// this feature (ADR 0016 section 1).
+    LayoutUnsupported,
+    /// A queue topic, consumer group, message, or option was invalid.
+    InvalidQueue,
+    /// A queue acknowledgement receipt was absent, stale, or incorrect.
+    QueueReceipt,
+    /// Queue state exceeded a published resource bound.
+    QueueLimit,
+    /// A document did not match its collection's head schema, and the
+    /// collection's validation mode is `strict`.
+    SchemaViolation,
+    /// An encrypted `.vdbx` database was opened without its key, or with
+    /// another (ADR 0016 section 9).
+    KeyRequired,
+    /// A protected `.vdbx` database was opened without an identity
+    /// (ADR 0021).
+    NoIdentity,
+    /// A record of a protected `.vdbx` database is not signed by an
+    /// identity that could write its collection there (ADR 0021).
+    Signature,
+    /// A protected `.vdbx` database's policy is missing, unsigned, or not
+    /// signed by the pinned trust anchor, or no anchor was pinned
+    /// (ADR 0021).
+    Policy,
+    /// The root's folder name is not a valid app name (ADR 0033 section 2).
+    AppName,
+    /// A namespace name is not valid, or a namespace exists both as a folder
+    /// and as a `.vdbx` (ADR 0033 sections 2 and 10).
+    Namespace,
+    /// A folder that is not empty and has no `.fylo/format.json` would be
+    /// used as an app folder (ADR 0033 section 5.4).
+    NotFyloRoot,
+    /// A namespace to create already exists (ADR 0033 section 3).
+    NamespaceExists,
+    /// A namespace to drop still holds collections and the drop did not
+    /// ask for `cascade` (ADR 0033 section 3).
+    NamespaceNotEmpty,
+    /// A namespace other than `public` before namespaces keep data apart
+    /// (ADR 0033 section 3; slice L1-5 turns them on).
+    NamespaceUnsupported,
+}
+
+impl NativeStorageErrorCode {
+    /// Stable external string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Io => "ENATIVE_IO",
+            Self::UnsafePath => "ENATIVE_UNSAFE_PATH",
+            Self::WrongType => "ENATIVE_WRONG_TYPE",
+            Self::FileTooLarge => "ENATIVE_FILE_SIZE",
+            Self::CorruptMetadata => "ENATIVE_METADATA",
+            Self::CorruptDocument => "ENATIVE_DOCUMENT",
+            Self::CorruptIndex => "ENATIVE_INDEX",
+            Self::IndexFull => "EINDEX_FULL",
+            Self::InvalidCollection => "ENATIVE_COLLECTION",
+            Self::InvalidDocumentId => "EINVALIDDOCID",
+            Self::NotFound => "ENATIVE_NOT_FOUND",
+            Self::DocumentExists => "EDOCEXISTS",
+            Self::ConcurrentWrite => "ENATIVE_CONCURRENT_WRITE",
+            Self::PermissionDenied => "EACCES",
+            Self::RootLocked => "EROOTLOCKED",
+            Self::RootLeaseLost => "EROOTLEASELOST",
+            Self::RemoteRoot => "EREMOTEROOT",
+            Self::SystemDisk => "ESYSTEMDISK",
+            Self::FilesystemProbe => "EFSPROBE",
+            Self::NotVolumeRoot => "ENOTVOLUMEROOT",
+            Self::InvalidQuery => "EQUERY_INVALID",
+            Self::ShardWidth => "ESHARDWIDTH",
+            Self::Unsupported => "ENATIVE_UNSUPPORTED",
+            Self::LayoutUnsupported => "ELAYOUTUNSUPPORTED",
+            Self::InvalidQueue => "EQUEUE_INVALID",
+            Self::QueueReceipt => "EQUEUE_RECEIPT",
+            Self::QueueLimit => "EQUEUE_LIMIT",
+            Self::SchemaViolation => "ESCHEMA",
+            Self::KeyRequired => "EKEY",
+            Self::NoIdentity => "ENOIDENTITY",
+            Self::Policy => "EPOLICY",
+            Self::Signature => "ESIGNATURE",
+            Self::AppName => "EAPPNAME",
+            Self::Namespace => "ENAMESPACE",
+            Self::NotFyloRoot => "ENOTFYLOROOT",
+            Self::NamespaceExists => "ENAMESPACEEXISTS",
+            Self::NamespaceNotEmpty => "ENAMESPACENOTEMPTY",
+            Self::NamespaceUnsupported => "ENAMESPACEUNSUPPORTED",
+        }
+    }
+}
+
+/// Native read-only storage error.
+#[derive(Debug)]
+pub struct NativeStorageError {
+    code: NativeStorageErrorCode,
+    message: String,
+    source: Option<std::io::Error>,
+}
+
+impl NativeStorageError {
+    /// Namespaces other than `public` are refused until slice L1-5 makes
+    /// them keep data apart. The message is the planned limit, with no
+    /// version in it.
+    #[must_use]
+    pub fn namespace_unsupported() -> Self {
+        Self::new(
+            NativeStorageErrorCode::NamespaceUnsupported,
+            "namespaces are not yet supported in this build; namespace separation arrives with the FYLO layout release (L1-5)",
+        )
+    }
+
+    /// A [`DocumentCodec`] refused a body. Reported as a malformed document;
+    /// a codec that needs its own error code keeps it beside the call.
+    #[must_use]
+    pub fn codec_rejected(message: impl Into<String>) -> Self {
+        Self::new(NativeStorageErrorCode::CorruptDocument, message)
+    }
+
+    fn new(code: NativeStorageErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    fn io(error: std::io::Error) -> Self {
+        Self {
+            code: NativeStorageErrorCode::Io,
+            message: error.to_string(),
+            source: Some(error),
+        }
+    }
+
+    /// Stable error code.
+    #[must_use]
+    pub const fn code(&self) -> NativeStorageErrorCode {
+        self.code
+    }
+
+    /// The description, without the code `Display` puts in front of it.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for NativeStorageError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.code.as_str(), self.message)
+    }
+}
+
+impl std::error::Error for NativeStorageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source
+            .as_ref()
+            .map(|error| error as &(dyn std::error::Error + 'static))
+    }
+}
+
+#[cfg(unix)]
+fn read_byckr_attributes(
+    file: &File,
+    path: &Path,
+) -> Result<BTreeMap<String, Vec<u8>>, NativeStorageError> {
+    use extended_attribute_error::ExtendedAttributeError;
+    use byckr_xattr::FileExt;
+
+    let mut attributes = BTreeMap::new();
+    let mut aggregate_bytes = 0_usize;
+    for name in file
+        .list_xattr()
+        .map_err(|error| ExtendedAttributeError::for_file(error, "listxattr", path))?
+    {
+        let name = name.to_str().ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "raw-file xattr name is not valid UTF-8",
+            )
+        })?;
+        if name != KEY_XATTR
+            && name != CHECKSUM_XATTR
+            && name != ACCESS_XATTR
+            && name != META_UPDATED_XATTR
+            && !name.starts_with(META_XATTR_PREFIX)
+        {
+            continue;
+        }
+        let Some(value) = file.get_xattr(name).map_err(|error| {
+            ExtendedAttributeError::for_attribute(error, "getxattr", name, path)
+        })?
+        else {
+            continue;
+        };
+        if value.len() > MAX_META_VALUE_BYTES && name.starts_with(META_XATTR_PREFIX) {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                format!("raw-file metadata attribute {name} exceeds 60 KiB"),
+            ));
+        }
+        aggregate_bytes = aggregate_bytes
+            .checked_add(name.len())
+            .and_then(|total| total.checked_add(value.len()))
+            .ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::FileTooLarge,
+                    "raw-file metadata aggregate size overflow",
+                )
+            })?;
+        if aggregate_bytes > MAX_FILE_METADATA_BYTES {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                "raw-file FYLO metadata exceeds 1 MiB",
+            ));
+        }
+        attributes.insert(name.to_owned(), value);
+    }
+    // A record written where extended attributes do not exist carries them in
+    // a sidecar instead. File System Access lets a browser write into a real
+    // folder the user picked, so that folder can arrive here — and without
+    // this fallback its raw files are unreadable, because the logical `key` is
+    // required. Only consulted when the record has no FYLO xattrs of its own,
+    // so a native record is never shadowed by a stray file.
+    if attributes.is_empty() {
+        return read_sidecar_attributes(&sidecar_path(path));
+    }
+    Ok(attributes)
+}
+
+#[cfg(windows)]
+fn read_byckr_attributes(
+    _file: &File,
+    path: &Path,
+) -> Result<BTreeMap<String, Vec<u8>>, NativeStorageError> {
+    use std::ffi::OsString;
+
+    const MAX_WINDOWS_ADS_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
+    let mut stream = OsString::from(path.as_os_str());
+    stream.push(":fylo.xattrs");
+    let stream = PathBuf::from(stream);
+    let metadata = match fs::metadata(&stream) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return read_sidecar_attributes(&sidecar_path(path));
+        }
+        Err(error) => return Err(NativeStorageError::io(error)),
+    };
+    if metadata.len() > MAX_WINDOWS_ADS_MANIFEST_BYTES {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::FileTooLarge,
+            "Windows FYLO ADS manifest exceeds 16 MiB",
+        ));
+    }
+    decode_attribute_manifest(&fs::read(stream).map_err(NativeStorageError::io)?)
+}
+
+/// Read one record's attributes from its sidecar.
+///
+/// WebAssembly has no extended attributes under WASI and none in a browser, so
+/// the attributes FYLO would otherwise hang off the inode live in a sibling
+/// file. The encoding is the one Windows already uses for its alternate data
+/// stream — a JSON map of name to base64 value — so the three platforms differ
+/// only in where the manifest is kept, not in what it says.
+/// Read one record's attributes from its sidecar.
+///
+/// WebAssembly has no extended attributes under WASI and none in a browser, so
+/// the attributes FYLO would otherwise hang off the inode live in a sibling
+/// file. The encoding is the one Windows already uses for its alternate data
+/// stream — a JSON map of name to base64 value — so the three platforms differ
+/// only in where the manifest is kept, not in what it says.
+#[cfg(all(
+    not(unix),
+    not(windows),
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+fn read_byckr_attributes(
+    _file: &File,
+    path: &Path,
+) -> Result<BTreeMap<String, Vec<u8>>, NativeStorageError> {
+    read_sidecar_attributes(&sidecar_path(path))
+}
+
+/// Read one record's attributes from the host.
+///
+/// A browser stores nothing beside the record: the host owns the manifest and
+/// decides where it lives, so a root can hold one manifest rather than a file
+/// per record. The bytes are the same JSON-and-base64 map every other platform
+/// uses, so the engine's view of an attribute never changes.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn read_byckr_attributes(
+    _file: &File,
+    path: &Path,
+) -> Result<BTreeMap<String, Vec<u8>>, NativeStorageError> {
+    let manifest = byckr_vfs::host_read_attrs(path).map_err(NativeStorageError::io)?;
+    decode_attribute_manifest(&manifest)
+}
+
+/// Decode one attribute sidecar into the same map an xattr read produces.
+///
+/// Shared rather than per-platform: a root written by a browser or WASI build
+/// carries its attributes here, and a native binary opening that same folder —
+/// which File System Access makes possible, since the user picks a real
+/// directory — has to be able to read them.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn read_sidecar_attributes(
+    sidecar: &Path,
+) -> Result<BTreeMap<String, Vec<u8>>, NativeStorageError> {
+    const MAX_SIDECAR_BYTES: u64 = 16 * 1024 * 1024;
+    let metadata = match fs::symlink_metadata(sidecar) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) => return Err(NativeStorageError::io(error)),
+    };
+    if !metadata.is_file() {
+        return Ok(BTreeMap::new());
+    }
+    if metadata.len() > MAX_SIDECAR_BYTES {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::FileTooLarge,
+            "FYLO attribute sidecar exceeds 16 MiB",
+        ));
+    }
+    decode_attribute_manifest(&fs::read(sidecar).map_err(NativeStorageError::io)?)
+}
+
+/// Decode a JSON-and-base64 attribute manifest, wherever it was stored.
+///
+/// Windows keeps it in an alternate data stream, a WASI root keeps it in a
+/// sidecar file, and a browser host keeps it wherever it likes. The engine's
+/// view of an attribute is the same in all three.
+fn decode_attribute_manifest(
+    manifest: &[u8],
+) -> Result<BTreeMap<String, Vec<u8>>, NativeStorageError> {
+    if manifest.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let encoded: BTreeMap<String, String> = serde_json::from_slice(manifest).map_err(|error| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            format!("FYLO attribute manifest is corrupt: {error}"),
+        )
+    })?;
+    encoded
+        .into_iter()
+        .filter(|(name, _)| {
+            name == KEY_XATTR
+                || name == CHECKSUM_XATTR
+                || name == ACCESS_XATTR
+                || name == META_UPDATED_XATTR
+                || name.starts_with(META_XATTR_PREFIX)
+        })
+        .map(|(name, value)| {
+            decode_base64(&value)
+                .map(|value| (name, value))
+                .map_err(|message| {
+                    NativeStorageError::new(NativeStorageErrorCode::CorruptMetadata, message)
+                })
+        })
+        .collect()
+}
+
+fn required_utf8_attribute(
+    attributes: &BTreeMap<String, Vec<u8>>,
+    name: &str,
+    identifier: &str,
+    location: &Path,
+) -> Result<String, NativeStorageError> {
+    let value = attributes.get(name).ok_or_else(|| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            format!(
+                "raw file system metadata is missing: {identifier} at {}; move the file out, \
+                 run any write, then add it again with putData and its key",
+                location.display()
+            ),
+        )
+    })?;
+    String::from_utf8(value.clone()).map_err(|error| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            format!("raw-file attribute {name} is not valid UTF-8: {error}"),
+        )
+    })
+}
+
+fn decode_access_descriptor(
+    attributes: &BTreeMap<String, Vec<u8>>,
+) -> Result<Option<AccessDescriptor>, NativeStorageError> {
+    let Some(encoded) = attributes.get(ACCESS_XATTR) else {
+        return Ok(None);
+    };
+    let descriptor: AccessDescriptor = serde_json::from_slice(encoded).map_err(|error| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            format!("FYLO access descriptor is corrupt: {error}"),
+        )
+    })?;
+    if descriptor.version != 1 || descriptor.mode > 0o777 {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "FYLO access descriptor is invalid",
+        ));
+    }
+    Ok(Some(descriptor))
+}
+
+fn decode_custom_metadata(
+    attributes: &BTreeMap<String, Vec<u8>>,
+) -> Result<BTreeMap<String, Value>, NativeStorageError> {
+    attributes
+        .iter()
+        .filter_map(|(name, value)| {
+            name.strip_prefix(META_XATTR_PREFIX)
+                .map(|field| (field, value))
+        })
+        .map(|(field, encoded)| {
+            if field.is_empty() || field.len() > 64 {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "raw-file custom metadata name is invalid",
+                ));
+            }
+            let value = match serde_json::from_slice(encoded) {
+                Ok(value) => value,
+                Err(_) => Value::String(String::from_utf8(encoded.clone()).map_err(|error| {
+                    NativeStorageError::new(
+                        NativeStorageErrorCode::CorruptMetadata,
+                        format!("raw-file metadata {field} is not valid UTF-8: {error}"),
+                    )
+                })?),
+            };
+            Ok((field.to_owned(), value))
+        })
+        .collect()
+}
+
+fn cached_checksum(value: Option<&Vec<u8>>, size: u64, modified_millis: u64) -> Option<String> {
+    let encoded = std::str::from_utf8(value?).ok()?;
+    let mut parts = encoded.split(':');
+    let checksum = parts.next()?;
+    let cached_size = parts.next()?.parse::<u64>().ok()?;
+    let cached_mtime = parts.next()?.parse::<u64>().ok()?;
+    if parts.next().is_none()
+        && checksum.len() == 64
+        && checksum
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && cached_size == size
+        && cached_mtime == modified_millis
+    {
+        Some(checksum.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+/// The checksum of a raw file's bytes, refusing a file whose cached checksum
+/// still matches its size and modification time but not its bytes. That is
+/// what a lost or torn write after a storage crash leaves (L1 spec 20.2):
+/// the file is refused, named, and never returned.
+fn matching_checksum(
+    cached: Option<String>,
+    computed: String,
+    path: &Path,
+) -> Result<String, NativeStorageError> {
+    let damaged = cached.is_some_and(|cached| cached != computed);
+    if damaged {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            format!(
+                "damaged FYLO file {}: its bytes do not match its recorded checksum",
+                path.display()
+            ),
+        ));
+    }
+    Ok(computed)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    hex_bytes(&digest)
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write;
+        write!(&mut encoded, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    encoded
+}
+
+fn path_utf8_name<'a>(path: &'a Path, description: &str) -> Result<&'a str, NativeStorageError> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("{description} filename is not valid UTF-8"),
+            )
+        })
+}
+
+pub(crate) fn raw_file_identifier(filename: &str) -> Option<&str> {
+    let identifier = filename.split_once('.').map_or(filename, |(id, _)| id);
+    (!identifier.is_empty()
+        && identifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'))
+    .then_some(identifier)
+}
+
+fn validate_raw_extension<'a>(
+    filename: &'a str,
+    identifier: &str,
+) -> Result<&'a str, NativeStorageError> {
+    let extension = filename.strip_prefix(identifier).ok_or_else(|| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "raw-file filename does not begin with its identifier",
+        )
+    })?;
+    let valid = extension.len() >= 2
+        && extension.len() <= 17
+        && extension.starts_with('.')
+        && extension[1..]
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
+    if !valid {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "raw-file extension is invalid",
+        ));
+    }
+    Ok(extension)
+}
+
+fn validate_raw_key(key: &str) -> Result<(), NativeStorageError> {
+    let valid_shape = key.starts_with('/')
+        && key.len() <= 1024
+        && !key
+            .chars()
+            .any(|character| character <= '\u{1f}' || character == '\u{7f}' || character == '\\');
+    if !valid_shape {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "raw-file durable key is invalid",
+        ));
+    }
+    for segment in key.split('/').filter(|segment| !segment.is_empty()) {
+        let decoded = percent_decode(segment)?;
+        if decoded == "." || decoded == ".." {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "raw-file durable key contains a traversal segment",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn percent_decode(segment: &str) -> Result<String, NativeStorageError> {
+    let source = segment.as_bytes();
+    let mut decoded = Vec::with_capacity(source.len());
+    let mut index = 0;
+    while index < source.len() {
+        if source[index] != b'%' {
+            decoded.push(source[index]);
+            index += 1;
+            continue;
+        }
+        if index + 2 >= source.len() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "raw-file durable key contains invalid percent encoding",
+            ));
+        }
+        let high = hex_value(source[index + 1]);
+        let low = hex_value(source[index + 2]);
+        let (Some(high), Some(low)) = (high, low) else {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "raw-file durable key contains invalid percent encoding",
+            ));
+        };
+        decoded.push((high << 4) | low);
+        index += 3;
+    }
+    String::from_utf8(decoded).map_err(|error| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            format!("raw-file durable key contains invalid UTF-8 encoding: {error}"),
+        )
+    })
+}
+
+const fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn raw_file_content_type(extension: &str) -> &'static str {
+    match extension {
+        ".avif" => "image/avif",
+        ".bmp" => "image/bmp",
+        ".csv" => "text/csv",
+        ".gif" => "image/gif",
+        ".gz" => "application/gzip",
+        ".html" => "text/html",
+        ".jpeg" | ".jpg" => "image/jpeg",
+        ".json" => "application/json",
+        ".md" => "text/markdown",
+        ".mov" => "video/quicktime",
+        ".mp3" => "audio/mpeg",
+        ".mp4" => "video/mp4",
+        ".pdf" => "application/pdf",
+        ".png" => "image/png",
+        ".svg" => "image/svg+xml",
+        ".tar" => "application/x-tar",
+        ".txt" => "text/plain",
+        ".wav" => "audio/wav",
+        ".webm" => "video/webm",
+        ".webp" => "image/webp",
+        ".xml" => "application/xml",
+        ".zip" => "application/zip",
+        _ => "application/octet-stream",
+    }
+}
+
+fn decode_base64(encoded: &str) -> Result<Vec<u8>, &'static str> {
+    if !encoded.len().is_multiple_of(4) {
+        return Err("FYLO attribute manifest contains invalid base64");
+    }
+    let mut output = Vec::with_capacity(encoded.len() / 4 * 3);
+    let quartets = encoded.as_bytes().chunks_exact(4);
+    let quartet_count = quartets.len();
+    for (index, quartet) in quartets.enumerate() {
+        let is_last = index + 1 == quartet_count;
+        if !is_last && quartet.contains(&b'=') {
+            return Err("Windows FYLO ADS manifest contains invalid base64 padding");
+        }
+        let a = base64_value(quartet[0])?;
+        let b = base64_value(quartet[1])?;
+        let c = if quartet[2] == b'=' {
+            0
+        } else {
+            base64_value(quartet[2])?
+        };
+        let d = if quartet[3] == b'=' {
+            0
+        } else {
+            base64_value(quartet[3])?
+        };
+        if quartet[0] == b'=' || quartet[1] == b'=' || (quartet[2] == b'=' && quartet[3] != b'=') {
+            return Err("Windows FYLO ADS manifest contains invalid base64 padding");
+        }
+        output.push((a << 2) | (b >> 4));
+        if quartet[2] != b'=' {
+            output.push((b << 4) | (c >> 2));
+        }
+        if quartet[3] != b'=' {
+            output.push((c << 6) | d);
+        }
+    }
+    Ok(output)
+}
+
+fn base64_value(byte: u8) -> Result<u8, &'static str> {
+    match byte {
+        b'A'..=b'Z' => Ok(byte - b'A'),
+        b'a'..=b'z' => Ok(byte - b'a' + 26),
+        b'0'..=b'9' => Ok(byte - b'0' + 52),
+        b'+' => Ok(62),
+        b'/' => Ok(63),
+        _ => Err("Windows FYLO ADS manifest contains invalid base64"),
+    }
+}
+
+pub(crate) fn validate_collection_name(name: &str) -> Result<(), NativeStorageError> {
+    let bytes = name.as_bytes();
+    let valid = bytes.len() >= 2
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-');
+    if !valid || RESERVED_COLLECTIONS.contains(&name) {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::InvalidCollection,
+            "invalid or reserved collection name",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_branch_name(name: &str) -> Result<(), NativeStorageError> {
+    let valid = !name.is_empty()
+        && name.len() <= 128
+        && name.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'.' | b'_' | b'/' | b'-'))
+        })
+        && !name.contains("..")
+        && !name.contains("//")
+        && !name.ends_with('/')
+        && !name.as_bytes().ends_with(b".lock")
+        // A ref is a file under its name, and a companion's name is the
+        // platform's.
+        && !name
+            .split('/')
+            .any(|segment| platform_companion::is_platform_companion(std::ffi::OsStr::new(segment)));
+    if valid {
+        Ok(())
+    } else {
+        Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "FYLO branch name is invalid",
+        ))
+    }
+}
+
+fn validate_version_hash(hash: &str) -> Result<(), NativeStorageError> {
+    if hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "FYLO version object hash is invalid",
+        ))
+    }
+}
+
+/// Flush one file or directory handle to the filesystem.
+///
+/// Everywhere except Apple this is [`File::sync_all`]. On Apple platforms
+/// `sync_all` is `fcntl(F_FULLFSYNC)` — a full drive-cache flush measured at
+/// 5.7 ms per call on APFS against 0.06 ms for `fsync`. A single document
+/// write issues more than a dozen flushes, so the Rust cutover silently
+/// bought a stronger durability primitive than the JavaScript runtime it
+/// replaced and paid ~14x write latency for it. This restores the flush
+/// v26.30.06 performed: it survives process death, not power loss.
+///
+/// # Errors
+///
+/// Returns the underlying flush failure.
+#[cfg(target_vendor = "apple")]
+pub(crate) fn sync_handle(file: &File) -> std::io::Result<()> {
+    rustix::fs::fsync(file).map_err(std::io::Error::from)
+}
+
+/// Flush one file or directory handle to the filesystem.
+///
+/// # Errors
+///
+/// Returns the underlying flush failure.
+#[cfg(not(target_vendor = "apple"))]
+pub(crate) fn sync_handle(file: &File) -> std::io::Result<()> {
+    file.sync_all()
+}
+
+/// The wall clock, from `std` or from the host where `std` has none.
+///
+/// `SystemTime::now` panics rather than fails on `wasm32-unknown-unknown`, and
+/// a panic in a module with no stdio reaches the embedder as a bare trap. One
+/// helper means one place to answer that, and it returns the same type so no
+/// caller changes shape.
+#[must_use]
+pub fn wall_clock() -> std::time::SystemTime {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        let millis = byckr_vfs::host_now_unix_ms().unwrap_or(0);
+        std::time::UNIX_EPOCH + std::time::Duration::from_millis(millis)
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        std::time::SystemTime::now()
+    }
+}
+
+/// Runtime knobs a host supplies when it opens a root.
+///
+/// Every setting is explicit. Native composition roots load application.json;
+/// browser and mobile embeddings supply their configuration directly.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RootConfig {
+    /// Validate a document against its collection's head schema on write.
+    ///
+    /// This stays opt-in so enabling schema stamps is an explicit storage policy.
+    pub strict_schema: bool,
+    /// Shard width for collections that do not exist yet.
+    ///
+    /// Never consulted for a collection that already exists: the layout is a
+    /// property of the root, so letting a per-host value decide would let two
+    /// hosts disagree and relocate every record back and forth.
+    pub shard_width: Option<u32>,
+    /// How hard each commit's write-ahead log append is flushed.
+    pub durability: Durability,
+    /// Push the `fylo.schema` folder's new versions into the root's schema
+    /// registry when a write engine opens (ADR 0017 section 3). Off by
+    /// default, so the registry changes only on `fylo schema push`.
+    pub schema_auto_push: bool,
+    /// How document collections that do not exist yet store their
+    /// documents. Never consulted for a collection that already exists;
+    /// `fylo layout` migrates one.
+    pub layout: CollectionLayout,
+}
+
+/// This process's identifier, or zero where the platform has none.
+///
+/// `std::process::id` panics on WebAssembly rather than failing, and a lock
+/// record carries the pid only so a later reader can ask whether the owner is
+/// still alive. A platform with no pids also has no way to answer that, so zero
+/// is the honest value and `lock_owner_alive` already treats an unverifiable
+/// owner as stale.
+#[must_use]
+pub fn process_id() -> u32 {
+    #[cfg(target_family = "wasm")]
+    {
+        0
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        std::process::id()
+    }
+}
+
+/// Default shard width for a collection whose descriptor records none.
+///
+/// One character is 36 buckets. Sharding exists to stop a single directory
+/// growing unbounded, and enumeration costs one `read_dir` per shard, so a
+/// width past what the record count needs is pure overhead: measured on 400
+/// documents, width 2 produced 303 directories holding 1.3 records each and
+/// took 2.3x as long to walk as width 1's 18. Collections that outgrow 36
+/// buckets set their own width; `reshard` moves them without changing identity.
+pub const DEFAULT_SHARD_WIDTH: u32 = 1;
+
+/// The default before it became 1.
+///
+/// A descriptor that pins no width falls back to whatever the default is, so
+/// changing it moves those collections. Keeping the previous default as a read
+/// candidate means a root written under it still resolves.
+const PREVIOUS_DEFAULT_SHARD_WIDTH: u32 = 2;
+/// Narrowest shard a collection may use.
+///
+/// Zero was once allowed as a "flat" collection with no shard directory, but
+/// nothing could read one back: enumeration walks `docs/` expecting each entry
+/// to be a shard directory and refuses a file, so a flat collection accepted
+/// writes and then failed every read, `rebuildCollection` included. It is
+/// refused at the boundary rather than fixed because it is the exact failure
+/// ADR 0006 exists to remove — one unbounded directory.
+pub const MIN_SHARD_WIDTH: u32 = 1;
+/// Widest shard a collection may use.
+pub const MAX_SHARD_WIDTH: u32 = 4;
+
+/// Parse and range-check one host-supplied shard width.
+///
+/// # Errors
+///
+/// Returns an error when the value is not an integer within range.
+pub fn parse_shard_width(raw: &str) -> Result<u32, NativeStorageError> {
+    let parsed = raw.parse::<u32>().map_err(|_| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            format!(
+                "shard width must be an integer from {MIN_SHARD_WIDTH} to {MAX_SHARD_WIDTH}: {raw}"
+            ),
+        )
+    })?;
+    validate_shard_width(Some(parsed))
+}
+
+/// Validate a host-supplied width, falling back to the default when unset.
+///
+/// # Errors
+///
+/// Returns an error when the width is outside the supported range.
+pub fn validated_shard_width(width: Option<u32>) -> Result<u32, NativeStorageError> {
+    validate_shard_width(width)
+}
+
+fn validate_shard_width(width: Option<u32>) -> Result<u32, NativeStorageError> {
+    let width = width.unwrap_or(DEFAULT_SHARD_WIDTH);
+    if !(MIN_SHARD_WIDTH..=MAX_SHARD_WIDTH).contains(&width) {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            format!(
+                "collection shard width must be {MIN_SHARD_WIDTH} to {MAX_SHARD_WIDTH}: {width}"
+            ),
+        ));
+    }
+    Ok(width)
+}
+
+/// On-disk shard directory for a record.
+///
+/// The shard is the last two characters of the identifier's *creation*
+/// segment. A TTID is base36 100 ns ticks, so its leading characters barely
+/// move — the second rolls over roughly every 117 days, which put every record
+/// written in a four-month window into one directory. The trailing characters
+/// roll every 100 ns and 3.6 us, giving 1296 uniformly used buckets.
+///
+/// It must be the creation segment: an identifier may carry
+/// `created-updated-deleted` lifecycle segments, and sharding the raw string
+/// would move a record between directories when it is updated or deleted.
+#[must_use]
+pub fn shard_of(identifier: &str, width: u32) -> String {
+    let created = creation_segment(identifier);
+    let width = width as usize;
+    let shard: String = created
+        .chars()
+        .rev()
+        .take(width)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if shard.chars().count() < width {
+        format!("{shard:0>width$}")
+    } else {
+        shard
+    }
+}
+
+/// Shard a record occupies under the superseded layout, which used the leading
+/// characters. Readers try this after [`shard_of`] so a root written before the
+/// change stays readable through the published compatibility window.
+#[must_use]
+pub fn legacy_shard_of(identifier: &str) -> String {
+    creation_segment(identifier).chars().take(2).collect()
+}
+
+/// Resolve a record's path under its shard.
+///
+/// A root written before the shard change keeps its records under the leading
+/// characters, so a path that does not exist canonically falls back to the
+/// superseded location. That keeps an unmigrated root readable, and a partly
+/// migrated one — the state an interrupted migration leaves — as well. A record
+/// in neither resolves to the canonical path so writes always land there.
+/// Whether a record sits in a shard directory it may legitimately occupy.
+///
+/// Either the canonical shard or the superseded leading-character one is
+/// accepted while the compatibility window is open; anything else means the
+/// record was moved by something other than FYLO.
+fn shard_matches(identifier: &str, shard_path: &Path, width: u32, previous: &[u32]) -> bool {
+    let Some(shard) = shard_path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    shard_candidates(identifier, width, previous)
+        .iter()
+        .any(|candidate| candidate == shard)
+}
+
+/// Every shard directory a record may legitimately occupy, most likely first.
+///
+/// A reshard records the widths it is leaving until it completes, so a root
+/// interrupted midway is still fully readable. The layout superseded by
+/// ADR 0006 is always the last candidate.
+#[must_use]
+pub fn shard_candidates(identifier: &str, width: u32, previous: &[u32]) -> Vec<String> {
+    let mut candidates = Vec::new();
+    for candidate in std::iter::once(&width).chain(previous) {
+        let shard = shard_of(identifier, *candidate);
+        if !candidates.contains(&shard) {
+            candidates.push(shard);
+        }
+    }
+    // Covers a descriptor that pins no width and was written while the default
+    // was 2; the layout superseded by ADR 0006 is always last.
+    for fallback in [
+        shard_of(identifier, PREVIOUS_DEFAULT_SHARD_WIDTH),
+        legacy_shard_of(identifier),
+    ] {
+        if !candidates.contains(&fallback) {
+            candidates.push(fallback);
+        }
+    }
+    candidates
+}
+
+fn existing_shard_path(
+    state_folder: &Path,
+    identifier: &str,
+    filename: &str,
+    width: u32,
+    previous: &[u32],
+) -> Result<PathBuf, NativeStorageError> {
+    let mut candidates = shard_candidates(identifier, width, previous).into_iter();
+    let canonical = state_folder
+        .join(candidates.next().unwrap_or_default())
+        .join(filename);
+    if path_exists_no_follow(&canonical)? {
+        return Ok(canonical);
+    }
+    for shard in candidates {
+        let candidate = state_folder.join(shard).join(filename);
+        if path_exists_no_follow(&candidate)? {
+            return Ok(candidate);
+        }
+    }
+    Ok(canonical)
+}
+
+fn creation_segment(identifier: &str) -> &str {
+    identifier.split('-').next().unwrap_or(identifier)
+}
+
+fn validate_ttid_shape(identifier: &str) -> Result<(), NativeStorageError> {
+    let valid = !identifier.is_empty()
+        && identifier.len() <= 36
+        && identifier.split('-').count() <= 3
+        && identifier.split('-').all(|segment| {
+            !segment.is_empty()
+                && segment.len() <= 11
+                && segment.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        });
+    if !valid || TtidTimestamps::decode(identifier).is_err() {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::InvalidDocumentId,
+            "invalid FYLO document identifier",
+        ));
+    }
+    Ok(())
+}
+
+/// Reject an identifier that is valid but not canonically spelled.
+///
+/// TTID matches identifiers case-insensitively and only ever emits uppercase,
+/// so one identifier has many accepted spellings. FYLO names a file after it:
+/// two spellings are one record on a case-insensitive filesystem and two on a
+/// case-sensitive one, which makes the record count depend on the host. The
+/// caller is told rather than silently rewritten — `getDoc` should return the
+/// identifier that was asked for, and `ttid canonicalize` is the repair.
+///
+/// Only applied where an identifier first becomes a file. Reading, patching,
+/// and enumerating stay lenient so a root written before this still opens.
+fn validate_canonical_ttid(identifier: &str) -> Result<(), NativeStorageError> {
+    validate_ttid_shape(identifier)?;
+    if identifier.bytes().any(|byte| byte.is_ascii_lowercase()) {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::InvalidDocumentId,
+            format!(
+                "FYLO document identifier is not canonical: {identifier} (expected {})",
+                identifier.to_ascii_uppercase()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn path_exists_no_follow(path: &Path) -> Result<bool, NativeStorageError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(NativeStorageError::io(error)),
+    }
+}
+
+fn read_dir_sorted(path: &Path) -> Result<Vec<fs::DirEntry>, NativeStorageError> {
+    FileAccessLog::record_listing(path);
+    let mut entries = platform_companion::read_dir_without_companions(path)
+        .map_err(NativeStorageError::io)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(NativeStorageError::io)?;
+    entries.sort_by_key(fs::DirEntry::file_name);
+    Ok(entries)
+}
+
+fn read_bounded<R: Read>(
+    mut reader: Take<R>,
+    max_bytes: u64,
+) -> Result<Vec<u8>, NativeStorageError> {
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(NativeStorageError::io)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::FileTooLarge,
+            format!("file exceeds {max_bytes} bytes"),
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Read a file whose size is known from the open handle. Asking for one byte
+/// more than that size and getting exactly the size back is the end of the
+/// file, so the common case is a single read; any other count continues as
+/// `read_bounded` would.
+fn read_sized(
+    file: &mut File,
+    expected_bytes: u64,
+    max_bytes: u64,
+) -> Result<Vec<u8>, NativeStorageError> {
+    let first_request = usize::try_from(expected_bytes.min(max_bytes))
+        .unwrap_or(usize::MAX - 1)
+        .saturating_add(1);
+    let mut bytes = vec![0; first_request];
+    let first_read = match file.read(&mut bytes) {
+        Ok(read) => read,
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => 0,
+        Err(error) => return Err(NativeStorageError::io(error)),
+    };
+    bytes.truncate(first_read);
+    if first_read as u64 != expected_bytes {
+        let remaining = max_bytes
+            .saturating_add(1)
+            .saturating_sub(first_read as u64);
+        bytes.extend_from_slice(&read_bounded(file.take(remaining), max_bytes)?);
+    }
+    if bytes.len() as u64 > max_bytes {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::FileTooLarge,
+            format!("file exceeds {max_bytes} bytes"),
+        ));
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn is_scratch_file(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"))
+        || name.ends_with(SIDECAR_SUFFIX)
+}
+
+/// Suffix of the attribute sidecar a platform without extended attributes
+/// writes beside each record.
+///
+/// Enumeration must skip it or the sidecar would be read back as a record of
+/// its own, so `is_scratch_file` — which every enumerator already consults —
+/// owns the rule rather than each caller repeating it.
+pub const SIDECAR_SUFFIX: &str = ".fylo-attrs";
+
+/// Path of one record's attribute sidecar.
+#[must_use]
+pub fn sidecar_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(SIDECAR_SUFFIX);
+    PathBuf::from(name)
+}
+
+fn modified_millis(metadata: &Metadata) -> Result<u64, NativeStorageError> {
+    let duration = metadata
+        .modified()
+        .map_err(NativeStorageError::io)?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("file modification time predates the Unix epoch: {error}"),
+            )
+        })?;
+    u64::try_from(duration.as_millis()).map_err(|_| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "file modification time exceeds u64 milliseconds",
+        )
+    })
+}
+
+#[cfg(windows)]
+fn is_link_or_reparse(metadata: &Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_link_or_reparse(metadata: &Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::UNIX_EPOCH;
+
+    use super::*;
+
+    struct TestRoot(PathBuf);
+    static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    impl TestRoot {
+        fn create() -> Self {
+            Self::create_named("fylo-native")
+        }
+
+        fn create_named(prefix: &str) -> Self {
+            let nonce = wall_clock().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = byckr_test_support::TestFolder::path()
+                .join(format!("{prefix}-{}-{nonce}-{sequence}", process_id()));
+            fs::create_dir_all(path.join(".collections/users/docs/4V")).unwrap();
+            fs::create_dir_all(path.join(".collections/users/index")).unwrap();
+            fs::write(
+                path.join(".collections/users/docs/4V/4VRNF52JPCO.json"),
+                br#"{"name":"Ada"}"#,
+            )
+            .unwrap();
+            fs::write(
+                path.join(".collections/users/index/keys.snapshot"),
+                b"name/eq/Ada/4VRNF52JPCO\n",
+            )
+            .unwrap();
+            fs::write(path.join(".collections/users/index/keys.wal"), b"").unwrap();
+            Self(path)
+        }
+
+        fn write_version_object(&self, bytes: &[u8]) -> String {
+            let hash = sha256_hex(bytes);
+            let path = self
+                .0
+                .join(".fylo-vcs/objects")
+                .join(&hash[..2])
+                .join(&hash[2..]);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+            hash
+        }
+
+        fn write_version_commit(&self, identifier: &str, parents: &[&str], root: &str) {
+            let commit_root = self.0.join(".fylo-vcs/commits").join(identifier);
+            fs::create_dir_all(&commit_root).unwrap();
+            fs::write(
+                commit_root.join("manifest.json"),
+                format!(
+                    r#"{{"id":"{identifier}","branch":"main","parents":{},"message":"history","createdAt":"2026-07-26T00:00:00.000Z","root":".fylo-vcs/commits/{identifier}"}}"#,
+                    serde_json::to_string(parents).unwrap()
+                ),
+            )
+            .unwrap();
+            fs::write(
+                commit_root.join("tree.json"),
+                format!(r#"{{"root":"{root}"}}"#),
+            )
+            .unwrap();
+        }
+
+        #[cfg(unix)]
+        fn create_raw_file(&self) -> PathBuf {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::create_dir_all(self.0.join(".fylo-catalog/collections")).unwrap();
+            fs::write(
+                self.0.join(".fylo-catalog/collections/assets.json"),
+                br#"{"kind":"file"}"#,
+            )
+            .unwrap();
+            fs::create_dir_all(self.0.join(".buckets/assets/docs/4V")).unwrap();
+            fs::create_dir_all(self.0.join(".buckets/assets/index")).unwrap();
+            fs::write(self.0.join(".buckets/assets/index/keys.snapshot"), b"").unwrap();
+            let path = self.0.join(".buckets/assets/docs/4V/4VRNF52JPCO.bin");
+            fs::write(&path, [0, 1, 2, 3, 255]).unwrap();
+            byckr_xattr::ExtendedAttributes::set(&path, KEY_XATTR, b"/fixtures/sample.bin").unwrap();
+            byckr_xattr::ExtendedAttributes::set(
+                &path,
+                "user.fylo.meta.source",
+                br#""rust-native-test""#,
+            )
+            .unwrap();
+            byckr_xattr::ExtendedAttributes::set(&path, "user.fylo.meta.reviewed", b"true").unwrap();
+            byckr_xattr::ExtendedAttributes::set(
+                &path,
+                ACCESS_XATTR,
+                br#"{"version":1,"uid":1000,"gid":100,"mode":416}"#,
+            )
+            .unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+            path
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn shards_by_the_trailing_creation_characters_and_keeps_the_legacy_candidate() {
+        let identifier = "4VRNF52JPCO-4VRNF52JPCP-4VRNF52JPCQ";
+        assert_eq!(shard_of(identifier, 2), "CO");
+        assert_eq!(shard_of(identifier, 3), "PCO");
+        assert_eq!(legacy_shard_of(identifier), "4V");
+        assert_eq!(shard_candidates(identifier, 2, &[]), ["CO", "4V"]);
+    }
+
+    #[test]
+    fn reads_existing_documents_and_indexes_without_writes() {
+        let fixture = TestRoot::create();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        let collection = root.collection("users").unwrap();
+        assert_eq!(collection.document_ids().unwrap(), ["4VRNF52JPCO"]);
+        assert_eq!(
+            collection.read_document("4VRNF52JPCO").unwrap().bytes,
+            br#"{"name":"Ada"}"#
+        );
+        assert_eq!(collection.generation().unwrap().generation, 0);
+        assert_eq!(
+            collection.index_snapshot().unwrap().as_bytes(),
+            b"name/eq/Ada/4VRNF52JPCO\n"
+        );
+        assert_eq!(
+            collection.verify_index_references().unwrap(),
+            IndexVerification {
+                key_count: 1,
+                indexed_documents: 1,
+                live_documents: 1,
+                reference_integrity: true,
+                rebuild_equivalent: false,
+                expected_key_count: None,
+                missing_keys: None,
+                missing_key_sample: Vec::new(),
+                extra_key_sample: Vec::new(),
+                extra_keys: None,
+            }
+        );
+    }
+
+    #[test]
+    fn reads_from_a_unicode_root() {
+        let fixture = TestRoot::create_named("fylo-native-ü-日本語");
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52JPCO").unwrap().bytes,
+            br#"{"name":"Ada"}"#
+        );
+    }
+
+    #[test]
+    fn rejects_case_aliases_for_storage_components() {
+        let fixture = TestRoot::create();
+        let original = fixture
+            .0
+            .join(".collections/users/docs/4V/4VRNF52JPCO.json");
+        let case_variant = fixture
+            .0
+            .join(".collections/users/docs/4V/4VRNF52JPCO.JSON");
+        fs::rename(&original, &case_variant).unwrap();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        let error = collection.read_document("4VRNF52JPCO").unwrap_err();
+        let expected = if original.exists() {
+            NativeStorageErrorCode::UnsafePath
+        } else {
+            NativeStorageErrorCode::NotFound
+        };
+        assert_eq!(error.code(), expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fails_closed_when_document_permissions_deny_reads() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = TestRoot::create();
+        let path = fixture
+            .0
+            .join(".collections/users/docs/4V/4VRNF52JPCO.json");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        let error = collection.read_document("4VRNF52JPCO").unwrap_err();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(error.code(), NativeStorageErrorCode::Io);
+    }
+
+    #[test]
+    fn reads_bounded_first_parent_version_history() {
+        let fixture = TestRoot::create();
+        let commit = "4VRNF52JPCO";
+        fs::create_dir_all(fixture.0.join(".fylo-vcs/refs/heads")).unwrap();
+        fs::create_dir_all(fixture.0.join(".fylo-vcs/commits").join(commit)).unwrap();
+        fs::write(fixture.0.join(".fylo-vcs/HEAD"), b"ref: refs/heads/main\n").unwrap();
+        fs::write(
+            fixture.0.join(".fylo-vcs/refs/heads/main.json"),
+            format!(r#"{{"name":"main","head":"{commit}"}}"#),
+        )
+        .unwrap();
+        fs::write(
+            fixture
+                .0
+                .join(".fylo-vcs/commits")
+                .join(commit)
+                .join("manifest.json"),
+            format!(
+                r#"{{"id":"{commit}","branch":"main","parents":[],"message":"baseline","createdAt":"2026-07-26T00:00:00.000Z","root":".fylo-vcs/commits/{commit}"}}"#
+            ),
+        )
+        .unwrap();
+        let history = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .version_history(50)
+            .unwrap();
+        assert!(history.enabled);
+        assert_eq!(history.branch.as_deref(), Some("main"));
+        assert_eq!(history.head.as_deref(), Some(commit));
+        assert_eq!(history.commits.len(), 1);
+        assert_eq!(history.commits[0].message, "baseline");
+    }
+
+    #[test]
+    fn verifies_content_addressed_version_tree_and_blob_hashes() {
+        let fixture = TestRoot::create();
+        let commit = "4VRNF52JPCO";
+        fs::create_dir_all(fixture.0.join(".fylo-vcs/refs/heads")).unwrap();
+        fs::create_dir_all(fixture.0.join(".fylo-vcs/commits").join(commit)).unwrap();
+        fs::write(fixture.0.join(".fylo-vcs/HEAD"), b"ref: refs/heads/main\n").unwrap();
+        fs::write(
+            fixture.0.join(".fylo-vcs/refs/heads/main.json"),
+            format!(r#"{{"name":"main","head":"{commit}"}}"#),
+        )
+        .unwrap();
+        fs::write(
+            fixture
+                .0
+                .join(".fylo-vcs/commits")
+                .join(commit)
+                .join("manifest.json"),
+            format!(
+                r#"{{"id":"{commit}","branch":"main","parents":[],"message":"baseline","createdAt":"2026-07-26T00:00:00.000Z","root":".fylo-vcs/commits/{commit}"}}"#
+            ),
+        )
+        .unwrap();
+
+        let blob = fixture.write_version_object(br#"{"name":"Ada"}"#);
+        let bucket = fixture.write_version_object(
+            format!(r#"{{"entries":[{{"name":"{commit}.json","type":"blob","hash":"{blob}"}}]}}"#)
+                .as_bytes(),
+        );
+        let state_tree = fixture.write_version_object(
+            format!(r#"{{"entries":[{{"name":"4V","type":"tree","hash":"{bucket}"}}]}}"#)
+                .as_bytes(),
+        );
+        let collection = fixture.write_version_object(
+            format!(r#"{{"entries":[{{"name":"docs","type":"tree","hash":"{state_tree}"}}]}}"#)
+                .as_bytes(),
+        );
+        let root = fixture.write_version_object(
+            format!(r#"{{"entries":[{{"name":"users","type":"tree","hash":"{collection}"}}]}}"#)
+                .as_bytes(),
+        );
+        fs::write(
+            fixture
+                .0
+                .join(".fylo-vcs/commits")
+                .join(commit)
+                .join("tree.json"),
+            format!(r#"{{"root":"{root}"}}"#),
+        )
+        .unwrap();
+        let second_parent = "4VRNF52JPCP";
+        let merge = "4VRNF52JPCQ";
+        fixture.write_version_commit(second_parent, &[], &root);
+        fixture.write_version_commit(merge, &[commit, second_parent], &root);
+        fs::write(
+            fixture.0.join(".fylo-vcs/refs/heads/main.json"),
+            format!(r#"{{"name":"main","head":"{merge}"}}"#),
+        )
+        .unwrap();
+
+        let native = NativeRoot::open(&fixture.0).unwrap();
+        let report = native.verify_version_history(50).unwrap();
+        assert!(report.content_integrity);
+        assert!(report.history_complete);
+        assert_eq!(report.commits_verified, 3);
+        assert_eq!(report.tree_objects, 4);
+        assert_eq!(report.blob_objects, 1);
+
+        fs::write(
+            fixture
+                .0
+                .join(".fylo-vcs/objects")
+                .join(&blob[..2])
+                .join(&blob[2..]),
+            b"corrupt",
+        )
+        .unwrap();
+        assert_eq!(
+            native.verify_version_history(50).unwrap_err().code(),
+            NativeStorageErrorCode::CorruptMetadata
+        );
+    }
+
+    #[test]
+    fn reports_unversioned_roots_without_mutation() {
+        let fixture = TestRoot::create();
+        assert_eq!(
+            NativeRoot::open(&fixture.0)
+                .unwrap()
+                .version_history(50)
+                .unwrap(),
+            RepositoryHistory {
+                enabled: false,
+                branch: None,
+                head: None,
+                commits: Vec::new(),
+                truncated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_orphaned_index_references() {
+        let fixture = TestRoot::create();
+        fs::remove_file(
+            fixture
+                .0
+                .join(".collections/users/docs/4V/4VRNF52JPCO.json"),
+        )
+        .unwrap();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        assert_eq!(
+            collection.verify_index_references().unwrap_err().code(),
+            NativeStorageErrorCode::CorruptIndex
+        );
+    }
+
+    #[test]
+    fn reads_retained_document_tombstones() {
+        let fixture = TestRoot::create();
+        fs::create_dir_all(fixture.0.join(".collections/users/.deleted/4V")).unwrap();
+        fs::write(
+            fixture
+                .0
+                .join(".collections/users/.deleted/4V/4VRNF52JPCO.json"),
+            br#"{"name":"Deleted Ada"}"#,
+        )
+        .unwrap();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        assert_eq!(collection.deleted_document_ids().unwrap(), ["4VRNF52JPCO"]);
+        assert_eq!(
+            collection
+                .read_deleted_document("4VRNF52JPCO")
+                .unwrap()
+                .bytes,
+            br#"{"name":"Deleted Ada"}"#
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_a_raw_file_whose_record_keeps_an_access_descriptor() {
+        let fixture = TestRoot::create();
+        let expected_path = fixture.create_raw_file();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("assets")
+            .unwrap();
+        assert_eq!(collection.raw_file_ids().unwrap(), ["4VRNF52JPCO"]);
+        let stored = collection.read_raw_file("4VRNF52JPCO").unwrap();
+        assert_eq!(stored.path, fs::canonicalize(expected_path).unwrap());
+        assert_eq!(stored.bytes, [0, 1, 2, 3, 255]);
+        assert_eq!(stored.key, "/fixtures/sample.bin");
+        assert_eq!(stored.extension, ".bin");
+        assert_eq!(stored.content_type, "application/octet-stream");
+        assert_eq!(
+            stored.custom_metadata.get("source"),
+            Some(&Value::String("rust-native-test".into()))
+        );
+        assert_eq!(
+            stored.custom_metadata.get("reviewed"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(stored.checksum_sha256.len(), 64);
+    }
+
+    /// An attribute larger than the first 4 KiB read takes the size-query
+    /// path of the `xattr` crate (RUSTSEC-2026-0486, rustix 1.1.6).
+    #[cfg(unix)]
+    #[test]
+    fn reads_a_metadata_value_larger_than_four_kibibytes() {
+        let fixture = TestRoot::create();
+        let path = fixture.create_raw_file();
+        let note = "x".repeat(8 * 1024);
+        byckr_xattr::ExtendedAttributes::set(
+            &path,
+            "user.fylo.meta.note",
+            format!("\"{note}\"").as_bytes(),
+        )
+        .unwrap();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("assets")
+            .unwrap();
+        let stored = collection.read_raw_file("4VRNF52JPCO").unwrap();
+        assert_eq!(
+            stored.custom_metadata.get("note"),
+            Some(&Value::String(note))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_duplicate_raw_file_identifiers() {
+        let fixture = TestRoot::create();
+        fixture.create_raw_file();
+        let duplicate = fixture.0.join(".buckets/assets/docs/4V/4VRNF52JPCO.txt");
+        fs::write(&duplicate, b"duplicate").unwrap();
+        byckr_xattr::ExtendedAttributes::set(&duplicate, KEY_XATTR, b"/duplicate.txt").unwrap();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("assets")
+            .unwrap();
+        assert_eq!(
+            collection.read_raw_file("4VRNF52JPCO").unwrap_err().code(),
+            NativeStorageErrorCode::CorruptMetadata
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_retained_raw_file_tombstones() {
+        let fixture = TestRoot::create();
+        let live = fixture.create_raw_file();
+        let deleted = fixture
+            .0
+            .join(".buckets/assets/.deleted/4V/4VRNF52JPCO.bin");
+        fs::create_dir_all(deleted.parent().unwrap()).unwrap();
+        fs::rename(live, &deleted).unwrap();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("assets")
+            .unwrap();
+        assert_eq!(collection.deleted_raw_file_ids().unwrap(), ["4VRNF52JPCO"]);
+        let stored = collection.read_deleted_raw_file("4VRNF52JPCO").unwrap();
+        assert_eq!(stored.bytes, [0, 1, 2, 3, 255]);
+        assert_eq!(stored.key, "/fixtures/sample.bin");
+    }
+
+    #[test]
+    fn rejects_path_replacement_while_original_handle_is_open() {
+        let fixture = TestRoot::create();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        let path = root
+            .path()
+            .join(".collections/users/docs/4V/4VRNF52JPCO.json");
+        let original = File::open(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, br#"{"name":"replacement"}"#).unwrap();
+        let error = root
+            .verify_open_file_identity(&path, &original)
+            .unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::UnsafePath);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_linked_document_shards() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = TestRoot::create();
+        let external = fixture.0.join("external");
+        fs::create_dir(&external).unwrap();
+        fs::remove_dir_all(fixture.0.join(".collections/users/docs/4V")).unwrap();
+        symlink(&external, fixture.0.join(".collections/users/docs/4V")).unwrap();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        assert_eq!(
+            collection.document_ids().unwrap_err().code(),
+            NativeStorageErrorCode::UnsafePath
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_document_read_through_a_linked_shard_after_a_clean_read() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = TestRoot::create();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52JPCO").unwrap().bytes,
+            br#"{"name":"Ada"}"#
+        );
+        let shard = fixture.0.join(".collections/users/docs/4V");
+        let external = fixture.0.join("external");
+        fs::rename(&shard, &external).unwrap();
+        symlink(&external, &shard).unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52JPCO").unwrap_err().code(),
+            NativeStorageErrorCode::UnsafePath
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_linked_document_file_after_a_clean_read() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = TestRoot::create();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        collection.read_document("4VRNF52JPCO").unwrap();
+        let document = fixture
+            .0
+            .join(".collections/users/docs/4V/4VRNF52JPCO.json");
+        let external = fixture.0.join("external.json");
+        fs::rename(&document, &external).unwrap();
+        symlink(&external, &document).unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52JPCO").unwrap_err().code(),
+            NativeStorageErrorCode::UnsafePath
+        );
+    }
+
+    #[test]
+    fn reads_a_document_written_after_its_shard_was_cached() {
+        let fixture = TestRoot::create();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        collection.read_document("4VRNF52JPCO").unwrap();
+        fs::write(
+            fixture
+                .0
+                .join(".collections/users/docs/4V/4VRNF52JPCP.json"),
+            br#"{"name":"Grace"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52JPCP").unwrap().bytes,
+            br#"{"name":"Grace"}"#
+        );
+    }
+
+    #[test]
+    fn reports_a_removed_document_as_not_found_after_its_shard_was_cached() {
+        let fixture = TestRoot::create();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        collection.read_document("4VRNF52JPCO").unwrap();
+        fs::remove_file(
+            fixture
+                .0
+                .join(".collections/users/docs/4V/4VRNF52JPCO.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52JPCO").unwrap_err().code(),
+            NativeStorageErrorCode::NotFound
+        );
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn rejects_a_document_read_through_a_non_canonical_file_spelling() {
+        let fixture = TestRoot::create();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        collection.read_document("4VRNF52JPCO").unwrap();
+        assert_eq!(
+            collection.read_document("4vrnf52jpco").unwrap_err().code(),
+            NativeStorageErrorCode::UnsafePath
+        );
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn rejects_a_non_canonical_collection_spelling_in_a_verified_path() {
+        let fixture = TestRoot::create();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        let canonical = root
+            .path()
+            .join(".collections/users/docs/4V/4VRNF52JPCO.json");
+        root.verify_path(&canonical, ExpectedType::File).unwrap();
+        let aliased = root
+            .path()
+            .join(".collections/USERS/docs/4V/4VRNF52JPCO.json");
+        assert_eq!(
+            root.verify_path(&aliased, ExpectedType::File)
+                .unwrap_err()
+                .code(),
+            NativeStorageErrorCode::UnsafePath
+        );
+    }
+
+    #[test]
+    fn verify_path_reports_a_missing_component_as_not_found() {
+        let fixture = TestRoot::create();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        let missing = root.path().join(".collections/absent/docs");
+        let error = root
+            .verify_path(&missing, ExpectedType::Directory)
+            .unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::NotFound);
+        let absent = Path::new(".collections").join("absent");
+        assert_eq!(
+            error.message(),
+            format!("storage path does not exist: {}", absent.display())
+        );
+    }
+
+    #[test]
+    fn opening_a_missing_collection_reports_not_found() {
+        let fixture = TestRoot::create();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        let error = root.collection("absent").unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::NotFound);
+        assert_eq!(error.message(), "collection \"absent\" does not exist");
+    }
+
+    #[test]
+    fn opening_a_collection_in_a_root_without_collections_reports_not_found() {
+        let fixture = TestRoot::create();
+        fs::remove_dir_all(fixture.0.join(".collections")).unwrap();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        assert_eq!(
+            root.collection("users").unwrap_err().code(),
+            NativeStorageErrorCode::NotFound
+        );
+    }
+
+    #[test]
+    fn opening_a_removed_collection_reports_not_found() {
+        let fixture = TestRoot::create();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        root.collection("users").unwrap();
+        fs::remove_dir_all(fixture.0.join(".collections/users")).unwrap();
+        assert_eq!(
+            root.collection("users").unwrap_err().code(),
+            NativeStorageErrorCode::NotFound
+        );
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn opening_a_collection_stored_under_another_spelling_is_refused() {
+        let fixture = TestRoot::create();
+        fs::rename(
+            fixture.0.join(".collections/users"),
+            fixture.0.join(".collections/USERS"),
+        )
+        .unwrap();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        let error = root.collection("users").unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::UnsafePath);
+        assert!(error.message().contains("non-canonical spelling"));
+    }
+
+    #[test]
+    fn verify_path_reports_the_wrong_type_for_a_directory() {
+        let fixture = TestRoot::create();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        let shard = root.path().join(".collections/users/docs/4V");
+        assert_eq!(
+            root.verify_path(&shard, ExpectedType::File)
+                .unwrap_err()
+                .code(),
+            NativeStorageErrorCode::WrongType
+        );
+        assert!(
+            root.verify_path(&shard, ExpectedType::Directory)
+                .unwrap()
+                .is_dir()
+        );
+    }
+
+    #[test]
+    fn sized_read_returns_every_byte_when_the_file_outgrew_its_size() {
+        let fixture = TestRoot::create();
+        let path = fixture.0.join("grown");
+        fs::write(&path, b"012345678").unwrap();
+        let mut file = File::open(&path).unwrap();
+        assert_eq!(read_sized(&mut file, 3, 16).unwrap(), b"012345678");
+        let mut file = File::open(&path).unwrap();
+        assert_eq!(
+            read_sized(&mut file, 3, 8).unwrap_err().code(),
+            NativeStorageErrorCode::FileTooLarge
+        );
+        let mut file = File::open(&path).unwrap();
+        assert_eq!(read_sized(&mut file, 9, 9).unwrap(), b"012345678");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_reparse_point_document_shards() {
+        use std::process::Command;
+
+        let fixture = TestRoot::create();
+        let external = fixture.0.join("external");
+        let shard = fixture.0.join(".collections/users/docs/4V");
+        fs::create_dir(&external).unwrap();
+        fs::remove_dir_all(&shard).unwrap();
+        // `New-Item -ItemType Junction` needs no privilege and reports a usable
+        // error, unlike `cmd /C mklink`, whose failures this fixture used to
+        // discard. Junctions are the reparse point the security check targets,
+        // so a directory symlink is not an acceptable substitute.
+        let created = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command"])
+            .arg(format!(
+                "New-Item -ItemType Junction -Path '{}' -Target '{}' | Out-Null",
+                shard.display(),
+                external.display()
+            ))
+            .output()
+            .unwrap();
+        assert!(
+            created.status.success(),
+            "failed to create NTFS junction fixture: {}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        assert_eq!(
+            collection.document_ids().unwrap_err().code(),
+            NativeStorageErrorCode::UnsafePath
+        );
+    }
+
+    #[test]
+    fn bounded_reader_rejects_growth_beyond_limit() {
+        let fixture = TestRoot::create();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        let path = root.path().join("large");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(&[0; 9]).unwrap();
+        drop(file);
+        let error = root.read_file(&path, 8).unwrap_err();
+        assert_eq!(
+            error.code(),
+            NativeStorageErrorCode::FileTooLarge,
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn preserves_a_stable_code_for_unknown_platform_io_errors() {
+        // The retired Bun/libc bridge could sample Darwin errno twice and
+        // surface an unrelated value such as 316. Rust owns the syscall now:
+        // even an OS code this platform cannot name remains a classified,
+        // retryable native I/O failure rather than escaping as EUNKNOWN.
+        let error = NativeStorageError::io(std::io::Error::from_raw_os_error(316));
+        assert_eq!(error.code(), NativeStorageErrorCode::Io);
+        assert!(error.to_string().starts_with("ENATIVE_IO:"));
+    }
+
+    #[test]
+    fn merges_complete_wal_mutations_and_ignores_a_torn_tail() {
+        let fixture = TestRoot::create();
+        fs::write(
+            fixture.0.join(".collections/users/index/keys.wal"),
+            b"-\tname/eq/Ada/4VRNF52JPCO\n+\tname/eq/Grace/4VRNF52JPCO\n+\ttorn",
+        )
+        .unwrap();
+        let snapshot = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap()
+            .index_snapshot()
+            .unwrap();
+        assert_eq!(snapshot.as_bytes(), b"name/eq/Grace/4VRNF52JPCO\n");
+    }
+}

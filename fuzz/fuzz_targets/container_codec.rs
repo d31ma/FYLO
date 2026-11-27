@@ -3,8 +3,8 @@
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
-use fylo_format::ContainerCodec;
-use fylo_storage_native::{ContainerDictionary, ContainerFrameCodec, train_dictionary};
+use byckr_format::ContainerCodec;
+use byckr_storage_native::{ContainerDictionary, ContainerFrameCodec, train_dictionary};
 use libfuzzer_sys::fuzz_target;
 
 const MAX_BYTES: usize = 64 * 1024;

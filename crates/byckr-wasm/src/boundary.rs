@@ -1,0 +1,340 @@
+//! The module's edge: imported host functions in, exported buffers out.
+//!
+//! Everything unsafe in the browser engine lives here. Nothing below this file
+//! knows the host exists.
+
+#![allow(
+    unsafe_code,
+    reason = "ADR 0008 confines the host boundary to this module"
+)]
+
+use std::io::Cursor;
+
+use std::cell::RefCell;
+
+use byckr_machine::{ApplicationConfig, FrameLimits, FrameSession};
+use byckr_vfs::{HOST_ABI_VERSION, HostStat, HostVfs, install_host};
+
+use crate::browser_key::BrowserKey;
+use crate::browser_settings::BrowserSettings;
+
+/// ABI this module implements. A host that does not recognize it must refuse
+/// to load the module rather than guess at the layout.
+pub const MODULE_ABI_VERSION: u32 = 2;
+
+// The host supplies the filesystem. Names match `HostVfs` field for field, so
+// a mismatch is a link error at instantiation rather than a wrong call later.
+#[link(wasm_import_module = "byckr_host")]
+unsafe extern "C" {
+    fn open(path: *const u8, path_len: usize, flags: u32, handle: *mut u64) -> i32;
+    fn close(handle: u64) -> i32;
+    fn read_at(handle: u64, offset: u64, buffer: *mut u8, len: usize, read: *mut usize) -> i32;
+    fn write_at(
+        handle: u64,
+        offset: u64,
+        buffer: *const u8,
+        len: usize,
+        written: *mut usize,
+    ) -> i32;
+    fn truncate(handle: u64, len: u64) -> i32;
+    fn flush(handle: u64) -> i32;
+    fn stat(path: *const u8, path_len: usize, out: *mut HostStat) -> i32;
+    fn mkdir(path: *const u8, path_len: usize, recursive: u32) -> i32;
+    fn unlink(path: *const u8, path_len: usize) -> i32;
+    fn rmdir(path: *const u8, path_len: usize, recursive: u32) -> i32;
+    fn rename(from: *const u8, from_len: usize, to: *const u8, to_len: usize) -> i32;
+    fn read_dir(
+        path: *const u8,
+        path_len: usize,
+        buffer: *mut u8,
+        capacity: usize,
+        needed: *mut usize,
+    ) -> i32;
+    fn random(buffer: *mut u8, len: usize) -> i32;
+    fn now_unix_ms(out: *mut u64) -> i32;
+    fn read_attrs(
+        path: *const u8,
+        path_len: usize,
+        buffer: *mut u8,
+        capacity: usize,
+        needed: *mut usize,
+    ) -> i32;
+    fn write_attrs(path: *const u8, path_len: usize, manifest: *const u8, len: usize) -> i32;
+    fn log(message: *const u8, len: usize);
+    fn identity_public(out: *mut u8) -> i32;
+    fn identity_sign(message: *const u8, len: usize, out: *mut u8) -> i32;
+    fn identity_verify(
+        public: *const u8,
+        message: *const u8,
+        len: usize,
+        signature: *const u8,
+    ) -> i32;
+    fn identity_unwrap(
+        info: *const u8,
+        info_len: usize,
+        wrapped: *const u8,
+        wrapped_len: usize,
+        out: *mut u8,
+    ) -> i32;
+    fn identity_wrap(
+        public: *const u8,
+        info: *const u8,
+        info_len: usize,
+        secret: *const u8,
+        secret_len: usize,
+        out: *mut u8,
+        capacity: usize,
+        needed: *mut usize,
+    ) -> i32;
+}
+
+/// Route `getrandom` to the host table.
+///
+/// Its Web Crypto backend reaches the browser through a binding generator,
+/// which would put `__wbindgen_placeholder__` imports in the module and oblige
+/// every embedder — Swift, Kotlin, Dart — to ship JavaScript glue. Entropy is
+/// a host capability like any other, so it travels the same plain C table.
+///
+/// # Errors
+///
+/// Fails when no host is installed or the host's source fails. It never falls
+/// back: invented entropy would produce predictable identifiers and encryption
+/// material.
+#[unsafe(no_mangle)]
+unsafe extern "Rust" fn __getrandom_v03_custom(
+    destination: *mut u8,
+    len: usize,
+) -> Result<(), getrandom::Error> {
+    if len == 0 {
+        return Ok(());
+    }
+    // SAFETY: `getrandom` guarantees `destination` addresses `len` writable
+    // bytes for this call.
+    let buffer = unsafe { std::slice::from_raw_parts_mut(destination, len) };
+    byckr_vfs::host_random(buffer).map_err(|_| getrandom::Error::UNEXPECTED)
+}
+
+/// Report the ABI this module implements.
+#[unsafe(no_mangle)]
+pub extern "C" fn byckr_abi_version() -> u32 {
+    MODULE_ABI_VERSION
+}
+
+/// Reserve `len` bytes the host may write into.
+///
+/// Returns a null pointer when `len` is zero. Like Rust's standard containers,
+/// an allocator-level out-of-memory condition traps rather than returning.
+#[unsafe(no_mangle)]
+pub extern "C" fn byckr_alloc(len: usize) -> *mut u8 {
+    if len == 0 {
+        return std::ptr::null_mut();
+    }
+    let buffer = vec![0_u8; len].into_boxed_slice();
+    // Ownership passes to the host until it calls `byckr_free` with the same
+    // length, which reconstructs the slice metadata without guessing a Vec
+    // capacity.
+    Box::into_raw(buffer).cast::<u8>()
+}
+
+/// Release a buffer obtained from [`byckr_alloc`] or returned by [`byckr_exec`].
+///
+/// `len` must be the length that produced the pointer.
+#[unsafe(no_mangle)]
+pub extern "C" fn byckr_free(pointer: *mut u8, len: usize) {
+    if pointer.is_null() || len == 0 {
+        return;
+    }
+    // SAFETY: the pointer came from a boxed slice of this exact length in
+    // `byckr_alloc` or `pack`, and the host contract requires that same length
+    // back. Reconstructing and dropping it frees precisely that allocation.
+    let slice = std::ptr::slice_from_raw_parts_mut(pointer, len);
+    drop(unsafe { Box::from_raw(slice) });
+}
+
+/// Answer a batch of newline-delimited machine frames.
+///
+/// Returns `(pointer << 32) | length` addressing the NDJSON response, which
+/// the host must release with [`byckr_free`]. A zero return means the response
+/// was empty.
+///
+/// # Safety
+///
+/// `request` must be null or address `len` readable bytes, from
+/// [`byckr_alloc`], that the host does not change during the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn byckr_exec(request: *const u8, len: usize) -> u64 {
+    if install().is_err() {
+        return pack(
+            br#"{"protocolVersion":2,"ok":false,"op":null,"requestId":null,"durationMs":0,"error":{"name":"FyloMachineError","message":"host filesystem table was rejected","code":"ENATIVE_UNSUPPORTED"}}"#
+                .to_vec(),
+        );
+    }
+    if request.is_null() || len == 0 {
+        return 0;
+    }
+    // SAFETY: the host wrote `len` bytes into a buffer from `byckr_alloc` and
+    // does not mutate it for the duration of this call.
+    let input = unsafe { std::slice::from_raw_parts(request, len) }.to_vec();
+    let mut reader = Cursor::new(input);
+    let mut output = Vec::new();
+    let served = SESSION.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        // A frame that ends a session (one cut off mid-line) ends only that
+        // batch's session; the next batch starts a fresh one, as a new
+        // `exec --loop` process would.
+        if !slot.as_ref().is_some_and(FrameSession::is_open) {
+            *slot = Some(open_session());
+        }
+        slot.as_mut()
+            .map_or(Ok(()), |session| session.serve(&mut reader, &mut output))
+    });
+    if served.is_err() {
+        return pack(
+            br#"{"protocolVersion":2,"ok":false,"op":null,"requestId":null,"durationMs":0,"error":{"name":"FyloMachineError","message":"machine session failed","code":"EUNKNOWN"}}"#
+                .to_vec(),
+        );
+    }
+    pack(output)
+}
+
+/// Set the engine's settings (see [`BrowserSettings`]) for the batches
+/// after this one, and end the current session so the next batch opens its
+/// root with them.
+///
+/// Returns zero when the settings were accepted. Otherwise the settings stay
+/// as they were and the return addresses why, as UTF-8 text packed like
+/// [`byckr_exec`]'s response, which the host must release with [`byckr_free`].
+///
+/// # Safety
+///
+/// `request` must be null or address `len` readable bytes, from
+/// [`byckr_alloc`], that the host does not change during the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn byckr_configure(request: *const u8, len: usize) -> u64 {
+    if install().is_err() {
+        return pack(b"host filesystem table was rejected".to_vec());
+    }
+    let input = if request.is_null() || len == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: the host wrote `len` bytes into a buffer from `byckr_alloc`
+        // and does not mutate it for the duration of this call.
+        unsafe { std::slice::from_raw_parts(request, len) }.to_vec()
+    };
+    match BrowserSettings::parse(&input) {
+        Ok(config) => {
+            CONFIG.with(|cell| *cell.borrow_mut() = config);
+            SESSION.with(|cell| *cell.borrow_mut() = None);
+            0
+        }
+        Err(message) => pack(message.into_bytes()),
+    }
+}
+
+/// Give the engine the key of an encrypted `.vdbx` file (see
+/// [`BrowserKey`]) for the batches after this one, and end the current
+/// session so the next batch opens its root with it (ADR 0025). The input
+/// buffer is overwritten with zeros before this returns, whether or not the
+/// key was accepted.
+///
+/// Returns zero when the key was accepted, or why not, packed like
+/// [`byckr_configure`]'s answer.
+///
+/// # Safety
+///
+/// `request` must be null or address `len` writable bytes, from
+/// [`byckr_alloc`], that the host does not use during the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn byckr_set_database_key(request: *mut u8, len: usize) -> u64 {
+    if request.is_null() || len == 0 {
+        return pack(b"the encryption key is empty".to_vec());
+    }
+    // SAFETY: the host wrote `len` bytes into a buffer from `byckr_alloc` and
+    // does not touch it during this call, so this is its only reference.
+    let input = unsafe { std::slice::from_raw_parts_mut(request, len) };
+    let parsed = BrowserKey::parse(input);
+    input.fill(0);
+    match parsed {
+        Ok((key, create)) => {
+            CONFIG.with(|cell| {
+                let mut config = cell.borrow_mut();
+                config.database_key = Some(key);
+                config.encrypt_databases = create;
+            });
+            SESSION.with(|cell| *cell.borrow_mut() = None);
+            0
+        }
+        Err(message) => pack(message.into_bytes()),
+    }
+}
+
+thread_local! {
+    /// The settings [`byckr_configure`] last accepted.
+    static CONFIG: RefCell<ApplicationConfig> = RefCell::new(BrowserSettings::plain());
+    /// The module's one machine session. It outlives each `byckr_exec` call so
+    /// that a query cursor handed out in one batch still pages in the next,
+    /// which is the `persistent-process` scope the handshake advertises.
+    static SESSION: RefCell<Option<FrameSession>> = const { RefCell::new(None) };
+}
+
+/// A browser has no environment, so the knobs are explicit. Frame limits are
+/// the published defaults; the host bounds its own buffers.
+fn open_session() -> FrameSession {
+    let config = CONFIG.with(|cell| cell.borrow().clone());
+    FrameSession::embedded(config, FrameLimits::default())
+}
+
+/// Hand a buffer to the host as a packed pointer and length.
+fn pack(bytes: Vec<u8>) -> u64 {
+    if bytes.is_empty() {
+        return 0;
+    }
+    let len = bytes.len();
+    let pointer = Box::into_raw(bytes.into_boxed_slice()).cast::<u8>();
+    // Released by `byckr_free`; see the SAFETY note there.
+    ((pointer as u64) << 32) | len as u64
+}
+
+/// Install the imported host table once.
+///
+/// Idempotent: a second call is the "already installed" case, which is success
+/// from the caller's point of view.
+fn install() -> Result<(), &'static str> {
+    if byckr_vfs::host_installed() {
+        return Ok(());
+    }
+    // Without stdio a panic reaches the host as a bare `unreachable`. Routing
+    // the message through the table turns that into something diagnosable.
+    std::panic::set_hook(Box::new(|info| {
+        byckr_vfs::host_log(&format!("FYLO panic: {info}"));
+    }));
+    match install_host(HostVfs {
+        abi_version: HOST_ABI_VERSION,
+        open,
+        close,
+        read_at,
+        write_at,
+        truncate,
+        flush,
+        stat,
+        mkdir,
+        unlink,
+        rmdir,
+        rename,
+        read_dir,
+        random,
+        now_unix_ms,
+        read_attrs,
+        write_attrs,
+        log,
+        identity_public,
+        identity_sign,
+        identity_verify,
+        identity_unwrap,
+        identity_wrap,
+    }) {
+        Ok(()) => Ok(()),
+        Err(_) if byckr_vfs::host_installed() => Ok(()),
+        Err(message) => Err(message),
+    }
+}

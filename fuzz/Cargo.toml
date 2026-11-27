@@ -1,5 +1,5 @@
 [package]
-name = "fylo-fuzz"
+name = "byckr-fuzz"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -8,9 +8,9 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
-fylo-format = { version = "0.1.0", path = "../crates/fylo-format" }
-fylo-query = { version = "0.1.0", path = "../crates/fylo-query" }
-fylo-storage-native = { version = "0.1.0", path = "../crates/fylo-storage-native" }
+byckr-format = { version = "0.1.0", path = "../crates/byckr-format" }
+byckr-query = { version = "0.1.0", path = "../crates/byckr-query" }
+byckr-storage-native = { version = "0.1.0", path = "../crates/byckr-storage-native" }
 libfuzzer-sys = "0.4.10"
 serde_json = "1"
 

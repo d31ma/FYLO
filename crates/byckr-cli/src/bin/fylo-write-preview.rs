@@ -1,0 +1,381 @@
+//! Experimental native write CLI used by crash and interoperability gates.
+
+use std::env;
+use std::path::Path;
+use std::process::ExitCode;
+
+use byckr_engine::WriteEngine;
+use byckr_storage_native::{
+    CollectionLayout, DatabaseRekey, NativeWriteRoot, PutDocumentOptions, PutRawFileOptions,
+};
+use serde_json::{Value, json};
+
+fn main() -> ExitCode {
+    let arguments: Vec<String> = env::args().skip(1).collect();
+    let outcome = run(&arguments).and_then(|output| {
+        NativeWriteRoot::close_logs()
+            .map(|()| output)
+            .map_err(|error| error.to_string())
+    });
+    match outcome {
+        Ok(output) => {
+            println!("{output}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The crash matrix enumerates this rather than keeping its own list.
+fn failpoints() -> Result<String, String> {
+    serde_json::to_string(&json!({ "failpoints": byckr_storage_native::FAILPOINTS.as_slice() }))
+        .map_err(|error| error.to_string())
+}
+
+fn run(arguments: &[String]) -> Result<String, String> {
+    let command = arguments.first().map(String::as_str).ok_or_else(usage)?;
+    refuse_removed_access_flags(arguments)?;
+    if command == "failpoints" {
+        return failpoints();
+    }
+    let root = required_option(arguments, "--root")?;
+    let writer = NativeWriteRoot::open(root).map_err(|error| error.to_string())?;
+    let mut result = Value::Null;
+    let recovered = match command {
+        "recover" => writer
+            .recover_collection(required_option(arguments, "--collection")?)
+            .map_err(|error| error.to_string())?,
+        "put-document" | "put-file" => {
+            run_put(command, arguments, &writer)?;
+            false
+        }
+        "patch-document" => {
+            run_patch(arguments, &writer)?;
+            false
+        }
+        "patch-fields" => {
+            let collection = required_option(arguments, "--collection")?;
+            let identifier = required_option(arguments, "--id")?;
+            let changes = serde_json::from_str(required_option(arguments, "--changes")?)
+                .map_err(|error| format!("invalid --changes: {error}"))?;
+            writer
+                .patch_document_fields(collection, identifier, &changes)
+                .map_err(|error| error.to_string())?;
+            false
+        }
+        "commit" => {
+            result = writer
+                .commit_if_dirty(required_option(arguments, "--message")?)
+                .map_err(|error| error.to_string())?
+                .map_or(Value::Null, Value::String);
+            false
+        }
+        "set-metadata" => {
+            run_metadata(arguments, &writer)?;
+            false
+        }
+        "reshard" => {
+            let width = required_option(arguments, "--width")?
+                .parse::<u32>()
+                .map_err(|error| format!("invalid --width: {error}"))?;
+            let moved = writer
+                .reshard_collection(required_option(arguments, "--collection")?, width)
+                .map_err(|error| error.to_string())?;
+            result = Value::from(moved);
+            false
+        }
+        "push-schema" | "schema-head" | "compact" | "migrate-layout" | "pack" | "rekey" => {
+            result = run_layout(command, arguments, &writer)?;
+            false
+        }
+        "restore-document" => {
+            let collection = required_option(arguments, "--collection")?;
+            let identifier = required_option(arguments, "--id")?;
+            writer
+                .restore_document(collection, identifier)
+                .map_err(|error| error.to_string())?;
+            false
+        }
+        "delete-document" => {
+            let collection = required_option(arguments, "--collection")?;
+            let identifier = required_option(arguments, "--id")?;
+            writer
+                .delete_document(collection, identifier)
+                .map_err(|error| error.to_string())?;
+            false
+        }
+        "sql" => {
+            let mutation = writer
+                .execute_sql_mutation(required_option(arguments, "--statement")?)
+                .map_err(|error| error.to_string())?;
+            result = serde_json::to_value(mutation).map_err(|error| error.to_string())?;
+            false
+        }
+        _ => return Err(usage()),
+    };
+    serde_json::to_string(&json!({
+        "ok": true,
+        "command": command,
+        "recovered": recovered,
+        "result": result,
+        "root": writer.path()
+    }))
+    .map_err(|error| error.to_string())
+}
+
+/// Collection maintenance: `push-schema` and `schema-head` (ADR 0017), the
+/// segment layout's `compact` and `migrate-layout` (ADR 0015), `compact`
+/// of a whole `.vdbx` database when no collection is named, `pack`
+/// (ADR 0016), which only reads the root it packs, and `rekey --encrypt`
+/// of a plain database, under the key `--new-key` names as a secret
+/// reference.
+fn run_layout(
+    command: &str,
+    arguments: &[String],
+    writer: &NativeWriteRoot,
+) -> Result<Value, String> {
+    if command == "push-schema" {
+        return push_schema(writer, arguments);
+    }
+    if command == "pack" {
+        let report = writer
+            .pack_database(Path::new(required_option(arguments, "--out")?))
+            .map_err(|error| error.to_string())?;
+        return Ok(Value::from(report.collections.len()));
+    }
+    if command == "rekey" {
+        let key = byckr_machine::ApplicationConfig::database_key_reference(
+            option(arguments, "--config").map(Path::new),
+            required_option(arguments, "--new-key")?,
+            "--new-key",
+        )?;
+        if !arguments.iter().any(|argument| argument == "--encrypt") {
+            return Err("rekey here encrypts a plain database and needs --encrypt".into());
+        }
+        let report = writer
+            .rekey_database(DatabaseRekey::Encrypt(&key))
+            .map_err(|error| error.to_string())?;
+        return Ok(Value::from(report.collections.len()));
+    }
+    if command == "compact" && option(arguments, "--collection").is_none() {
+        // A whole `.vdbx` database, and with `--shrink` its file.
+        let shrink = arguments.iter().any(|argument| argument == "--shrink");
+        let report = writer
+            .compact_database(shrink)
+            .map_err(|error| error.to_string())?;
+        return Ok(json!({
+            "collections": report.collections.len(),
+            "extentsMoved": report.extents_moved,
+            "fileBytes": report.file_bytes_after,
+        }));
+    }
+    let collection = required_option(arguments, "--collection")?;
+    if command == "schema-head" {
+        // The registry head as a reader sees it: from the descriptor, or for
+        // a segment collection from its schema records.
+        return writer
+            .native_root()
+            .schema_registry_head(collection)
+            .map(|head| head.map_or(Value::Null, Value::from))
+            .map_err(|error| error.to_string());
+    }
+    if command == "compact" {
+        let report = writer
+            .compact_collection(collection)
+            .map_err(|error| error.to_string())?;
+        return Ok(json!({ "documentsCopied": report.documents_copied }));
+    }
+    let layout = CollectionLayout::parse(required_option(arguments, "--layout")?)
+        .map_err(|error| error.to_string())?;
+    let report = writer
+        .migrate_layout(collection, layout)
+        .map_err(|error| error.to_string())?;
+    Ok(json!({ "layout": report.layout.as_str(), "documents": report.documents }))
+}
+
+fn run_patch(arguments: &[String], writer: &NativeWriteRoot) -> Result<(), String> {
+    let collection = required_option(arguments, "--collection")?;
+    let identifier = required_option(arguments, "--id")?;
+    let document = required_option(arguments, "--document")?;
+    if let Some(engine) = write_engine(writer.path(), arguments)? {
+        let fields = serde_json::from_str(document)
+            .map_err(|error| format!("invalid --document: {error}"))?;
+        return engine
+            .patch_document(collection, identifier, fields)
+            .map_err(|error| error.to_string());
+    }
+    writer
+        .patch_document(collection, identifier, document.as_bytes())
+        .map_err(|error| error.to_string())
+}
+
+/// Use the same explicit application configuration as the published CLI.
+fn write_engine(root: &Path, arguments: &[String]) -> Result<Option<WriteEngine>, String> {
+    let config =
+        byckr_machine::ApplicationConfig::load(option(arguments, "--config").map(Path::new))?;
+    let Some(schema_root) = config.schema.as_ref() else {
+        return Ok(None);
+    };
+    let engine = match config.credentials.as_ref() {
+        Some((secret, salt)) => WriteEngine::open_with_encryption(root, schema_root, secret, salt),
+        None => WriteEngine::open_with_schema(root, schema_root),
+    }
+    .map_err(|error| error.to_string())?
+    .with_config(config.storage);
+    Ok(Some(engine))
+}
+
+fn run_metadata(arguments: &[String], writer: &NativeWriteRoot) -> Result<(), String> {
+    let collection = required_option(arguments, "--collection")?;
+    let identifier = required_option(arguments, "--id")?;
+    let record = serde_json::from_str(required_option(arguments, "--record")?)
+        .map_err(|error| format!("invalid --record: {error}"))?;
+    let replace = arguments.iter().any(|argument| argument == "--replace");
+    if replace {
+        writer.replace_record_metadata(collection, identifier, &record)
+    } else {
+        writer.set_record_metadata(collection, identifier, &record)
+    }
+    .map_err(|error| error.to_string())
+}
+
+fn run_put(command: &str, arguments: &[String], writer: &NativeWriteRoot) -> Result<(), String> {
+    let collection = required_option(arguments, "--collection")?;
+    let identifier = required_option(arguments, "--id")?;
+    if command == "put-document" {
+        let document = required_option(arguments, "--document")?;
+        if let Some(engine) = write_engine(writer.path(), arguments)? {
+            let fields = serde_json::from_str(document)
+                .map_err(|error| format!("invalid --document: {error}"))?;
+            return engine
+                .put_document(collection, identifier, fields)
+                .map_err(|error| error.to_string());
+        }
+        return writer
+            .put_document(
+                collection,
+                identifier,
+                document.as_bytes(),
+                PutDocumentOptions::default(),
+            )
+            .map_err(|error| error.to_string());
+    }
+    let bytes = decode_hex(required_option(arguments, "--bytes-hex")?)?;
+    let metadata = option(arguments, "--metadata")
+        .map(|encoded| {
+            serde_json::from_str(encoded).map_err(|error| format!("invalid --metadata: {error}"))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    writer
+        .put_raw_file(
+            collection,
+            identifier,
+            &bytes,
+            &PutRawFileOptions {
+                key: required_option(arguments, "--key")?.into(),
+                extension: required_option(arguments, "--extension")?.into(),
+                metadata,
+            },
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn refuse_removed_access_flags(arguments: &[String]) -> Result<(), String> {
+    const REMOVED: [&str; 5] = ["--uid", "--gid", "--mode", "--actor-uid", "--actor-groups"];
+    match arguments
+        .iter()
+        .find(|argument| REMOVED.contains(&argument.as_str()))
+    {
+        Some(flag) => Err(format!(
+            "{flag} was removed with POSTIX access control (ADR 0021)"
+        )),
+        None => Ok(()),
+    }
+}
+
+fn option<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
+    arguments
+        .iter()
+        .position(|argument| argument == name)
+        .and_then(|index| arguments.get(index + 1))
+        .map(String::as_str)
+}
+
+fn required_option<'a>(arguments: &'a [String], name: &str) -> Result<&'a str, String> {
+    option(arguments, name)
+        .filter(|value| !value.is_empty() && !value.starts_with("--"))
+        .ok_or_else(|| format!("missing {name}\n{}", usage()))
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if !value.len().is_multiple_of(2) {
+        return Err("--bytes-hex must contain an even number of digits".into());
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            std::str::from_utf8(pair)
+                .map_err(|error| format!("invalid --bytes-hex: {error}"))
+                .and_then(|pair| {
+                    u8::from_str_radix(pair, 16)
+                        .map_err(|error| format!("invalid --bytes-hex: {error}"))
+                })
+        })
+        .collect()
+}
+
+/// `fylo schema push` without the CLI's configuration, so the crash matrix
+/// can interrupt a schema registry commit.
+fn push_schema(writer: &NativeWriteRoot, arguments: &[String]) -> Result<Value, String> {
+    WriteEngine::from_writer(writer.clone())
+        .with_schema_configuration(required_option(arguments, "--schema-dir")?, None)
+        .map_err(|error| error.to_string())?
+        .schema_push(
+            required_option(arguments, "--collection")?,
+            None,
+            Some("fylo-write-preview"),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn usage() -> String {
+    "Usage:\n  fylo-write-preview recover --root <path> --collection <name>\n  \
+     fylo-write-preview put-document --root <path> --collection <name> --id <ttid> --document \
+     <json>\n  fylo-write-preview put-file --root \
+     <path> --collection <name> --id <ttid> --bytes-hex \
+     <hex> --key <key> --extension <ext> [--metadata <json>]\n  fylo-write-preview patch-document \
+     --root <path> --collection <name> --id <ttid> --document <json>\n  fylo-write-preview \
+     patch-fields --root <path> --collection <name> --id <ttid> --changes <json>\n  \
+     fylo-write-preview delete-document --root <path> --collection <name> --id <ttid>\n  \
+     fylo-write-preview sql --root <path> --statement <sql>\n  fylo-write-preview set-metadata \
+     --root <path> --collection <name> --id <ttid> --record <json> [--replace]\n  \
+     fylo-write-preview commit --root <path> --message <message>\n  fylo-write-preview \
+     restore-document --root <path> --collection <name> --id <ttid>\n  fylo-write-preview \
+     reshard --root <path> \
+     --collection <name> --width <0-4>\n  fylo-write-preview push-schema --root <path> \
+     --collection <name> --schema-dir <path>\n  fylo-write-preview schema-head --root <path> \
+     --collection <name>\n  fylo-write-preview compact --root <path> [--collection <name> | \
+     --shrink]\n  fylo-write-preview pack --root <path> --out <db.vdbx>\n  \
+     fylo-write-preview rekey --root <db.vdbx> --encrypt --new-key '${NAME}'\n  \
+     fylo-write-preview failpoints"
+        .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refuses_a_removed_access_flag() {
+        let arguments = ["put-document".into(), "--uid".into(), "1000".into()];
+        assert_eq!(
+            run(&arguments).unwrap_err(),
+            "--uid was removed with POSTIX access control (ADR 0021)"
+        );
+    }
+}

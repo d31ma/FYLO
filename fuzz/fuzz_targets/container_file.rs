@@ -6,12 +6,12 @@ use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use fylo_format::{
+use byckr_format::{
     ContainerCheckpointSlot, ContainerCollectionHeader, ContainerExtentHeader, ContainerExtentKind,
     ContainerExtentState, ContainerGenerationSlot, ContainerSnapshotRef, ContainerSuperblock,
     Crc32c,
 };
-use fylo_storage_native::ContainerFile;
+use byckr_storage_native::ContainerFile;
 use libfuzzer_sys::fuzz_target;
 
 const BLOCK: u64 = 4096;

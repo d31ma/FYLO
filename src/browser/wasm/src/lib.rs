@@ -8,7 +8,7 @@
 
 use std::cell::RefCell;
 
-use fylo_query::{parse_queries, IndexSnapshot, QueryLimits};
+use byckr_query::{parse_queries, IndexSnapshot, QueryLimits};
 
 const ERROR: i32 = -1;
 const ABI_VERSION: u32 = 1;

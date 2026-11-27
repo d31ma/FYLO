@@ -1,6 +1,6 @@
 #![no_main]
 
-use fylo_query::{parse_queries, IndexSnapshot, QueryLimits};
+use byckr_query::{parse_queries, IndexSnapshot, QueryLimits};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: &[u8]| {

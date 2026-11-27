@@ -1,7 +1,7 @@
 #![no_main]
 
-use fylo_format::ContainerExtentKind;
-use fylo_storage_native::{
+use byckr_format::ContainerExtentKind;
+use byckr_storage_native::{
     ContainerCipher, ContainerCipherError, ContainerSealContext, SALT_BYTES,
 };
 use libfuzzer_sys::fuzz_target;

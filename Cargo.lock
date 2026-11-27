@@ -98,6 +98,205 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "byckr"
+version = "0.1.0"
+dependencies = [
+ "byckr-engine",
+ "byckr-identity",
+ "byckr-query",
+ "byckr-storage-native",
+ "byckr-test-support",
+ "byckr-vfs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "byckr-browser-index"
+version = "0.1.0"
+dependencies = [
+ "byckr-query",
+]
+
+[[package]]
+name = "byckr-chex"
+version = "0.1.0"
+dependencies = [
+ "byckr-test-support",
+ "regex",
+ "regex-automata",
+ "serde_json",
+]
+
+[[package]]
+name = "byckr-cli"
+version = "0.1.0"
+dependencies = [
+ "byckr-engine",
+ "byckr-format",
+ "byckr-identity",
+ "byckr-machine",
+ "byckr-query",
+ "byckr-storage-native",
+ "byckr-test-support",
+ "byckr-xattr",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "byckr-engine"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "byckr-chex",
+ "byckr-format",
+ "byckr-query",
+ "byckr-storage-native",
+ "byckr-test-support",
+ "byckr-xattr",
+ "getrandom 0.4.3",
+ "hmac",
+ "pbkdf2",
+ "serde",
+ "serde_json",
+ "sha2",
+ "zeroize",
+]
+
+[[package]]
+name = "byckr-ffi"
+version = "0.1.0"
+dependencies = [
+ "byckr",
+ "byckr-test-support",
+ "jni",
+ "serde",
+ "serde_json",
+ "zeroize",
+]
+
+[[package]]
+name = "byckr-format"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "byckr-identity"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64",
+ "byckr-test-support",
+ "byckr-vfs",
+ "core-foundation",
+ "core-foundation-sys",
+ "hkdf",
+ "hpke",
+ "p256",
+ "rustix",
+ "security-framework",
+ "security-framework-sys",
+ "sha2",
+ "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
+name = "byckr-machine"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "byckr-engine",
+ "byckr-format",
+ "byckr-identity",
+ "byckr-machine",
+ "byckr-query",
+ "byckr-storage-native",
+ "byckr-test-support",
+ "byckr-vfs",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "byckr-query"
+version = "0.1.0"
+dependencies = [
+ "ryu-js",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "byckr-storage-native"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64",
+ "byckr-format",
+ "byckr-identity",
+ "byckr-query",
+ "byckr-storage-native",
+ "byckr-test-support",
+ "byckr-vfs",
+ "byckr-xattr",
+ "getrandom 0.4.3",
+ "hkdf",
+ "hmac",
+ "libc",
+ "lz4_flex",
+ "rustix",
+ "ruzstd",
+ "same-file",
+ "serde",
+ "serde_json",
+ "sha2",
+ "windows-sys 0.61.2",
+ "zeroize",
+ "zstd",
+]
+
+[[package]]
+name = "byckr-test-support"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "byckr-vfs"
+version = "0.1.0"
+dependencies = [
+ "byckr-test-support",
+]
+
+[[package]]
+name = "byckr-wasm"
+version = "0.1.0"
+dependencies = [
+ "byckr-machine",
+ "byckr-vfs",
+ "getrandom 0.4.3",
+ "serde_json",
+]
+
+[[package]]
+name = "byckr-xattr"
+version = "0.1.0"
+dependencies = [
+ "byckr-test-support",
+ "rustix",
+ "xattr",
+]
+
+[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -396,205 +595,6 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
-]
-
-[[package]]
-name = "fylo"
-version = "0.1.0"
-dependencies = [
- "fylo-engine",
- "fylo-identity",
- "fylo-query",
- "fylo-storage-native",
- "fylo-test-support",
- "fylo-vfs",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "fylo-browser-index"
-version = "0.1.0"
-dependencies = [
- "fylo-query",
-]
-
-[[package]]
-name = "fylo-chex"
-version = "0.1.0"
-dependencies = [
- "fylo-test-support",
- "regex",
- "regex-automata",
- "serde_json",
-]
-
-[[package]]
-name = "fylo-cli"
-version = "0.1.0"
-dependencies = [
- "fylo-engine",
- "fylo-format",
- "fylo-identity",
- "fylo-machine",
- "fylo-query",
- "fylo-storage-native",
- "fylo-test-support",
- "fylo-xattr",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "fylo-engine"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "fylo-chex",
- "fylo-format",
- "fylo-query",
- "fylo-storage-native",
- "fylo-test-support",
- "fylo-xattr",
- "getrandom 0.4.3",
- "hmac",
- "pbkdf2",
- "serde",
- "serde_json",
- "sha2",
- "zeroize",
-]
-
-[[package]]
-name = "fylo-ffi"
-version = "0.1.0"
-dependencies = [
- "fylo",
- "fylo-test-support",
- "jni",
- "serde",
- "serde_json",
- "zeroize",
-]
-
-[[package]]
-name = "fylo-format"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "fylo-identity"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "base64",
- "core-foundation",
- "core-foundation-sys",
- "fylo-test-support",
- "fylo-vfs",
- "hkdf",
- "hpke",
- "p256",
- "rustix",
- "security-framework",
- "security-framework-sys",
- "sha2",
- "windows-sys 0.61.2",
- "zeroize",
-]
-
-[[package]]
-name = "fylo-machine"
-version = "0.1.0"
-dependencies = [
- "base64",
- "fylo-engine",
- "fylo-format",
- "fylo-identity",
- "fylo-machine",
- "fylo-query",
- "fylo-storage-native",
- "fylo-test-support",
- "fylo-vfs",
- "reqwest",
- "rustls",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "fylo-query"
-version = "0.1.0"
-dependencies = [
- "ryu-js",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "fylo-storage-native"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "base64",
- "fylo-format",
- "fylo-identity",
- "fylo-query",
- "fylo-storage-native",
- "fylo-test-support",
- "fylo-vfs",
- "fylo-xattr",
- "getrandom 0.4.3",
- "hkdf",
- "hmac",
- "libc",
- "lz4_flex",
- "rustix",
- "ruzstd",
- "same-file",
- "serde",
- "serde_json",
- "sha2",
- "windows-sys 0.61.2",
- "zeroize",
- "zstd",
-]
-
-[[package]]
-name = "fylo-test-support"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
-name = "fylo-vfs"
-version = "0.1.0"
-dependencies = [
- "fylo-test-support",
-]
-
-[[package]]
-name = "fylo-wasm"
-version = "0.1.0"
-dependencies = [
- "fylo-machine",
- "fylo-vfs",
- "getrandom 0.4.3",
- "serde_json",
-]
-
-[[package]]
-name = "fylo-xattr"
-version = "0.1.0"
-dependencies = [
- "fylo-test-support",
- "rustix",
- "xattr",
 ]
 
 [[package]]
