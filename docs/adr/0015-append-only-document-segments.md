@@ -89,7 +89,7 @@ creates a file only once per 64 MiB written.
 Defined in `fylo-format` beside the log types, so the browser kernel, the
 salvage tool and offline readers share one parser.
 
-**Segment header** (32 bytes): ADR 0013's header with magic `BYCKRSEG\0`,
+**Segment header** (32 bytes): ADR 0013's header with magic `FYLOSEG\0`,
 format version `1`, flags `0`, the segment number, and the LSN of its first
 record, with the same CRC-32C. A segment written by compaction sets flag bit 0
 ("compacted") and its first-LSN field is the lowest LSN it holds.

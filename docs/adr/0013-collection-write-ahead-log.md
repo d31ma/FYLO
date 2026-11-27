@@ -120,7 +120,7 @@ Segment header, 32 bytes:
 
 | Offset | Size | Field                                         |
 | -----: | ---: | --------------------------------------------- |
-|      0 |    8 | magic `BYCKRLOG\0`                             |
+|      0 |    8 | magic `FYLOLOG\0`                             |
 |      8 |    2 | format version, `1`                           |
 |     10 |    2 | flags, `0` (non-zero is refused)              |
 |     12 |    8 | segment sequence number                       |
