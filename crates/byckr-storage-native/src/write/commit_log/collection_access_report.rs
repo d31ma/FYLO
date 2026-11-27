@@ -25,7 +25,7 @@ pub struct CollectionAccessReport {
     pub records_with_access: usize,
     /// Those records, grouped by owner, group and mode.
     pub access: Vec<RecordAccessGroup>,
-    /// The fields its schema encrypts with `fylo.encryption.key`.
+    /// The fields its schema encrypts with `yckr.encryption.key`.
     pub encrypted_fields: Vec<String>,
 }
 

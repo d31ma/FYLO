@@ -16,7 +16,7 @@ pub struct RootAccessReport {
     pub root: String,
     /// `directory` or `database`.
     pub kind: String,
-    /// `none`, `shared-key` (`fylo.encryption.key`) or `protected`.
+    /// `none`, `shared-key` (`yckr.encryption.key`) or `protected`.
     pub encryption: String,
     /// Whether the database was opened without the key or identity it
     /// needs, so its collections are not listed.
@@ -158,7 +158,7 @@ impl RootAccessReport {
             return None;
         }
         Some(
-            "it was opened without its key (fylo.encryption.key) or identity, so its records are \
+            "it was opened without its key (yckr.encryption.key) or identity, so its records are \
              not counted; run the report with them"
                 .into(),
         )
@@ -179,7 +179,7 @@ impl RootAccessReport {
     fn encryption_change(encryption: &str) -> Option<String> {
         match encryption {
             Self::SHARED_KEY => Some(
-                "it is encrypted with the shared key fylo.encryption.key, which opens every \
+                "it is encrypted with the shared key yckr.encryption.key, which opens every \
                  collection; a protected database seals each collection under its own key, \
                  wrapped only for the identities its policy names"
                     .into(),
@@ -216,7 +216,7 @@ impl RootAccessReport {
             return None;
         }
         Some(format!(
-            "collection {} keeps its $encrypted fields ({}) sealed with fylo.encryption.key, \
+            "collection {} keeps its $encrypted fields ({}) sealed with yckr.encryption.key, \
              which their readers still need",
             collection.collection,
             collection.encrypted_fields.join(", ")

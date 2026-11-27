@@ -51,7 +51,7 @@ impl Settings {
         Self::APP_ID_KEY,
         TempCacheSection::KEY,
     ];
-    const CREDENTIAL_ERROR: &'static str = "fylo.encryption.key and fylo.cipher.salt require paired secret references; key must contain at least 32 UTF-8 bytes and salt must not be empty";
+    const CREDENTIAL_ERROR: &'static str = "yckr.encryption.key and fylo.cipher.salt require paired secret references; key must contain at least 32 UTF-8 bytes and salt must not be empty";
 
     pub(super) fn load(value: &Value, file: &Path) -> Result<ApplicationConfig, String> {
         let settings = Self::object(value, Self::SECTION)?;
@@ -155,18 +155,18 @@ impl Settings {
         Self::known_keys(encryption, &[Self::SECRET_KEY, Self::FILE_KEY], name)?;
         let secret = Self::secret_setting(
             encryption.get(Self::SECRET_KEY),
-            "fylo.encryption.key",
+            "yckr.encryption.key",
             secrets,
         )?;
         let file = match encryption.get(Self::FILE_KEY) {
             None => false,
             Some(value) => value
                 .as_bool()
-                .ok_or("fylo.encryption.file must be a boolean")?,
+                .ok_or("yckr.encryption.file must be a boolean")?,
         };
         if file && secret.is_none() {
             return Err(
-                "fylo.encryption.file requires fylo.encryption.key, the secret a database's key is derived from".into(),
+                "yckr.encryption.file requires yckr.encryption.key, the secret a database's key is derived from".into(),
             );
         }
         Ok((secret, file))
@@ -174,7 +174,7 @@ impl Settings {
 
     /// The database key `reference` names, a `${NAME}` secret reference
     /// resolved from the environment or the `.env` file in `directory`, as
-    /// `fylo.encryption.key` is; `name` names the setting in errors.
+    /// `yckr.encryption.key` is; `name` names the setting in errors.
     pub(super) fn database_key(
         reference: &str,
         name: &str,

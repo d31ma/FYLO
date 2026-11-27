@@ -1,7 +1,7 @@
 //! `$encrypted` fields of a protected `.vdbx` database (ADR 0021 section 7):
 //! each collection's values are encrypted with a key derived from that
 //! collection's key, so only identities granted the collection read them,
-//! and `fylo.encryption.key` is never needed or used to write.
+//! and `yckr.encryption.key` is never needed or used to write.
 
 use std::fs;
 use std::io::Cursor;

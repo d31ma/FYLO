@@ -55,7 +55,7 @@ pub(crate) trait SchemaRegistryStore {
     ) -> Result<bool, NativeStorageError>;
 
     /// A collection's `$encrypted` field keys in a protected database, or
-    /// `None` where fields use `fylo.encryption.key` (ADR 0021 section 7).
+    /// `None` where fields use `yckr.encryption.key` (ADR 0021 section 7).
     fn field_keys(&self, collection: &str) -> Result<Option<FieldKeys>, NativeStorageError>;
 }
 

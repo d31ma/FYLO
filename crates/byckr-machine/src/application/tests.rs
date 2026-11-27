@@ -192,7 +192,7 @@ fn literal_encryption_key_is_rejected_before_invalid_cipher() {
     let fixture = Fixture::new();
     assert_eq!(
         fixture.error(r#"{"fylo":{"encryption":{"key":"literal"},"cipher":null}}"#),
-        "fylo.encryption.key must use a ${NAME} secret reference, not a literal credential"
+        "yckr.encryption.key must use a ${NAME} secret reference, not a literal credential"
     );
 }
 
@@ -326,11 +326,11 @@ fn encryption_file_errors_are_stable() {
     std::fs::write(fixture.0.join(".env"), "YCKR_UNIT_SHORT_KEY=short\n").unwrap();
     assert_eq!(
         fixture.error(r#"{"fylo":{"encryption":{"file":"yes"}}}"#),
-        "fylo.encryption.file must be a boolean"
+        "yckr.encryption.file must be a boolean"
     );
     assert_eq!(
         fixture.error(r#"{"fylo":{"encryption":{"file":true}}}"#),
-        "fylo.encryption.file requires fylo.encryption.key, the secret a database's key is derived from"
+        "yckr.encryption.file requires yckr.encryption.key, the secret a database's key is derived from"
     );
     assert!(
         fixture
@@ -360,7 +360,7 @@ fn a_new_database_key_is_named_by_a_secret_reference_as_the_configured_one_is() 
         ApplicationConfig::database_key_reference(Some(&config), reference, "--new-key")
     };
     assert!(resolve("${YCKR_UNIT_NEXT_KEY}").is_ok());
-    // A literal is refused without echoing it, as fylo.encryption.key is.
+    // A literal is refused without echoing it, as yckr.encryption.key is.
     let literal = "generated-literal-secret-of-forty-bytes!";
     let error = resolve(literal).unwrap_err();
     assert_eq!(

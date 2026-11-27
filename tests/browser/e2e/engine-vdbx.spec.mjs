@@ -795,7 +795,7 @@ test('the change feed reads a working copy as native does, and follows browser w
 const SECRET = 'f4-e2e-secret-for-an-encrypted-vdbx-0123456789'
 const SECRET_ENV = { FYLO_E2E_DATABASE_KEY: SECRET, FYLO_E2E_CIPHER_SALT: 'f4-e2e-cipher-salt' }
 
-/** A configuration naming the shared secret, as native `fylo.encryption.key`. */
+/** A configuration naming the shared secret, as native `yckr.encryption.key`. */
 function keyConfig(paths) {
     const config = paths.disk('encrypted.json')
     writeFileSync(

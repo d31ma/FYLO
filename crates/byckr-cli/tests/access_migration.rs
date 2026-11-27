@@ -287,7 +287,7 @@ fn report_on_a_shared_key_database_needs_its_key() {
     assert_eq!(open["recordsWithAccess"], 1);
     assert_eq!(open["collections"][0]["layout"], "segments");
     assert_eq!(open["collections"][0]["documents"], 2);
-    assert!(open["changes"].to_string().contains("fylo.encryption.key"));
+    assert!(open["changes"].to_string().contains("yckr.encryption.key"));
 }
 
 #[test]

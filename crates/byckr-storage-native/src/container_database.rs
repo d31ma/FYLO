@@ -356,7 +356,7 @@ impl ContainerDatabase {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::KeyRequired,
                 "the .vdbx database is encrypted and was opened without its key \
-                 (fylo.encryption.key)",
+                 (yckr.encryption.key)",
             ));
         }
         Ok(())
@@ -365,7 +365,7 @@ impl ContainerDatabase {
     fn wrong_key() -> NativeStorageError {
         NativeStorageError::new(
             NativeStorageErrorCode::KeyRequired,
-            "the encryption key does not match this .vdbx database (fylo.encryption.key)",
+            "the encryption key does not match this .vdbx database (yckr.encryption.key)",
         )
     }
 

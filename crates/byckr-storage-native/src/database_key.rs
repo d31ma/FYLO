@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 use crate::database_key_material::DatabaseKeyMaterial;
 use crate::{ContainerCipher, ContainerCipherError, KEY_CHECK_BYTES, SALT_BYTES};
 
-/// The secret named by `fylo.encryption.key`, for opening an encrypted
+/// The secret named by `yckr.encryption.key`, for opening an encrypted
 /// `.vdbx` database or creating one ([`crate::NativeRoot::create_encrypted_database`]).
 ///
 /// The file key is derived from it and the salt in the file's superblock,

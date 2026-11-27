@@ -16,10 +16,10 @@ pub struct ApplicationConfig {
     pub storage: RootConfig,
     pub schema: Option<PathBuf>,
     pub credentials: Option<(String, String)>,
-    /// The secret `fylo.encryption.key` names, which opens an encrypted
+    /// The secret `yckr.encryption.key` names, which opens an encrypted
     /// `.vdbx` database (ADR 0016 section 9).
     pub database_key: Option<DatabaseKey>,
-    /// `fylo.encryption.file`: a `.vdbx` database this configuration
+    /// `yckr.encryption.file`: a `.vdbx` database this configuration
     /// creates is encrypted with [`Self::database_key`]. Off by default.
     pub encrypt_databases: bool,
     /// Memory a session holding the root's exclusive lease keeps for warm
@@ -127,7 +127,7 @@ impl ApplicationConfig {
     }
 
     /// The key a `.vdbx` database this configuration creates is encrypted
-    /// with: `Some` only under `fylo.encryption.file`.
+    /// with: `Some` only under `yckr.encryption.file`.
     #[must_use]
     pub fn creation_key(&self) -> Option<&DatabaseKey> {
         self.database_key
@@ -151,7 +151,7 @@ impl ApplicationConfig {
     }
 
     /// The database key the secret reference `reference` names, resolved
-    /// as `fylo.encryption.key` is (ADR 0016 section 9): a complete
+    /// as `yckr.encryption.key` is (ADR 0016 section 9): a complete
     /// `${NAME}` reference, never a literal secret, read from the
     /// environment or else from the `.env` file beside the configuration
     /// file `path` names (default `./application.json`), and at least 32

@@ -28,7 +28,7 @@ use crate::{
 /// and every other key carries over. A new collection key drops the old
 /// epochs, so the engine's [`DocumentRekey`] writes each `$encrypted` value
 /// of that collection again under the new field key, which also moves
-/// values a protected database wrote under `fylo.encryption.key` before
+/// values a protected database wrote under `yckr.encryption.key` before
 /// per-collection field keys.
 ///
 /// The commit point is the rename: a stop before it leaves the database

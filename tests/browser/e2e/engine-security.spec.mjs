@@ -3,7 +3,7 @@
 //
 // The browser module is built with `RootConfig::default()` and takes no
 // configuration (crates/fylo-wasm/src/boundary.rs), so it has no way to hold
-// `fylo.encryption.key` or `fylo.cipher.salt`. Field encryption is declared by
+// `yckr.encryption.key` or `fylo.cipher.salt`. Field encryption is declared by
 // a schema's `$encrypted` list, natively, with keys. Whatever the browser is
 // handed, an encrypted field must fail closed: no plaintext, no ciphertext
 // passed off as data, and no plaintext written where ciphertext belongs.

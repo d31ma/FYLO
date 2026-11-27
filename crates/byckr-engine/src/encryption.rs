@@ -286,13 +286,13 @@ impl EncryptionReader {
 
     /// The key `collection`'s values are written with: in a protected
     /// database the newest epoch's field key, which is derived from the
-    /// collection key (ADR 0021 section 7), and never `fylo.encryption.key`;
-    /// elsewhere the key `fylo.encryption.key` derives.
+    /// collection key (ADR 0021 section 7), and never `yckr.encryption.key`;
+    /// elsewhere the key `yckr.encryption.key` derives.
     fn encoding_key(&self, collection: &str) -> Result<SecretKey, String> {
         let Some(keys) = self.registry.field_keys(collection)? else {
             return self.key.clone().ok_or_else(|| {
                 format!(
-                    "cannot encrypt collection {collection}: fylo.encryption.key and fylo.cipher.salt are required"
+                    "cannot encrypt collection {collection}: yckr.encryption.key and fylo.cipher.salt are required"
                 )
             });
         };
@@ -303,7 +303,7 @@ impl EncryptionReader {
 
     /// The keys `collection`'s values are read with, in order: in a
     /// protected database each epoch's field key, newest first, then
-    /// `fylo.encryption.key`'s when it is configured, for values written
+    /// `yckr.encryption.key`'s when it is configured, for values written
     /// before the database moved to per-collection field keys (`fylo rekey`
     /// rewrites them).
     fn decoding_keys(&self, collection: &str) -> Result<Vec<SecretKey>, String> {
@@ -316,7 +316,7 @@ impl EncryptionReader {
         keys.extend(self.key.clone());
         if keys.is_empty() {
             return Err(format!(
-                "cannot decrypt collection {collection}: fylo.encryption.key and fylo.cipher.salt are required"
+                "cannot decrypt collection {collection}: yckr.encryption.key and fylo.cipher.salt are required"
             ));
         }
         Ok(keys)
@@ -398,7 +398,7 @@ impl EncryptionReader {
     fn index_key(&self, collection: &str) -> Result<SecretKey, String> {
         let Some(keys) = self.registry.field_keys(collection)? else {
             return self.hmac_key.clone().ok_or_else(|| {
-                "fylo.encryption.key and fylo.cipher.salt are required for blind indexes".to_owned()
+                "yckr.encryption.key and fylo.cipher.salt are required for blind indexes".to_owned()
             });
         };
         keys.newest()
@@ -522,7 +522,7 @@ fn derive_keys(secret: &str, salt: &str) -> Result<(SecretKey, SecretKey), Strin
 
 fn derive_keys_uncached(secret: &str, salt: &str) -> Result<(SecretKey, SecretKey), String> {
     if secret.len() < 32 {
-        return Err("fylo.encryption.key must be at least 32 UTF-8 bytes long".into());
+        return Err("yckr.encryption.key must be at least 32 UTF-8 bytes long".into());
     }
     if salt.is_empty() {
         return Err("fylo.cipher.salt must not be empty".into());

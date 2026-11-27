@@ -22,9 +22,9 @@ use serde_json::{Value, json};
 /// database is protected by default, so `create` without `--admin` needs
 /// `--unprotected`.
 ///
-/// `--encrypt`, or `fylo.encryption.file` in the configuration, makes the
+/// `--encrypt`, or `yckr.encryption.file` in the configuration, makes the
 /// database `create` or `pack` writes an encrypted one, sealed with
-/// `fylo.encryption.key` (ADR 0016 section 9). Without either it is plain.
+/// `yckr.encryption.key` (ADR 0016 section 9). Without either it is plain.
 ///
 /// `pack --sealed` writes a sealed database: read-only, with no free
 /// extents, recompressed in 64 KiB blocks (ADR 0016 sections 8 and 11). It
@@ -40,8 +40,8 @@ use serde_json::{Value, json};
 /// pack.
 ///
 /// `rekey --new-key '${NAME}'` rewrites an encrypted database, opened with
-/// `fylo.encryption.key`, under the secret the reference names, resolved
-/// as `fylo.encryption.key` is: from the environment or the `.env` file
+/// `yckr.encryption.key`, under the secret the reference names, resolved
+/// as `yckr.encryption.key` is: from the environment or the `.env` file
 /// beside the configuration, never from a literal on the command line.
 /// `--encrypt` with `--new-key` encrypts a plain database, and `--decrypt`
 /// writes an encrypted one plain.
@@ -303,7 +303,7 @@ impl PackCommand {
     /// (ADR 0021 section 7): every key new, or with `--collection` that
     /// collection's. The engine writes `$encrypted` values again under the
     /// new field keys, reading them with the old ones and, when it is
-    /// configured, `fylo.encryption.key`.
+    /// configured, `yckr.encryption.key`.
     fn rekey_protected(
         path: &Path,
         (writer, application): (NativeWriteRoot, &ApplicationConfig),
@@ -342,7 +342,7 @@ impl PackCommand {
     }
 
     /// The key a new database is sealed with: `Some` under `--encrypt` or
-    /// `fylo.encryption.file`, which both need `fylo.encryption.key`.
+    /// `yckr.encryption.file`, which both need `yckr.encryption.key`.
     fn encryption_key<'a>(
         application: &'a ApplicationConfig,
         options: &PackOptions,
@@ -351,7 +351,7 @@ impl PackCommand {
             return Ok(application.creation_key());
         }
         application.database_key.as_ref().map(Some).ok_or_else(|| {
-            "EKEY: --encrypt needs the database key in fylo.encryption.key".to_owned()
+            "EKEY: --encrypt needs the database key in yckr.encryption.key".to_owned()
         })
     }
 

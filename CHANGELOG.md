@@ -390,7 +390,7 @@
 - **Encrypted `.vdbx` in the browser with a key from the page (ADR 0025).**
   `SingleFileDatabase.open(source, { encryption: { key } })` opens and writes
   an encrypted database with the secret as bytes (the same secret as native
-  `fylo.encryption.key`) or a non-extractable HKDF `CryptoKey`, with no
+  `yckr.encryption.key`) or a non-extractable HKDF `CryptoKey`, with no
   cross-origin isolation. With `create: true` it creates a missing working
   copy, always encrypted and unprotected (no identities or policy; an
   exception to ADR 0021's protected-by-default rule, agreed on 2026-11-11).
@@ -556,14 +556,14 @@
   verify` checks it, and rename it over the database; a rekey that stops
   leaves the database as it was. `$encrypted` values of a rekeyed
   collection are written again under its new field key, which also moves
-  values written under `fylo.encryption.key` to the collection's key.
+  values written under `yckr.encryption.key` to the collection's key.
   Policy versions now carry a signed `change` record (`grant`, `revoke`,
   `rekey`, `rekeyCollection`) with the signer's time.
 - **Per-collection keys for `$encrypted` fields in protected databases
   (ADR 0021 section 7, phase 7).** A protected `.vdbx` database encrypts a
   collection's `$encrypted` fields with keys derived (HKDF-SHA256) from
   that collection's key, one per key epoch, and never with
-  `fylo.encryption.key`, which now applies to unprotected roots only. An
+  `yckr.encryption.key`, which now applies to unprotected roots only. An
   identity granted a collection reads its fields with no shared secret
   configured; one without the collection cannot. Values a protected
   database wrote under the shared key before still read when it is
@@ -689,7 +689,7 @@
   with identities yet: protected databases are ADR 0021's phase 3.
 - **`fylo rekey` rotates a `.vdbx` database's key (ADR 0016 section 9).**
   `fylo rekey app.vdbx --new-key '${NAME}'` rewrites an encrypted database
-  under the secret `${NAME}` names, resolved as `fylo.encryption.key` is;
+  under the secret `${NAME}` names, resolved as `yckr.encryption.key` is;
   a literal key is refused. `--encrypt` encrypts a plain database and
   `--decrypt` writes an encrypted one plain; a rotation of a plain database
   is refused with `ENATIVE_UNSUPPORTED`. The database is opened with the
@@ -705,9 +705,9 @@
   `DatabaseRekey` expose it to Rust callers.
 - **Encrypted `.vdbx` databases, opt-in and off by default (ADR 0016
   section 9).** `fylo create app.vdbx --encrypt`, `fylo pack --encrypt`, or
-  `fylo.encryption.file: true` in `application.json` creates a database
+  `yckr.encryption.file: true` in `application.json` creates a database
   whose record frames, directory, dictionaries and schema snapshots are
-  sealed with AES-256-GCM under a key derived from `fylo.encryption.key`,
+  sealed with AES-256-GCM under a key derived from `yckr.encryption.key`,
   compressed first. A frame is bound to its collection and LSN, so one moved
   into another collection or copied over another record is refused. Opened
   without the key the database is locked: it lists no collections, and a

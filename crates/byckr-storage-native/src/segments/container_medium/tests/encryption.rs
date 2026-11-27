@@ -281,7 +281,7 @@ fn without_its_key_an_encrypted_database_is_locked_and_refuses_every_write() {
     assert_eq!(refused.code(), NativeStorageErrorCode::KeyRequired);
     assert_eq!(refused.code().as_str(), "EKEY");
     assert!(
-        refused.to_string().contains("fylo.encryption.key"),
+        refused.to_string().contains("yckr.encryption.key"),
         "{refused}"
     );
 

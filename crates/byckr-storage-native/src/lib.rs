@@ -601,7 +601,7 @@ impl NativeRoot {
     /// The `$encrypted` field keys of `collection` in a protected `.vdbx`
     /// database (ADR 0021 section 7), newest epoch first; `None` for a
     /// directory root or a database that is not protected, whose fields use
-    /// `fylo.encryption.key`.
+    /// `yckr.encryption.key`.
     ///
     /// # Errors
     ///

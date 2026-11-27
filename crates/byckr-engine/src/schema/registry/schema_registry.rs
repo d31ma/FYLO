@@ -203,7 +203,7 @@ impl SchemaRegistry {
     }
 
     /// The collection's `$encrypted` field keys in a protected database, or
-    /// `None` where fields use `fylo.encryption.key`.
+    /// `None` where fields use `yckr.encryption.key`.
     pub(crate) fn field_keys(&self, collection: &str) -> Result<Option<FieldKeys>, String> {
         self.store
             .field_keys(collection)

@@ -140,7 +140,7 @@ impl NativeWriteRoot {
                     return Err(NativeStorageError::new(
                         NativeStorageErrorCode::KeyRequired,
                         "the .vdbx database is encrypted, so its sealed pack is encrypted too \
-                         and needs the key (fylo.encryption.key)",
+                         and needs the key (yckr.encryption.key)",
                     ));
                 }
             }
