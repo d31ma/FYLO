@@ -118,7 +118,7 @@ fn invalid_root_is_rejected_before_invalid_schema() {
     let fixture = Fixture::new();
     assert_eq!(
         fixture.error(r#"{"fylo":{"root":1,"schema":false}}"#),
-        "fylo.root must be a string"
+        "yckr.root must be a string"
     );
 }
 
@@ -413,23 +413,23 @@ fn temp_cache_setting_errors_are_stable() {
     for (source, expected) in [
         (
             r#"{"fylo":{"tempCache":"on"}}"#,
-            "fylo.tempCache must be an object",
+            "yckr.tempCache must be an object",
         ),
         (
             r#"{"fylo":{"tempCache":{"mode":"always"}}}"#,
-            "fylo.tempCache.mode must be",
+            "yckr.tempCache.mode must be",
         ),
         (
             r#"{"fylo":{"tempCache":{"bytes":-1}}}"#,
-            "fylo.tempCache.bytes must be",
+            "yckr.tempCache.bytes must be",
         ),
         (
             r#"{"fylo":{"tempCache":{"dir":""}}}"#,
-            "fylo.tempCache.dir must be",
+            "yckr.tempCache.dir must be",
         ),
         (
             r#"{"fylo":{"tempCache":{"size":1}}}"#,
-            "unknown key under fylo.tempCache",
+            "unknown key under yckr.tempCache",
         ),
     ] {
         let error = fixture.error(source);

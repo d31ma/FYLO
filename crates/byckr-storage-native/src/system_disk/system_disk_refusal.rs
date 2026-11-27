@@ -32,9 +32,9 @@ impl SystemDiskRefusal {
     const ADVICE: &'static str = "A BYCKR server keeps its data on another local disk: a disk under \
          /Volumes on macOS, a mounted disk such as /mnt/<disk> on Linux, or a drive other than \
          the Windows drive on Windows. To use the system disk anyway (tests, CI, a laptop), pass \
-         --allow-system-disk, set YCKR_ALLOW_SYSTEM_DISK=1 or set fylo.allowSystemDisk to true. \
+         --allow-system-disk, set YCKR_ALLOW_SYSTEM_DISK=1 or set yckr.allowSystemDisk to true. \
          An app that keeps its data in its own data folder passes --app-id <id> (YCKR_APP_ID, \
-         fylo.appId).";
+         yckr.appId).";
 
     /// The `ESYSTEMDISK` or `ENOTVOLUMEROOT` error for the root at `path`.
     pub(crate) fn error(&self, path: &Path) -> NativeStorageError {
@@ -115,7 +115,7 @@ mod tests {
     fn names_the_opt_out(message: &str) {
         assert!(message.contains("--allow-system-disk"), "{message}");
         assert!(message.contains("YCKR_ALLOW_SYSTEM_DISK=1"), "{message}");
-        assert!(message.contains("fylo.allowSystemDisk"), "{message}");
+        assert!(message.contains("yckr.allowSystemDisk"), "{message}");
         assert!(message.contains("--app-id <id>"), "{message}");
     }
 

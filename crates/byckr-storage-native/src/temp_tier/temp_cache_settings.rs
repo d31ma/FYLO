@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use super::temp_cache_mode::TempCacheMode;
 
 /// The temp tier's settings for one process: `--temp-cache`,
-/// `--temp-cache-bytes` and `--temp-cache-dir`, or `fylo.tempCache` in
+/// `--temp-cache-bytes` and `--temp-cache-dir`, or `yckr.tempCache` in
 /// `application.json` (ADR 0030 section 7). A request never changes them.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TempCacheSettings {

@@ -292,7 +292,7 @@ impl EncryptionReader {
         let Some(keys) = self.registry.field_keys(collection)? else {
             return self.key.clone().ok_or_else(|| {
                 format!(
-                    "cannot encrypt collection {collection}: yckr.encryption.key and fylo.cipher.salt are required"
+                    "cannot encrypt collection {collection}: yckr.encryption.key and yckr.cipher.salt are required"
                 )
             });
         };
@@ -316,7 +316,7 @@ impl EncryptionReader {
         keys.extend(self.key.clone());
         if keys.is_empty() {
             return Err(format!(
-                "cannot decrypt collection {collection}: yckr.encryption.key and fylo.cipher.salt are required"
+                "cannot decrypt collection {collection}: yckr.encryption.key and yckr.cipher.salt are required"
             ));
         }
         Ok(keys)
@@ -398,7 +398,7 @@ impl EncryptionReader {
     fn index_key(&self, collection: &str) -> Result<SecretKey, String> {
         let Some(keys) = self.registry.field_keys(collection)? else {
             return self.hmac_key.clone().ok_or_else(|| {
-                "yckr.encryption.key and fylo.cipher.salt are required for blind indexes".to_owned()
+                "yckr.encryption.key and yckr.cipher.salt are required for blind indexes".to_owned()
             });
         };
         keys.newest()
@@ -525,7 +525,7 @@ fn derive_keys_uncached(secret: &str, salt: &str) -> Result<(SecretKey, SecretKe
         return Err("yckr.encryption.key must be at least 32 UTF-8 bytes long".into());
     }
     if salt.is_empty() {
-        return Err("fylo.cipher.salt must not be empty".into());
+        return Err("yckr.cipher.salt must not be empty".into());
     }
     let material = Zeroizing::new(pbkdf2_hmac_array::<Sha256, 64>(
         secret.as_bytes(),

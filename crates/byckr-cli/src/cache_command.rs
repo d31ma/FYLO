@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 
 /// `fylo cache status` and `fylo cache clear` (ADR 0030 section 4.5): the
 /// current OS user's temp cache folder, below `--temp-cache-dir`,
-/// `fylo.tempCache.dir` or the OS temp folder.
+/// `yckr.tempCache.dir` or the OS temp folder.
 ///
 /// `status` prints the folder, whether it exists, the bytes and number of
 /// its entries, its partial files and the time of its last sweep. `clear`

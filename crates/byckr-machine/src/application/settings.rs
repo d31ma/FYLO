@@ -51,7 +51,7 @@ impl Settings {
         Self::APP_ID_KEY,
         TempCacheSection::KEY,
     ];
-    const CREDENTIAL_ERROR: &'static str = "yckr.encryption.key and fylo.cipher.salt require paired secret references; key must contain at least 32 UTF-8 bytes and salt must not be empty";
+    const CREDENTIAL_ERROR: &'static str = "yckr.encryption.key and yckr.cipher.salt require paired secret references; key must contain at least 32 UTF-8 bytes and salt must not be empty";
 
     pub(super) fn load(value: &Value, file: &Path) -> Result<ApplicationConfig, String> {
         let settings = Self::object(value, Self::SECTION)?;
@@ -62,7 +62,7 @@ impl Settings {
         let mut secrets = Secrets::new(directory);
         let root = Self::path_setting(
             settings.get(Self::ROOT_KEY),
-            "fylo.root",
+            "yckr.root",
             directory,
             &mut secrets,
         )?;
@@ -78,7 +78,7 @@ impl Settings {
             Self::encryption(settings.get(Self::ENCRYPTION_KEY), &mut secrets)?;
         let salt = Self::secret_setting(
             Self::member(settings, Self::CIPHER_KEY, "salt")?,
-            "fylo.cipher.salt",
+            "yckr.cipher.salt",
             &mut secrets,
         )?;
         let database_key = secret.as_deref().map(DatabaseKey::new);
@@ -95,9 +95,9 @@ impl Settings {
         let trust_anchor = Self::text(settings.get(Self::TRUST_ANCHOR_KEY), "fylo.trustAnchor")?;
         let allow_system_disk = Self::boolean(
             settings.get(Self::ALLOW_SYSTEM_DISK_KEY),
-            "fylo.allowSystemDisk",
+            "yckr.allowSystemDisk",
         )?;
-        let app_id = Self::text(settings.get(Self::APP_ID_KEY), "fylo.appId")?;
+        let app_id = Self::text(settings.get(Self::APP_ID_KEY), "yckr.appId")?;
         let temp_cache =
             TempCacheSection::load(settings.get(TempCacheSection::KEY), directory, &mut secrets)?;
         Ok(ApplicationConfig {

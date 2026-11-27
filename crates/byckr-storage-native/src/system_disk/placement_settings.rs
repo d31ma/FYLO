@@ -6,10 +6,10 @@
 pub struct PlacementSettings {
     /// `--allow-system-disk` was given.
     pub allow_flag: bool,
-    /// `fylo.allowSystemDisk` is `true`.
+    /// `yckr.allowSystemDisk` is `true`.
     pub allow_config: bool,
     /// The value of `--app-id`.
     pub app_id_flag: Option<String>,
-    /// The value of `fylo.appId`.
+    /// The value of `yckr.appId`.
     pub app_id_config: Option<String>,
 }

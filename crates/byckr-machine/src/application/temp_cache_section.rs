@@ -7,20 +7,20 @@ use byckr_storage_native::{TempCacheMode, TempCacheSettings};
 use super::secrets::Secrets;
 use super::settings::Settings;
 
-/// `fylo.tempCache` in `application.json`: `mode` (`"off"`, `"auto"` or
+/// `yckr.tempCache` in `application.json`: `mode` (`"off"`, `"auto"` or
 /// `"on"`), `bytes` (the budget) and `dir` (the base folder), all optional
 /// (ADR 0030 section 7).
 pub(super) struct TempCacheSection;
 
 impl TempCacheSection {
     pub(super) const KEY: &'static str = "tempCache";
-    const NAME: &'static str = "fylo.tempCache";
+    const NAME: &'static str = "yckr.tempCache";
     const MODE_KEY: &'static str = "mode";
     const BYTES_KEY: &'static str = "bytes";
     const DIR_KEY: &'static str = "dir";
-    const DIR_NAME: &'static str = "fylo.tempCache.dir";
-    const MODE_ERROR: &'static str = "fylo.tempCache.mode must be \"off\", \"auto\" or \"on\"";
-    const BYTES_ERROR: &'static str = "fylo.tempCache.bytes must be a whole number of bytes";
+    const DIR_NAME: &'static str = "yckr.tempCache.dir";
+    const MODE_ERROR: &'static str = "yckr.tempCache.mode must be \"off\", \"auto\" or \"on\"";
+    const BYTES_ERROR: &'static str = "yckr.tempCache.bytes must be a whole number of bytes";
 
     pub(super) fn load(
         value: Option<&Value>,

@@ -128,7 +128,7 @@ impl InvocationCommand {
         application
             .root
             .clone()
-            .ok_or_else(|| "exec --invocation requires --root or fylo.root".into())
+            .ok_or_else(|| "exec --invocation requires --root or yckr.root".into())
     }
 
     fn milliseconds(arguments: &[String], name: &str) -> Result<Duration, String> {

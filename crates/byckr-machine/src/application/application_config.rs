@@ -25,7 +25,7 @@ pub struct ApplicationConfig {
     /// Memory a session holding the root's exclusive lease keeps for warm
     /// reads (ADR 0014). `None` is the default budget; zero turns it off.
     pub hot_set_bytes: Option<usize>,
-    /// `fylo.tempCache`, or `--temp-cache`, `--temp-cache-bytes` and
+    /// `yckr.tempCache`, or `--temp-cache`, `--temp-cache-bytes` and
     /// `--temp-cache-dir`: the temp-disk read tier (ADR 0030 section 7).
     pub temp_cache: TempCacheSettings,
     /// `fylo.identity`, or `YCKR_IDENTITY`: the key reference of the
@@ -40,10 +40,10 @@ pub struct ApplicationConfig {
     pub trust_on_first_use: bool,
     /// The identity [`Self::open_identity`] opened from the settings above.
     pub identity: Option<DatabaseIdentity>,
-    /// `fylo.allowSystemDisk`: admit a root on the system disk (ADR 0032
+    /// `yckr.allowSystemDisk`: admit a root on the system disk (ADR 0032
     /// section 3.1). Off by default.
     pub allow_system_disk: bool,
-    /// `fylo.appId`: the app whose own data folder may hold the root
+    /// `yckr.appId`: the app whose own data folder may hold the root
     /// (ADR 0032 section 3.2).
     pub app_id: Option<String>,
     /// `fylo exec --namespace`: the namespace of requests that name none

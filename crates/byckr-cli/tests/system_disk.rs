@@ -202,7 +202,7 @@ fn a_plain_loop_answers_the_handshake_and_refuses_the_first_request() {
     let message = frames[1]["error"]["message"].as_str().unwrap();
     assert!(message.contains("--allow-system-disk"), "{message}");
     assert!(message.contains("YCKR_ALLOW_SYSTEM_DISK=1"), "{message}");
-    assert!(message.contains("fylo.allowSystemDisk"), "{message}");
+    assert!(message.contains("yckr.allowSystemDisk"), "{message}");
     assert_eq!(place.entries(), vec![OsString::from("application.json")]);
 }
 
@@ -294,7 +294,7 @@ fn the_config_key_admits_the_root_and_warns_on_stderr() {
     let (frames, stderr) = Place::exec_loop(command, &[Place::create_collection()]);
     assert_eq!(frames[0]["ok"], true, "{}", frames[0]);
     assert!(
-        stderr.contains("disabled by fylo.allowSystemDisk"),
+        stderr.contains("disabled by yckr.allowSystemDisk"),
         "{stderr}"
     );
 }
