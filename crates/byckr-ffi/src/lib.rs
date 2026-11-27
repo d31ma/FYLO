@@ -1,7 +1,7 @@
 //! BYCKR's C ABI (ADR 0026): the `fylo` crate for iOS and Android apps, and
 //! any other host that links a C library.
 //!
-//! The header is `include/fylo.h`. Every input is a pointer and a length,
+//! The header is `include/byckr.h`. Every input is a pointer and a length,
 //! borrowed for the call. Every output is a [`FyloBytes`] buffer the caller
 //! gives back to `byckr_bytes_free`. A root is a handle number, never a
 //! pointer. Results and errors are the machine protocol's JSON.

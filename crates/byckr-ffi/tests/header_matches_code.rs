@@ -1,4 +1,4 @@
-//! `include/fylo.h` must declare exactly the C functions, status values and
+//! `include/byckr.h` must declare exactly the C functions, status values and
 //! ABI version that the crate exports (ADR 0026 section 3).
 
 use std::collections::BTreeMap;
@@ -91,21 +91,21 @@ fn header_signatures(header: &str) -> Signatures {
 #[test]
 fn every_exported_function_has_the_same_c_signature_in_the_header() {
     let code = rust_signatures(&crate_file("src/c_abi.rs"));
-    let header = header_signatures(&crate_file("include/fylo.h"));
+    let header = header_signatures(&crate_file("include/byckr.h"));
     assert_eq!(code.len(), 12, "{code:#?}");
     assert_eq!(header, code);
 }
 
 #[test]
 fn the_header_names_the_abi_version_the_library_reports() {
-    let header = crate_file("include/fylo.h");
+    let header = crate_file("include/byckr.h");
     let expected = format!("#define YCKR_ABI_VERSION {}", byckr_ffi::CAbi::ABI_VERSION);
-    assert!(header.contains(&expected), "fylo.h lacks `{expected}`");
+    assert!(header.contains(&expected), "byckr.h lacks `{expected}`");
 }
 
 #[test]
 fn the_header_gives_every_status_its_number() {
-    let header = crate_file("include/fylo.h");
+    let header = crate_file("include/byckr.h");
     let statuses = [
         ("YCKR_OK", byckr_ffi::FyloStatus::Ok),
         ("YCKR_NOT_FOUND", byckr_ffi::FyloStatus::NotFound),
@@ -118,9 +118,9 @@ fn the_header_gives_every_status_its_number() {
         ("YCKR_PANIC", byckr_ffi::FyloStatus::Panic),
     ];
     let declared = header.matches(" = ").count();
-    assert_eq!(declared, statuses.len(), "fylo.h declares other values");
+    assert_eq!(declared, statuses.len(), "byckr.h declares other values");
     for (name, status) in statuses {
         let line = format!("{name} = {}", status as i32);
-        assert!(header.contains(&line), "fylo.h lacks `{line}`");
+        assert!(header.contains(&line), "byckr.h lacks `{line}`");
     }
 }

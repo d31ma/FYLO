@@ -1,6 +1,6 @@
 package io.github.d31ma.fylo
 
-/** What a FYLO call did; the same numbers as `FyloStatus` in `fylo.h`. */
+/** What a FYLO call did; the same numbers as `FyloStatus` in `byckr.h`. */
 enum class FyloStatus(val number: Int) {
     OK(0),
     NOT_FOUND(1),

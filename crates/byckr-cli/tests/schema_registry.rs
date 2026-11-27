@@ -10,7 +10,7 @@ use byckr_storage_native::{CollectionKind, NativeRoot, NativeWriteRoot};
 use serde_json::{Value, json};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_fylo-rust");
-const WRITE_PREVIEW: &str = env!("CARGO_BIN_EXE_fylo-write-preview");
+const WRITE_PREVIEW: &str = env!("CARGO_BIN_EXE_byckr-write-preview");
 
 struct Fixture(PathBuf);
 

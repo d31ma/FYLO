@@ -307,7 +307,7 @@
   write-ahead logs before it releases the root lease. Local use only; not
   qualified for deployment.
 - **BYCKR's native engine on Android (ADR 0026).** A new crate, `fylo-ffi`,
-  gives the `fylo` crate a small C ABI (`fylo.h`: open, close, collections,
+  gives the `fylo` crate a small C ABI (`byckr.h`: open, close, collections,
   put, get, delete, find, `fylo_find_page`, identities), with handles that
   are numbers, buffers BYCKR owns until `fylo_bytes_free`, and panics answered
   as `YCKR_PANIC`. The Android library `io.github.d31ma:fylo-android`
@@ -791,7 +791,7 @@
   the snapshot (`schemaVersions`), `fylo salvage` writes the versions it
   recovers to `.fylo-schemas/<ordinal>.json` under its output, and
   `fylo layout` carries the registry in both directions. New failpoints
-  `after-schema-record` and `after-schemas-snapshot`; `fylo-write-preview
+  `after-schema-record` and `after-schemas-snapshot`; `byckr-write-preview
   schema-head` reports the head for the crash matrix.
 - **The WebAssembly builds validate schema writes (ADR 0017 section 4).**
   `fylo.wasm` and `fylo-browser.wasm` link CHEX without a regex compiler and

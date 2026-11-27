@@ -41,7 +41,7 @@ const binaries = '/target/debug'
 // Every crash case spawns several processes; loading them from the container's
 // own disk instead of a shared build mount halves the suite's runtime.
 const local = '/opt/fylo'
-const install = `mkdir -p ${local} && cp ${binaries}/fylo-rust ${binaries}/fylo-write-preview ${local}/`
+const install = `mkdir -p ${local} && cp ${binaries}/fylo-rust ${binaries}/byckr-write-preview ${local}/`
 const cache = options['cache-dir']
     ? { target: join(options['cache-dir'], 'target'), cargo: join(options['cache-dir'], 'cargo') }
     : { target: `${NAME}-target`, cargo: `${NAME}-cargo` }
@@ -71,7 +71,7 @@ try {
             'sh',
             '-c',
             'cp -a /src /work && cd /work && ' +
-                'cargo build --locked -p fylo-cli --bin fylo-rust --bin fylo-write-preview && ' +
+                'cargo build --locked -p fylo-cli --bin fylo-rust --bin byckr-write-preview && ' +
                 'cargo build --locked -p fylo-machine --example lambda_invocation'
         ])
     )

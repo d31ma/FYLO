@@ -18,11 +18,11 @@ use crate::identity_calls::IdentityCalls;
 use crate::root_calls::RootCalls;
 use crate::root_table::RootTable;
 
-/// The C ABI. Its functions are exported under the names in `fylo.h`.
+/// The C ABI. Its functions are exported under the names in `byckr.h`.
 pub struct CAbi;
 
 impl CAbi {
-    /// The ABI this library implements; `fylo.h`'s `YCKR_ABI_VERSION`.
+    /// The ABI this library implements; `byckr.h`'s `YCKR_ABI_VERSION`.
     pub const ABI_VERSION: u32 = 1;
 
     /// Report the ABI this library implements.

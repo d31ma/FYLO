@@ -1,13 +1,13 @@
 /*
  * Links the fylo-ffi static library from C and runs one plain database
- * through every call of include/fylo.h (ADR 0026). Run it with
+ * through every call of include/byckr.h (ADR 0026). Run it with
  * `bun run test:ffi`. Exit status 0 means every check passed.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "fylo.h"
+#include "byckr.h"
 
 static int failures = 0;
 

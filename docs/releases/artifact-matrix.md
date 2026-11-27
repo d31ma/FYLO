@@ -21,7 +21,7 @@ difference outside the declared list below.
 ## The phone library (`fylo-ffi`)
 
 Phones cannot start a process, so ADR 0026 adds a fourth way to ship the
-native engine: `crates/fylo-ffi`, a C ABI over the `fylo` crate (`fylo.h`),
+native engine: `crates/fylo-ffi`, a C ABI over the `fylo` crate (`byckr.h`),
 built with the `mobile` profile (`panic = "unwind"`, so a C entry returns
 `YCKR_PANIC` instead of aborting the app).
 

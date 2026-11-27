@@ -61,7 +61,7 @@ const network = NAME
 const binaries = '/target/debug'
 const local = '/opt/fylo'
 const install =
-    `mkdir -p ${local} && cp ${binaries}/fylo-rust ${binaries}/fylo-write-preview ` +
+    `mkdir -p ${local} && cp ${binaries}/fylo-rust ${binaries}/byckr-write-preview ` +
     `${binaries}/examples/http_invocation ${local}/`
 const cache = options['cache-dir']
     ? { target: join(options['cache-dir'], 'target'), cargo: join(options['cache-dir'], 'cargo') }
@@ -133,7 +133,7 @@ try {
             'sh',
             '-c',
             'cp -a /src /work && cd /work && ' +
-                'cargo build --locked -p fylo-cli --bin fylo-rust --bin fylo-write-preview && ' +
+                'cargo build --locked -p fylo-cli --bin fylo-rust --bin byckr-write-preview && ' +
                 'cargo build --locked -p fylo-machine --example http_invocation'
         ])
     )

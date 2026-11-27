@@ -589,7 +589,7 @@ Fylo.open(File(filesDir, "app.vdbx").path, """{"create": {"mode": "encrypted"}}"
 - Leave the database out of Android's backups (`android:dataExtractionRules`),
   so the file never leaves the device without its key.
 - `.vdbx` databases are the supported layout on phones. The C ABI under the
-  AAR (`fylo.h`, `crates/fylo-ffi`) is also usable from other native code.
+  AAR (`byckr.h`, `crates/fylo-ffi`) is also usable from other native code.
 
 ### iOS native engine (`FyloKit`)
 

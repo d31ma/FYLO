@@ -68,7 +68,7 @@ operating system protects.
 - A missing database is created only when the open options name
   `create.mode` (`protected` with an `admin`, `encrypted` with a key, or
   `plain`); otherwise the open fails.
-- The header `include/fylo.h` is committed, and a check fails when it and the
+- The header `include/byckr.h` is committed, and a check fails when it and the
   code differ.
 
 ### 4. `unsafe` (amends ADR 0004)

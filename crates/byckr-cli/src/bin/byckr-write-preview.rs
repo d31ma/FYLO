@@ -338,31 +338,31 @@ fn push_schema(writer: &NativeWriteRoot, arguments: &[String]) -> Result<Value, 
         .schema_push(
             required_option(arguments, "--collection")?,
             None,
-            Some("fylo-write-preview"),
+            Some("byckr-write-preview"),
         )
         .map_err(|error| error.to_string())
 }
 
 fn usage() -> String {
-    "Usage:\n  fylo-write-preview recover --root <path> --collection <name>\n  \
-     fylo-write-preview put-document --root <path> --collection <name> --id <ttid> --document \
-     <json>\n  fylo-write-preview put-file --root \
+    "Usage:\n  byckr-write-preview recover --root <path> --collection <name>\n  \
+     byckr-write-preview put-document --root <path> --collection <name> --id <ttid> --document \
+     <json>\n  byckr-write-preview put-file --root \
      <path> --collection <name> --id <ttid> --bytes-hex \
-     <hex> --key <key> --extension <ext> [--metadata <json>]\n  fylo-write-preview patch-document \
-     --root <path> --collection <name> --id <ttid> --document <json>\n  fylo-write-preview \
+     <hex> --key <key> --extension <ext> [--metadata <json>]\n  byckr-write-preview patch-document \
+     --root <path> --collection <name> --id <ttid> --document <json>\n  byckr-write-preview \
      patch-fields --root <path> --collection <name> --id <ttid> --changes <json>\n  \
-     fylo-write-preview delete-document --root <path> --collection <name> --id <ttid>\n  \
-     fylo-write-preview sql --root <path> --statement <sql>\n  fylo-write-preview set-metadata \
+     byckr-write-preview delete-document --root <path> --collection <name> --id <ttid>\n  \
+     byckr-write-preview sql --root <path> --statement <sql>\n  byckr-write-preview set-metadata \
      --root <path> --collection <name> --id <ttid> --record <json> [--replace]\n  \
-     fylo-write-preview commit --root <path> --message <message>\n  fylo-write-preview \
-     restore-document --root <path> --collection <name> --id <ttid>\n  fylo-write-preview \
+     byckr-write-preview commit --root <path> --message <message>\n  byckr-write-preview \
+     restore-document --root <path> --collection <name> --id <ttid>\n  byckr-write-preview \
      reshard --root <path> \
-     --collection <name> --width <0-4>\n  fylo-write-preview push-schema --root <path> \
-     --collection <name> --schema-dir <path>\n  fylo-write-preview schema-head --root <path> \
-     --collection <name>\n  fylo-write-preview compact --root <path> [--collection <name> | \
-     --shrink]\n  fylo-write-preview pack --root <path> --out <db.vdbx>\n  \
-     fylo-write-preview rekey --root <db.vdbx> --encrypt --new-key '${NAME}'\n  \
-     fylo-write-preview failpoints"
+     --collection <name> --width <0-4>\n  byckr-write-preview push-schema --root <path> \
+     --collection <name> --schema-dir <path>\n  byckr-write-preview schema-head --root <path> \
+     --collection <name>\n  byckr-write-preview compact --root <path> [--collection <name> | \
+     --shrink]\n  byckr-write-preview pack --root <path> --out <db.vdbx>\n  \
+     byckr-write-preview rekey --root <db.vdbx> --encrypt --new-key '${NAME}'\n  \
+     byckr-write-preview failpoints"
         .into()
 }
 

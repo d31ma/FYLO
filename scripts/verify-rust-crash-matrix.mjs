@@ -97,7 +97,7 @@ const wideDocument = (seed) =>
     )
 const binary = join(
     options['binary-dir'] ?? CargoArtifacts.path('debug'),
-    platform() === 'win32' ? 'fylo-write-preview.exe' : 'fylo-write-preview'
+    platform() === 'win32' ? 'byckr-write-preview.exe' : 'byckr-write-preview'
 )
 const machineBinary = join(
     options['binary-dir'] ?? CargoArtifacts.path('debug'),
@@ -185,7 +185,7 @@ try {
             '-p',
             'fylo-cli',
             '--bin',
-            'fylo-write-preview',
+            'byckr-write-preview',
             '--bin',
             'fylo-rust'
         ])

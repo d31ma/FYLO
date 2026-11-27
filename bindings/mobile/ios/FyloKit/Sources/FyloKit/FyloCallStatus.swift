@@ -1,6 +1,6 @@
 import CFylo
 
-/// What a FYLO call did; the numbers of `FyloStatus` in `fylo.h`.
+/// What a FYLO call did; the numbers of `FyloStatus` in `byckr.h`.
 public enum FyloCallStatus: UInt32, Sendable {
     case ok = 0
     case notFound = 1

@@ -1280,7 +1280,7 @@ describe('web release operations', () => {
         expect(finalStyleHashes).toEqual(generatedStyleHashes)
         expect(finalScriptHashes).toEqual(generatedScriptHashes)
 
-        const transitionPolicy = await Bun.file(config.sites.fylo.headersPolicy).text()
+        const transitionPolicy = await Bun.file(config.sites.byckr.headersPolicy).text()
         for (const hash of [...generatedStyleHashes, ...generatedScriptHashes]) {
             expect(transitionPolicy).toContain(`'sha256-${hash}'`)
         }
@@ -1459,7 +1459,7 @@ describe('web release operations', () => {
     test('pins the FYLO Amplify target, security policy, and checksum-verified rollback', async () => {
         const config = await Bun.file('ops/web-release.json').json()
         const release = await Bun.file('scripts/amplify-release.mjs').text()
-        const transitionPolicy = await Bun.file(config.sites.fylo.headersPolicy).text()
+        const transitionPolicy = await Bun.file(config.sites.byckr.headersPolicy).text()
         const finalPolicy = await Bun.file(config.sites.fylo.finalHeadersPolicy).text()
         const runbook = await Bun.file('docs/operations/web-release.md').text()
         expect(config.sites.fylo).toMatchObject({
@@ -1509,7 +1509,7 @@ describe('web release operations', () => {
         expect(runbook).not.toContain('aws amplify update-app')
         expect(runbook).toContain('d31ma/PaaS `infra/fylo/amplify`')
         expect(config.sites.fylo.branch).toBe('production')
-        expect(runbook).toContain(config.sites.fylo.headersPolicy)
+        expect(runbook).toContain(config.sites.byckr.headersPolicy)
         expect(runbook).toContain(config.sites.fylo.finalHeadersPolicy)
         expect(runbook).toContain('previousChecksum')
         expect(runbook).toContain('checksum-bound')
