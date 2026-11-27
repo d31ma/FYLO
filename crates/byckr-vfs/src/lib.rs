@@ -1,6 +1,6 @@
 //! The filesystem seam the storage engine calls instead of `std::fs`.
 //!
-//! FYLO's engine was written directly against `std::fs`, which made the engine
+//! BYCKR's engine was written directly against `std::fs`, which made the engine
 //! and the platform inseparable. `SQLite` has been portable for decades because
 //! every byte it reads or writes goes through one `sqlite3_vfs`; this module is
 //! that layer, arrived at late.
@@ -22,7 +22,7 @@
 //!
 //! # Embedders
 //!
-//! Swift, Kotlin, and Dart reach FYLO on a device where a real filesystem
+//! Swift, Kotlin, and Dart reach BYCKR on a device where a real filesystem
 //! exists, so they link the native backend and need nothing from this module.
 //! They only supply a `HostVfs` when they *want* to intercept storage — a
 //! Flutter web build, or an app that keeps its root inside a container the

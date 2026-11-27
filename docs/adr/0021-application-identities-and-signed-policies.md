@@ -2,7 +2,7 @@
 
 - Status: **Proposed** (draft for the user, 2026-11-07)
 - Date: **2026-11-07**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Supersedes, once accepted: ADR 0015 section 10 (POSTIX on segments) and the
   POSTIX parts of ADR 0016's costs.
 - Amends, once accepted: ADR 0016 section 9 (encryption), ADR 0013 (commit
@@ -13,14 +13,14 @@
 
 ## Context
 
-FYLO's access control today is POSTIX: a per-record `uid`, `gid` and `mode`
-that the caller claims and FYLO's own code checks (study section 2). A record
+BYCKR's access control today is POSTIX: a per-record `uid`, `gid` and `mode`
+that the caller claims and BYCKR's own code checks (study section 2). A record
 without a descriptor is open to everyone, and segment and `.vdbx` collections
 are enforced only by the library a process could skip.
 
 The user asked for access control in the shape of AWS security groups:
 everything is denied by default, and an application or process named by a
-static identifier is allowed to read or write. FYLO runs inside the caller's
+static identifier is allowed to read or write. BYCKR runs inside the caller's
 process and never opens a listener, so a rule must be backed by something the
 caller cannot skip: the operating system's secret store and cryptography
 (study section 3).
@@ -34,20 +34,20 @@ caller cannot skip: the operating system's secret store and cryptography
     - The public key is hashed in its SEC1 uncompressed form (65 bytes), the
       form WebCrypto's `raw` export, the macOS keychain and CNG all produce.
     - Base32 is RFC 4648, upper case, without padding: 52 characters.
-- P-256 because every hardware key store FYLO targets (Secure Enclave,
+- P-256 because every hardware key store BYCKR targets (Secure Enclave,
   TPM 2.0, Android StrongBox) and WebCrypto's non-extractable keys support it.
 - The private key never enters a database. A process names it by a **key
   reference**:
 
 | Reference                  | Private key                                                                                                                                                                                 | Platforms                                       |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `file:<path>`              | PKCS#8 PEM file, mode `0400` or `0600`, owned by the process's user. FYLO refuses a file any other user can read or write                                                                   | Everywhere; development and CI                  |
-| `keychain:<label>`         | A macOS keychain item; `FYLO_KEYCHAIN` names a keychain file to use instead of the default keychain                                                                                         | macOS                                           |
+| `file:<path>`              | PKCS#8 PEM file, mode `0400` or `0600`, owned by the process's user. BYCKR refuses a file any other user can read or write                                                                   | Everywhere; development and CI                  |
+| `keychain:<label>`         | A macOS keychain item; `YCKR_KEYCHAIN` names a keychain file to use instead of the default keychain                                                                                         | macOS                                           |
 | `enclave:<label>`          | A Secure Enclave key that never leaves the enclave; its token blob is a keychain item (phase 8, section 8)                                                                                  | macOS with a Secure Enclave                     |
 | `cng:<name>`               | A Windows CNG key, DPAPI-protected                                                                                                                                                          | Windows                                         |
 | `tpm:<name>`               | A TPM 2.0 key of the Microsoft Platform Crypto Provider that never leaves the TPM (phase 8, section 8)                                                                                      | Windows with a TPM 2.0                          |
 | `creds:<name>`             | A `systemd-creds` credential handed to one unit                                                                                                                                             | Linux services                                  |
-| `android-keystore:<alias>` | A P-256 key made in the Android Keystore (StrongBox when present, else the TEE) that signs and agrees and never leaves it; FYLO's Android library answers through JNI (ADR 0026, section 8) | Android 12+ with `io.github.d31ma:fylo-android` |
+| `android-keystore:<alias>` | A P-256 key made in the Android Keystore (StrongBox when present, else the TEE) that signs and agrees and never leaves it; BYCKR's Android library answers through JNI (ADR 0026, section 8) | Android 12+ with `io.github.d31ma:fylo-android` |
 | `webcrypto:<name>`         | A non-extractable `CryptoKey` in the origin's IndexedDB                                                                                                                                     | Browser                                         |
 
 A reference to a store the platform does not have fails with
@@ -74,7 +74,7 @@ proposed. The ADR itself stays Proposed until phase 3 starts.
 
 |     | Question                      | Proposed decision                                                                                                                                                                                                                                                                         | Reason                                                                                                                          |
 | --- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Q1  | Per application only?         | **Yes.** POSTIX (per-record `uid`/`gid`/`mode`, `.as()`, `--uid`, `--groups`, the machine `access` field) is removed in the breaking release; end-user rules stay in the application                                                                                                      | A per-record rule is only a claim FYLO's own code checks, which the caller can skip                                             |
+| Q1  | Per application only?         | **Yes.** POSTIX (per-record `uid`/`gid`/`mode`, `.as()`, `--uid`, `--groups`, the machine `access` field) is removed in the breaking release; end-user rules stay in the application                                                                                                      | A per-record rule is only a claim BYCKR's own code checks, which the caller can skip                                             |
 | Q2  | Protected by default?         | **Yes.** A new `.vdbx` is protected unless created with `--unprotected`; directory roots stay as an unprotected layout for development and tooling. **Decided** (the user, 2026-11-07)                                                                                                    | Deny by default; a directory root leaks indexed values through file names (study 2.5) and cannot be protected                   |
 | Q3  | Key storage per platform      | **Accepted for version 1, documented:** same-user malware on Linux desktops and unpackaged Windows apps can take a software key. Servers are told to run each application under its own OS user (`creds:` on Linux). The option D helper is not built. **Decided** (the user, 2026-11-07) | The study's threat model (section 6) shows no in-process design does better there; option D brings back a privileged subprocess |
 | Q4  | Write implies read?           | **Yes**                                                                                                                                                                                                                                                                                   | A writer must read the collection's directory and index to append and maintain indexes                                          |
@@ -82,7 +82,7 @@ proposed. The ADR itself stays Proposed until phase 3 starts.
 | Q6  | Revocation                    | **Forward-only by default** (a new key epoch); `fylo rekey --collection` rewrites old frames on request                                                                                                                                                                                   | Rewriting at once would make a revoke as slow as a full pack on a large collection                                              |
 | Q7  | Trust anchor                  | **Pinning required.** An open of a protected database without a pinned anchor fails with `EPOLICY`, unless the caller opts in to trust on first use, which warns. **Decided** (the user, 2026-11-07)                                                                                      | Without a pin, whoever can write the file can replace the database with one carrying their own anchor                           |
 | Q8  | Hardware keys                 | **Later** (phase 8); version 1 uses software keys in the OS secret stores                                                                                                                                                                                                                 | Hardware keys take milliseconds per operation and differ per platform                                                           |
-| Q9  | `fylo link`                   | **Yes:** `fylo.identity` and `fylo.trustAnchor` in `application.json`, or `FYLO_IDENTITY` and `FYLO_TRUST_ANCHOR`                                                                                                                                                                         | Turso's `Database::open` carries only a path                                                                                    |
+| Q9  | `fylo link`                   | **Yes:** `fylo.identity` and `fylo.trustAnchor` in `application.json`, or `YCKR_IDENTITY` and `YCKR_TRUST_ANCHOR`                                                                                                                                                                         | Turso's `Database::open` carries only a path                                                                                    |
 | Q10 | The browser                   | **Yes:** the origin is the boundary, plus an optional `webcrypto:` identity for files moved between origins                                                                                                                                                                               | OPFS is already private to the origin                                                                                           |
 | Q11 | Buckets and the queue         | **They wait in protected databases:** a protected `.vdbx` refuses them until `.vdbx` holds them; they stay available in unprotected roots. **Decided** (the user, 2026-11-07)                                                                                                             | Shipping them unprotected beside protected collections would be an allow by default                                             |
 
@@ -215,8 +215,8 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
 - **Entry points (phase 5).** The `fylo` crate opens `.vdbx` databases
   (no directory lease; the file coordinates its writers) and takes
   `OpenOptions::with_identity(identity, trust)`; a database holds no queue
-  (`ELAYOUTUNSUPPORTED`). `fylo::LinkIdentity` reads `FYLO_IDENTITY` and
-  `FYLO_TRUST_ANCHOR`, or `fylo.identity` and `fylo.trustAnchor` from the
+  (`ELAYOUTUNSUPPORTED`). `fylo::LinkIdentity` reads `YCKR_IDENTITY` and
+  `YCKR_TRUST_ANCHOR`, or `fylo.identity` and `fylo.trustAnchor` from the
   `application.json` beside the database, for `fylo link`'s open hook (Q9).
   SQL over a `.vdbx` database, protected or not (decision P5-6): `Root::sql`
   registers the database's live document collections as tables and reads
@@ -229,7 +229,7 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
   one (`ENOENT`) instead of creating a database or a SQLite file.
 - **`cng:` (phase 5, decision P5-2).** A key persisted under its name in the
   Microsoft Software Key Storage Provider (DPAPI-protected, per user),
-  imported from PKCS#8 with an export policy so FYLO signs in software;
+  imported from PKCS#8 with an export policy so BYCKR signs in software;
   `crates/fylo-identity/src/cng_key_store.rs` is that crate's one `unsafe`
   module (`docs/security/unsafe-inventory.md`). Checked for the Windows
   target; it runs only on the `windows-vm` lane.
@@ -298,11 +298,11 @@ Each was decided as recommended. Phase 5 starts when the user says so.
 |      | Question                                                                         | Decision                                                                                                                                                                                                                                                        | Reason                                                                                                                   |
 | ---- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | P5-1 | What does the machine protocol do with a missing `.vdbx`?                        | Create it **protected**, with the configured identity as its admin and trust anchor; with no identity configured, refuse with `ENOIDENTITY`                                                                                                                     | Deny by default (Q2): a database no one is named for is not created open                                                 |
-| P5-2 | How does `cng:` reach Windows' key APIs?                                         | An **exception to ADR 0004's no-`unsafe` rule** for one small, reviewed FYLO module over Microsoft's `windows-sys` bindings, recorded in `docs/security/unsafe-inventory.md`; the rest of FYLO stays `unsafe`-free                                              | CNG is a C API with no safe binding of its own; one owned, reviewed module is easier to audit than a third-party wrapper |
-| P5-3 | How does the browser hold a `webcrypto:` identity?                               | The **browser's own WebCrypto**, called from FYLO's JavaScript adapter (non-extractable P-256 keys in the origin's IndexedDB); the Wasm engine keeps no P-256, ECDSA or HPKE code                                                                               | Putting the Rust crypto in `fylo-browser.wasm` adds about 190 KB and breaks its size budget (section 4)                  |
+| P5-2 | How does `cng:` reach Windows' key APIs?                                         | An **exception to ADR 0004's no-`unsafe` rule** for one small, reviewed BYCKR module over Microsoft's `windows-sys` bindings, recorded in `docs/security/unsafe-inventory.md`; the rest of BYCKR stays `unsafe`-free                                              | CNG is a C API with no safe binding of its own; one owned, reviewed module is easier to audit than a third-party wrapper |
+| P5-3 | How does the browser hold a `webcrypto:` identity?                               | The **browser's own WebCrypto**, called from BYCKR's JavaScript adapter (non-extractable P-256 keys in the origin's IndexedDB); the Wasm engine keeps no P-256, ECDSA or HPKE code                                                                               | Putting the Rust crypto in `fylo-browser.wasm` adds about 190 KB and breaks its size budget (section 4)                  |
 | P5-4 | Session certificates                                                             | **Wait for phase 8** (hardware keys)                                                                                                                                                                                                                            | With software keys they cost the same per signature and need storage (section 4, "Signed records")                       |
 | P5-5 | How does the browser engine sign and check records with a `webcrypto:` identity? | A **crypto bridge Worker** calls WebCrypto with the origin's non-extractable key, and the engine waits on a `SharedArrayBuffer` with `Atomics.wait`, as the OPFS bridge does; the browser gets full read and write, and the engine stays within its size budget | WebCrypto is asynchronous, and the engine signs and checks each record synchronously                                     |
-| P5-6 | SQL over `.vdbx`                                                                 | **Built before phase 6**, protected and unprotected, so Turso-SDK apps reached through `fylo link` open protected databases                                                                                                                                     | `fylo link` is how most applications reach FYLO (ADR 0019)                                                               |
+| P5-6 | SQL over `.vdbx`                                                                 | **Built before phase 6**, protected and unprotected, so Turso-SDK apps reached through `fylo link` open protected databases                                                                                                                                     | `fylo link` is how most applications reach BYCKR (ADR 0019)                                                               |
 | P5-7 | Run `cng:` on Windows                                                            | **Yes**, on the `windows-vm` lane under the shared VM lock, then stop the VMs                                                                                                                                                                                   | It is the only way to run the one `unsafe` module                                                                        |
 | P5-8 | Phase 6: `fylo pack --protect` and per-record access descriptors                 | **Refuse** unless `--drop-record-access` or `--keep-record-access-as-metadata` is given                                                                                                                                                                         | A silent drop would lose access rules the old root enforced                                                              |
 
@@ -580,7 +580,7 @@ verify` warns `catalogRotationPending` (a warning: the file is
   revocation and has no version of its own, unless it stopped and was
   settled later, which writes a `settle` version.
     - **Deferred by the user's decision: logging opens and refusals.**
-      Design section 5.6 also lists every open, operations FYLO refused,
+      Design section 5.6 also lists every open, operations BYCKR refused,
       and `ESIGNATURE` findings. Recording those would need a write on
       every open, also by identities that may only read, and a separate
       append-only extent (a new extent kind, sealed under the catalog key
@@ -595,7 +595,7 @@ verify` warns `catalogRotationPending` (a warning: the file is
 - **`enclave:<label>`** (macOS). `fylo identity create --store
 enclave:<label>` makes a P-256 key inside the Secure Enclave
   (`SecKeyCreateRandomKey` with the Secure Enclave token). The key never
-  leaves the enclave: FYLO asks it to sign (ECDSA, SHA-256) and to agree
+  leaves the enclave: BYCKR asks it to sign (ECDSA, SHA-256) and to agree
   (ECDH), and never sees the private scalar.
     - The key is made **non-permanent**. A permanent key in the Data
       Protection keychain, and an access group, need the
@@ -603,10 +603,10 @@ enclave:<label>` makes a P-256 key inside the Secure Enclave
       with a provisioning profile carries; an unsigned or ad-hoc signed
       binary, such as `fylo` from `cargo build`, gets
       `errSecMissingEntitlement` (-34018). Measured on this Mac.
-    - Instead FYLO keeps the enclave's **token blob** for the key, which
+    - Instead BYCKR keeps the enclave's **token blob** for the key, which
       only this Mac's Secure Enclave can use, as a generic-password item in
       the keychain: service `<label>`, account `fylo-enclave-identity`, in
-      the default keychain or in `FYLO_KEYCHAIN`. The keychain's access
+      the default keychain or in `YCKR_KEYCHAIN`. The keychain's access
       list binds the item to the application that created it, as for
       `keychain:`, so it is the code-signature binding; another
       application needs the user's consent. A copied blob is useless on
@@ -624,7 +624,7 @@ enclave:<label>` makes a P-256 key inside the Secure Enclave
 - **`tpm:<name>`** (Windows). `fylo identity create --store tpm:<name>`
   asks the Microsoft Platform Crypto Provider to make a persisted P-256
   key (`NCryptCreatePersistedKey`, `ECDH_P256`, key usage signing and key
-  agreement) inside the TPM 2.0. FYLO signs with `NCryptSignHash` over the
+  agreement) inside the TPM 2.0. BYCKR signs with `NCryptSignHash` over the
   SHA-256 of the message and agrees with `NCryptSecretAgreement` and the
   raw-secret KDF (`TRUNCATE`, little-endian, turned big-endian). It extends
   the reviewed `cng_key_store.rs`, which stays the crate's only Windows
@@ -681,7 +681,7 @@ enclave:<label>` makes a P-256 key inside the Secure Enclave
       writer replaces it 5 minutes before the end with a new certificate
       (one more hardware signature). Readers do **not** check `notAfter`
       against their own clock: a record outlives the session that wrote
-      it, and FYLO has no trusted clock (as for the audit's `at`).
+      it, and BYCKR has no trusted clock (as for the audit's `at`).
       `notAfter` bounds how long one in-memory key signs, not how long its
       records count.
     - **Revocation** is the identity's, never a session's: revoking the

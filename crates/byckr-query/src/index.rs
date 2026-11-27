@@ -297,12 +297,12 @@ fn stringify_stored_value(value: &Value) -> String {
         Value::Number(value) => {
             let value = value
                 .as_f64()
-                .expect("serde_json numbers accepted by FYLO are finite");
+                .expect("serde_json numbers accepted by BYCKR are finite");
             ryu_js::Buffer::new().format_finite(value).to_owned()
         }
         Value::String(value) => value.clone(),
         Value::Array(_) | Value::Object(_) => {
-            unreachable!("validated FYLO arrays contain scalar values only")
+            unreachable!("validated BYCKR arrays contain scalar values only")
         }
     };
     value.replace('/', "%2F")

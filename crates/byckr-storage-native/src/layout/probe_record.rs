@@ -25,8 +25,8 @@ impl ProbeRecord {
     }
 
     /// The same result with the largest single extended attribute value the
-    /// probe could store (FYLO-L1-4b). The probe chooses attributes only when
-    /// this holds FYLO's largest metadata value; otherwise the whole app
+    /// probe could store (BYCKR-L1-4b). The probe chooses attributes only when
+    /// this holds BYCKR's largest metadata value; otherwise the whole app
     /// folder keeps metadata in sidecar files.
     #[must_use]
     pub const fn with_max_attribute_bytes(mut self, bytes: Option<u32>) -> Self {
@@ -48,7 +48,7 @@ impl ProbeRecord {
 
     /// The largest single extended attribute value the probe could store,
     /// measured up to 64 KiB; `None` when extended attributes did not work
-    /// at all, or for an app folder made before FYLO-L1-4b.
+    /// at all, or for an app folder made before BYCKR-L1-4b.
     #[must_use]
     pub const fn max_attribute_bytes(self) -> Option<u32> {
         self.max_attribute_bytes

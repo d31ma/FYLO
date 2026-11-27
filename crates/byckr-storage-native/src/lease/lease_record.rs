@@ -138,7 +138,7 @@ impl LeaseRecord {
 
     pub(super) fn owner_message(&self, canonical: &Path) -> String {
         format!(
-            "FYLO root already has a live exclusive owner (pid {} on {}): {}",
+            "BYCKR root already has a live exclusive owner (pid {} on {}): {}",
             self.pid,
             self.host,
             canonical.to_string_lossy()

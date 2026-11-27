@@ -1,4 +1,4 @@
-# FYLO Architecture Decision Records
+# BYCKR Architecture Decision Records
 
 Architecture Decision Records capture decisions that are expensive, risky, or
 incompatible to reverse. They explain why a decision was made, the constraints
@@ -33,14 +33,14 @@ ADR.
 | [0009](0009-embedded-serverless-queue.md)                   | Accepted | Embedded durable serverless queue           |
 | [0010](0010-explicit-efs-metadata-profile.md)               | Accepted (isolated candidate; qualification pending) | Explicit EFS metadata profile `efs-sidecar-v1` |
 | [0011](0011-serverless-invocation-contract.md)              | Accepted (isolated source; no deployment authorized) | Bounded serverless invocation (`InvocationRuntime`) |
-| [0012](0012-opt-in-network-server.md)                       | Withdrawn | Opt-in network server for one root (removed; FYLO is embedded) |
+| [0012](0012-opt-in-network-server.md)                       | Withdrawn | Opt-in network server for one root (removed; BYCKR is embedded) |
 | [0013](0013-collection-write-ahead-log.md)                  | Accepted | Collection write-ahead log with group commit |
 | [0014](0014-in-memory-hot-set.md)                           | Accepted | In-memory hot set for exclusive embedded sessions |
 | [0015](0015-append-only-document-segments.md)               | Accepted | Append-only document segments               |
 | [0016](0016-single-file-vdbx-database.md)                   | Accepted | Single-file `.vdbx` databases               |
 | [0017](0017-schemas-in-the-database.md)                     | Accepted | Schemas in the database, validated at the commit |
 | [0018](0018-json-only-schema-migrations.md)                 | Accepted | JSON-only schema migrations                 |
-| [0019](0019-fylo-through-tursos-engine.md)                  | Sections 1, 5 accepted (ADR 0026); 2-4, 6 superseded by 0035 | FYLO through Turso's engine: the `fylo` crate and `fylo link` |
+| [0019](0019-fylo-through-tursos-engine.md)                  | Sections 1, 5 accepted (ADR 0026); 2-4, 6 superseded by 0035 | BYCKR through Turso's engine: the `fylo` crate and `fylo link` |
 | [0020](0020-turso-engine-and-binding-builds.md)             | Superseded by 0035 | Turso's engine and binding builds under the unsafe and dependency policy |
 | [0021](0021-application-identities-and-signed-policies.md)  | Proposed | Application identities and signed policies (deny by default) |
 | [0022](0022-indexeddb-host-backend-for-vdbx.md)            | Accepted | IndexedDB host backend for `.vdbx` working copies |
@@ -56,7 +56,7 @@ ADR.
 | [0032](0032-primary-root-on-a-data-disk.md)                    | Accepted | A server root lives on a data disk, not the system disk (`ESYSTEMDISK`, opt-out, app mode) |
 | [0033](0033-primary-layout-on-a-data-drive.md)                 | Accepted (not yet built; ships in the next release) | Primary layout `<drive>/<app>/<namespace>/<collection>/<TTID>.json`: namespaces, one lease per namespace, any file system |
 | [0034](0034-large-objects-in-vdbx.md)                          | Accepted (not yet built; ships with ADR 0033) | Large objects (images, videos, files) in `.vdbx`: extent runs, ~1 MiB chunks, range reads |
-| [0035](0035-fylos-own-sdk-in-the-store-shape.md)              | Accepted (not yet built; ships in the next release) | FYLO's own SDK in TACHYON's `Store` shape: machine protocol v2, `api/store/v1`, `api/sql/v1`, one-collection transactions, no Turso |
+| [0035](0035-fylos-own-sdk-in-the-store-shape.md)              | Accepted (not yet built; ships in the next release) | BYCKR's own SDK in TACHYON's `Store` shape: machine protocol v2, `api/store/v1`, `api/sql/v1`, one-collection transactions, no Turso |
 
 ## When another ADR is required
 

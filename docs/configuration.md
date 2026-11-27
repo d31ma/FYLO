@@ -1,6 +1,6 @@
 # Native configuration
 
-FYLO reads native runtime settings from `application.json`, under the `fylo`
+BYCKR reads native runtime settings from `application.json`, under the `fylo`
 key. Environment variables no longer configure the engine implicitly. Keep
 non-secret settings in JSON and secrets in a secret manager or a private `.env`
 file beside that JSON file.
@@ -12,8 +12,8 @@ file beside that JSON file.
         "schema": "./schemas",
         "strict": true,
         "shard": { "width": 1 },
-        "encryption": { "key": "${FYLO_ENCRYPTION_KEY}" },
-        "cipher": { "salt": "${FYLO_CIPHER_SALT}" }
+        "encryption": { "key": "${YCKR_ENCRYPTION_KEY}" },
+        "cipher": { "salt": "${YCKR_CIPHER_SALT}" }
     }
 }
 ```
@@ -44,7 +44,7 @@ how hard that log is flushed:
 { "fylo": { "durability": "power-loss" } }
 ```
 
-Before downgrading FYLO, stop every writer or run `fylo recover` on each
+Before downgrading BYCKR, stop every writer or run `fylo recover` on each
 collection: a release older than the write-ahead log refuses a collection
 whose log has not been checkpointed, rather than ignore its writes.
 
@@ -68,7 +68,7 @@ The setting never changes an existing collection. `createCollection` also
 takes `"layout"` for one collection, and `fylo layout <collection> --to
 segments|files` moves an existing one, after checking the copy against every
 document. Raw-file collections, the EFS profile and roots with version control
-keep the file layout. A segment collection enforces `.as()` access in FYLO
+keep the file layout. A segment collection enforces `.as()` access in BYCKR
 but gives records no operating-system owner of their own, so a collection
 whose records name other owners needs `--allow-engine-only-access` to move.
 
@@ -96,7 +96,7 @@ database and off by default. `fylo.encryption.file` asks for it:
 {
     "fylo": {
         "root": "./app.vdbx",
-        "encryption": { "key": "${FYLO_ENCRYPTION_KEY}", "file": true }
+        "encryption": { "key": "${YCKR_ENCRYPTION_KEY}", "file": true }
     }
 }
 ```
@@ -117,7 +117,7 @@ A different key fails with `EKEY` too. `fylo verify app.vdbx` checks the
 file without the key, and `fylo inspect app.vdbx` reports `encrypted` and
 `locked`. Losing the key loses the documents: there is no recovery.
 
-`fylo rekey app.vdbx --new-key '${FYLO_NEW_ENCRYPTION_KEY}'` rewrites an
+`fylo rekey app.vdbx --new-key '${YCKR_NEW_ENCRYPTION_KEY}'` rewrites an
 encrypted database under another key. `--new-key` names the new secret the
 way `fylo.encryption.key` names the current one, from the environment or a
 `.env` file beside the configuration, and a literal key is refused; the
@@ -150,15 +150,15 @@ the JSON file.
 
 ```dotenv
 # .env beside application.json; real values must not be committed.
-FYLO_ENCRYPTION_KEY=replace-with-a-secret-of-at-least-32-characters
-FYLO_CIPHER_SALT=replace-with-a-secret-salt
+YCKR_ENCRYPTION_KEY=replace-with-a-secret-of-at-least-32-characters
+YCKR_CIPHER_SALT=replace-with-a-secret-salt
 ```
 
-Use an exact, whole-value `${NAME}` string to reference a secret. FYLO resolves
+Use an exact, whole-value `${NAME}` string to reference a secret. BYCKR resolves
 only explicitly referenced names, first from the process's inherited environment,
 then from the `.env` beside the selected configuration. The variable name does
-not need a `FYLO_` prefix. Unreferenced variables never become engine settings.
-For example, setting `FYLO_ROOT` in a shell has no effect on `fylo.root`.
+not need a `YCKR_` prefix. Unreferenced variables never become engine settings.
+For example, setting `YCKR_ROOT` in a shell has no effect on `fylo.root`.
 
 References are not shell expressions: no commands, recursive expansion, or
 embedded interpolation is performed. A missing reference fails with a sanitized
@@ -174,25 +174,25 @@ input: never accept them from requests, uploads, or tenant-controlled data.
 
 ## Migration from environment configuration
 
-Remove the `FYLO_` prefix, lowercase each word, and turn each underscore into a
+Remove the `YCKR_` prefix, lowercase each word, and turn each underscore into a
 nested key:
 
 | Old environment setting | New JSON location         | JSON type               |
 | ----------------------- | ------------------------- | ----------------------- |
-| `FYLO_ROOT`             | `fylo.root`               | string path             |
-| `FYLO_SCHEMA`           | `fylo.schema`             | string path             |
-| `FYLO_STRICT`           | `fylo.strict`             | boolean                 |
-| `FYLO_SHARD_WIDTH`      | `fylo.shard.width`        | integer, 1-4            |
-| `FYLO_CHEX_BINARY`      | removed; CHEX is built in | —                       |
-| `FYLO_ENCRYPTION_KEY`   | `fylo.encryption.key`     | string secret reference |
-| `FYLO_CIPHER_SALT`      | `fylo.cipher.salt`        | string secret reference |
+| `YCKR_ROOT`             | `fylo.root`               | string path             |
+| `YCKR_SCHEMA`           | `fylo.schema`             | string path             |
+| `YCKR_STRICT`           | `fylo.strict`             | boolean                 |
+| `YCKR_SHARD_WIDTH`      | `fylo.shard.width`        | integer, 1-4            |
+| `YCKR_CHEX_BINARY`      | removed; CHEX is built in | —                       |
+| `YCKR_ENCRYPTION_KEY`   | `fylo.encryption.key`     | string secret reference |
+| `YCKR_CIPHER_SALT`      | `fylo.cipher.salt`        | string secret reference |
 
 `fylo.schema` may also be an object, `{ "path": "./schemas", "autoPush": true }`.
 `path` is the folder, and `autoPush` (default `false`) pushes the folder's new
 versions into the root's schema registry whenever a write opens the root, as
 `fylo schema push` would (ADR 0017 section 3).
 
-CHEX schema validation now runs inside FYLO, so `fylo.chex.binary` no longer
+CHEX schema validation now runs inside BYCKR, so `fylo.chex.binary` no longer
 exists. A configuration that still sets `fylo.chex` fails with a message asking
 you to remove it.
 
@@ -201,7 +201,7 @@ paths. Separate components such as an application and its embedded dependency
 can select separate JSON files and adjacent secret files without changing global
 environment state. See [native SDK examples](../clients/README.md).
 
-Installer, build, and release-tool variables such as `FYLO_VERIFY_PROVENANCE`
+Installer, build, and release-tool variables such as `YCKR_VERIFY_PROVENANCE`
 are not engine configuration and are unchanged by this migration.
 
 ## Application identities
@@ -219,14 +219,14 @@ fylo identity show keychain:com.example.app
 | Reference | Private key |
 | --- | --- |
 | `file:<path>` | PKCS#8 PEM file, created `0600`. On Unix a file another user owns, or that group or other users can read or write, is refused (`EIDENTITY_EXPOSED`) |
-| `keychain:<label>` | macOS keychain item. `FYLO_KEYCHAIN=<path>` uses that keychain file instead of the default keychain, for CI and tests |
-| `enclave:<label>` | macOS Secure Enclave key, never exported. Its token blob, usable only by this Mac's Secure Enclave, is a keychain item (`FYLO_KEYCHAIN` applies). Each signature takes milliseconds |
+| `keychain:<label>` | macOS keychain item. `YCKR_KEYCHAIN=<path>` uses that keychain file instead of the default keychain, for CI and tests |
+| `enclave:<label>` | macOS Secure Enclave key, never exported. Its token blob, usable only by this Mac's Secure Enclave, is a keychain item (`YCKR_KEYCHAIN` applies). Each signature takes milliseconds |
 | `creds:<name>` | Linux `systemd-creds` credential, read from `$CREDENTIALS_DIRECTORY` |
 | `cng:<name>` | Windows CNG software key storage provider item, per user (DPAPI) |
 | `tpm:<name>` | Windows TPM 2.0 key (Microsoft Platform Crypto Provider), never exported. Without a TPM, `EIDENTITY_UNSUPPORTED` |
 | `webcrypto:<name>` | Browser only: two non-extractable `CryptoKey`s in the origin's IndexedDB, made by `createWebCryptoIdentity` |
 
-`FYLO_KEYCHAIN` is read by the keychain store itself, like the installer
+`YCKR_KEYCHAIN` is read by the keychain store itself, like the installer
 variables above, and is not engine configuration.
 
 ### Root lease timing
@@ -235,12 +235,12 @@ A process that owns a root proves it is alive by writing its lease record
 every heartbeat. A process that finds another owner's record waits for the
 takeover time, on its own clock, and takes the root only if the record did
 not change (ADR 0033 section 4). The lease reads two process variables, like
-`FYLO_KEYCHAIN` above; they are not engine configuration:
+`YCKR_KEYCHAIN` above; they are not engine configuration:
 
 | Variable | Default | Meaning |
 | -------- | ------- | ------- |
-| `FYLO_LEASE_HEARTBEAT_SECONDS` | `5` | Seconds between heartbeats; decimals allowed, at least 0.01 |
-| `FYLO_LEASE_TAKEOVER_SECONDS` | `20` | Seconds a taker waits for a heartbeat; must be longer than the heartbeat |
+| `YCKR_LEASE_HEARTBEAT_SECONDS` | `5` | Seconds between heartbeats; decimals allowed, at least 0.01 |
+| `YCKR_LEASE_TAKEOVER_SECONDS` | `20` | Seconds a taker waits for a heartbeat; must be longer than the heartbeat |
 
 A taker always waits the longer of its own takeover time and the one the
 owner recorded. A clean stop needs no wait. After a crash, a process on the
@@ -263,10 +263,10 @@ Windows can lose that protection for a session that never gave a password.
 On a Windows 11 test machine, an account with no password, signed in over
 SSH with a public key, could use its `cng:` keys until a second account
 logged on (here a scheduled task running as that account). From then on
-the owner's session no longer saw its own keys, and FYLO reported
+the owner's session no longer saw its own keys, and BYCKR reported
 `EIDENTITY_NOT_FOUND`, although the key file was still in
 `%APPDATA%\Microsoft\Crypto\Keys`. After a reboot the keys worked again.
-This is Windows' DPAPI behaviour, not FYLO's.
+This is Windows' DPAPI behaviour, not BYCKR's.
 
 - Do not run `fylo identity create` again for that name. The new key would
   replace the existing one, and its identifier, which databases grant,
@@ -302,8 +302,8 @@ fylo access revoke app.vdbx --rule app-collection:orders \
 
 | Setting | Environment | Flag | Meaning |
 | --- | --- | --- | --- |
-| `fylo.identity` | `FYLO_IDENTITY` | `--identity <reference>` | The identity a protected database opens with |
-| `fylo.trustAnchor` | `FYLO_TRUST_ANCHOR` | `--trust-anchor <fid1:...>` | The admin that must have created it |
+| `fylo.identity` | `YCKR_IDENTITY` | `--identity <reference>` | The identity a protected database opens with |
+| `fylo.trustAnchor` | `YCKR_TRUST_ANCHOR` | `--trust-anchor <fid1:...>` | The admin that must have created it |
 | | | `--trust-on-first-use` | Trust whoever created it, with a warning |
 
 A flag wins over the environment, which wins over `application.json`. These

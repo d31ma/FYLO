@@ -1,4 +1,4 @@
-# FYLO Portable Query Contract v1
+# BYCKR Portable Query Contract v1
 
 The portable scanner consumes a validated, sorted, newline-delimited
 `fylo.local-fs.index.v1` snapshot and an array of prefix/range constraints. It
@@ -23,7 +23,7 @@ creation/update ranges, stable input order, and the historical zero-limit
 behavior. Projection, grouping, joins, and deleted-document timestamps remain
 separate higher-layer contracts.
 
-`fylo-query::prepare_sql` parses and plans the existing FYLO SQL subset without
+`fylo-query::prepare_sql` parses and plans the existing BYCKR SQL subset without
 executing mutations. Its compatibility AST and `EXPLAIN` access paths are
 checked against the JavaScript parser and planner using
 `tests/fixtures/rust-sql-v1.json`.

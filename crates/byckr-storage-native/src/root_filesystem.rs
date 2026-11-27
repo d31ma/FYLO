@@ -106,7 +106,7 @@ impl RootFilesystem {
 
     /// The mount point the root lives on: its parent folder's (ADR 0033
     /// section 13, `storage.volume`). `None` for a filesystem described by
-    /// [`Self::of`], in the browser, or when FYLO cannot tell.
+    /// [`Self::of`], in the browser, or when BYCKR cannot tell.
     #[must_use]
     pub fn volume(&self) -> Option<&Path> {
         self.volume.as_deref()
@@ -137,8 +137,8 @@ impl RootFilesystem {
         Err(NativeStorageError::new(
             NativeStorageErrorCode::RemoteRoot,
             format!(
-                "FYLO root {} is on a network file system ({}). File locks there do not stop \
-                 another machine from writing the same root, so FYLO does not use it. Use a \
+                "BYCKR root {} is on a network file system ({}). File locks there do not stop \
+                 another machine from writing the same root, so BYCKR does not use it. Use a \
                  disk attached to this machine.",
                 path.display(),
                 self.name

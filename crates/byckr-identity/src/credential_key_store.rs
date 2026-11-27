@@ -58,7 +58,7 @@ impl CredentialKeyStore {
             .map(|_| ())
             .ok_or_else(|| {
                 IdentityError::AlreadyExists(format!(
-                    "{} already exists at {}; FYLO never replaces a key",
+                    "{} already exists at {}; BYCKR never replaces a key",
                     self.reference(),
                     path.display()
                 ))

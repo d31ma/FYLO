@@ -42,7 +42,7 @@ impl fmt::Display for DatabaseAccessError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoIdentity => formatter.write_str(
-                "the .vdbx database is protected: open it with an identity (--identity, fylo.identity or FYLO_IDENTITY)",
+                "the .vdbx database is protected: open it with an identity (--identity, fylo.identity or YCKR_IDENTITY)",
             ),
             Self::Policy(message) | Self::Denied(message) | Self::Damaged(message) => {
                 formatter.write_str(message)

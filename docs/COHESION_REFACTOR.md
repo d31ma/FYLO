@@ -148,7 +148,7 @@ restored the original JSON and then audited 163 string nodes and parsed all 25
 raw JSON literals across its ten files. Production parsing was unchanged.
 
 The user explicitly requested handoff with full verification pending after the
-rerun waited behind another project's active workspace suite. FYLO's queued
+rerun waited behind another project's active workspace suite. BYCKR's queued
 shell was terminated before it acquired the shared lock or started the rerun;
 the other project and its lock were left untouched. No verification process
 from this pass remains queued. The corrected native suite, strict workspace
@@ -198,7 +198,7 @@ then passed. All 15 CLI configuration tests passed in the workspace run.
 
 The full browser suite first exposed two FSA interop tests that hardcoded
 `target/debug` despite ANNEX artifact routing. They now use `CargoArtifacts`
-while preserving `FYLO_BINARY` overrides. After building the current debug
+while preserving `YCKR_BINARY` overrides. After building the current debug
 executable, all 126 browser tests / 391 assertions passed. These results close
 the previous verification-pending handoff; they do not certify future edits.
 

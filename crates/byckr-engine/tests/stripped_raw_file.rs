@@ -20,7 +20,7 @@ impl Bucket {
     const KEPT: &'static str = "4VRNF52J031";
     const STRIPPED: &'static str = "4VRNF52J032";
     const ADDED: &'static str = "4VRNF52J033";
-    const CHILD: &'static str = "FYLO_STRIPPED_RAW_FILE_CHILD";
+    const CHILD: &'static str = "YCKR_STRIPPED_RAW_FILE_CHILD";
     const STUCK_TRANSACTION: &'static str = "rust-tx-77785-18e6071482559320-3";
 
     fn create() -> Self {
@@ -167,8 +167,8 @@ impl Bucket {
                 "--test-threads=1",
             ])
             .env(Self::CHILD, &self.0)
-            .env("FYLO_RUST_FAILPOINT", failpoint)
-            .env("FYLO_RUST_FAILPOINT_ACTION", "enospc")
+            .env("YCKR_RUST_FAILPOINT", failpoint)
+            .env("YCKR_RUST_FAILPOINT_ACTION", "enospc")
             .status()
             .unwrap();
         assert!(status.success());

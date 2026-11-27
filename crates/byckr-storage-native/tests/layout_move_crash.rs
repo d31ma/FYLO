@@ -10,8 +10,8 @@ use std::process::Command;
 use byckr_storage_native::{CollectionKind, CollectionLayout, NativeRoot, NativeWriteRoot};
 use serde_json::{Value, json};
 
-const CHILD: &str = "FYLO_LAYOUT_CRASH_CHILD";
-const ROOT: &str = "FYLO_LAYOUT_CRASH_ROOT";
+const CHILD: &str = "YCKR_LAYOUT_CRASH_CHILD";
+const ROOT: &str = "YCKR_LAYOUT_CRASH_ROOT";
 const ITEMS: &str = "items";
 const FAILPOINTS: [&str; 3] = [
     "after-layout-staging",
@@ -124,8 +124,8 @@ fn run_crash_child(root: &Path, to: &str, failpoint: &str) {
         .args(["--exact", "crash_child", "--nocapture", "--test-threads=1"])
         .env(CHILD, to)
         .env(ROOT, root)
-        .env("FYLO_RUST_FAILPOINT", failpoint)
-        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .env("YCKR_RUST_FAILPOINT", failpoint)
+        .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
         .status()
         .unwrap();
     assert!(

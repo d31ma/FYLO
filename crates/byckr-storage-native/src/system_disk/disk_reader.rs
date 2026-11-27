@@ -5,7 +5,7 @@ use super::app_folders::{AppFolderInputs, AppPlatform};
 use super::disk_description::DiskDescription;
 use super::disk_source::DiskSource;
 
-/// The real answers to [`DiskSource`] on the OS FYLO runs on (ADR 0032
+/// The real answers to [`DiskSource`] on the OS BYCKR runs on (ADR 0032
 /// section 2): macOS through `statfs` and `hdiutil`, Linux through
 /// `/proc/self/mountinfo` and `/sys`, Windows through its volume calls.
 /// Other operating systems cannot tell, so a root there needs the opt-out.
@@ -102,7 +102,7 @@ impl DiskReader {
         windows
     )))]
     fn describe_existing(_path: &Path) -> Result<DiskDescription, String> {
-        Err("FYLO cannot tell disks apart on this operating system".to_owned())
+        Err("BYCKR cannot tell disks apart on this operating system".to_owned())
     }
 
     #[cfg(target_os = "macos")]
@@ -130,7 +130,7 @@ impl DiskReader {
         windows
     )))]
     fn mount_point_of(_path: &Path) -> Result<PathBuf, String> {
-        Err("FYLO cannot read mount points on this operating system".to_owned())
+        Err("BYCKR cannot read mount points on this operating system".to_owned())
     }
 
     #[cfg(windows)]

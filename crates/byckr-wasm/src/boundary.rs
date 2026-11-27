@@ -306,7 +306,7 @@ fn install() -> Result<(), &'static str> {
     // Without stdio a panic reaches the host as a bare `unreachable`. Routing
     // the message through the table turns that into something diagnosable.
     std::panic::set_hook(Box::new(|info| {
-        byckr_vfs::host_log(&format!("FYLO panic: {info}"));
+        byckr_vfs::host_log(&format!("BYCKR panic: {info}"));
     }));
     match install_host(HostVfs {
         abi_version: HOST_ABI_VERSION,

@@ -18,7 +18,7 @@ use byckr_storage_native::{
 use serde_json::json;
 
 const IDENTIFIER: &str = "4VRNF52JPCO";
-const NO_ATTRIBUTE_DIRECTORY: &str = "FYLO_TEST_NO_XATTR_DIR";
+const NO_ATTRIBUTE_DIRECTORY: &str = "YCKR_TEST_NO_XATTR_DIR";
 const PROBE_PREFIX: &str = ".fylo-xattr-probe-";
 const UNSUPPORTED: &str = "filesystem does not support extended attributes";
 const REMEDY: &str = "use a local filesystem with extended attributes, the efs-sidecar-v1 filesystem profile, or a .vdbx database";
@@ -159,7 +159,7 @@ fn a_read_only_open_never_probes() {
 }
 
 #[test]
-#[ignore = "needs FYLO_TEST_NO_XATTR_DIR on a filesystem without extended attributes"]
+#[ignore = "needs YCKR_TEST_NO_XATTR_DIR on a filesystem without extended attributes"]
 fn a_bucket_is_refused_on_a_filesystem_without_attributes() {
     let root = Directory::without_attributes();
     let writer = NativeWriteRoot::open(&root.0).unwrap();
@@ -181,7 +181,7 @@ fn a_bucket_is_refused_on_a_filesystem_without_attributes() {
 }
 
 #[test]
-#[ignore = "needs FYLO_TEST_NO_XATTR_DIR on a filesystem without extended attributes"]
+#[ignore = "needs YCKR_TEST_NO_XATTR_DIR on a filesystem without extended attributes"]
 fn documents_work_on_a_filesystem_without_attributes() {
     let root = Directory::without_attributes();
     let writer = NativeWriteRoot::open(&root.0).unwrap();
@@ -203,7 +203,7 @@ fn documents_work_on_a_filesystem_without_attributes() {
 }
 
 #[test]
-#[ignore = "needs FYLO_TEST_NO_XATTR_DIR on a filesystem without extended attributes"]
+#[ignore = "needs YCKR_TEST_NO_XATTR_DIR on a filesystem without extended attributes"]
 fn document_metadata_without_attributes_names_the_call_and_the_file() {
     let root = Directory::without_attributes();
     let writer = NativeWriteRoot::open(&root.0).unwrap();

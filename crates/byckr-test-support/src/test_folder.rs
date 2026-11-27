@@ -1,19 +1,19 @@
 use std::path::PathBuf;
 
-/// The folder FYLO's tests create their roots in: `FYLO_TEST_ROOT` when it
+/// The folder BYCKR's tests create their roots in: `YCKR_TEST_ROOT` when it
 /// is set (the macOS test image on HANGAR, made by
 /// `scripts/ci/test-image.sh run`), else the OS temporary folder.
 pub struct TestFolder;
 
 impl TestFolder {
     /// The environment variable that names the folder.
-    pub const VARIABLE: &'static str = "FYLO_TEST_ROOT";
+    pub const VARIABLE: &'static str = "YCKR_TEST_ROOT";
 
     /// The folder to create test roots in.
     ///
     /// # Panics
     ///
-    /// Panics when `FYLO_TEST_ROOT` names something that is not a folder, so
+    /// Panics when `YCKR_TEST_ROOT` names something that is not a folder, so
     /// a test never falls back to the OS temporary folder by mistake.
     #[must_use]
     pub fn path() -> PathBuf {
@@ -29,7 +29,7 @@ impl TestFolder {
     fn existing(folder: PathBuf) -> PathBuf {
         assert!(
             folder.is_dir(),
-            "FYLO test image not attached: {} names {}, which is not a folder; run tests through scripts/ci/test-image.sh run",
+            "BYCKR test image not attached: {} names {}, which is not a folder; run tests through scripts/ci/test-image.sh run",
             Self::VARIABLE,
             folder.display()
         );

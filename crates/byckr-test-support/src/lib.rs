@@ -1,4 +1,4 @@
-//! Test-only qualification helpers shared by FYLO's Rust crates.
+//! Test-only qualification helpers shared by BYCKR's Rust crates.
 
 #![forbid(unsafe_code)]
 
@@ -60,7 +60,7 @@ pub fn incompressible_text(seed: u64, chars: usize) -> String {
 ///
 /// Every atomic condition must have a pair of cases where only that condition
 /// changes and the overall decision changes with it. Duplicate row names or
-/// condition vectors fail closed. When `FYLO_MCDC_REPORT_DIR` is set, the
+/// condition vectors fail closed. When `YCKR_MCDC_REPORT_DIR` is set, the
 /// verified vectors and selected independence pairs are emitted as JSON.
 ///
 /// # Panics
@@ -125,7 +125,7 @@ pub fn assert_unique_cause_mcdc<const N: usize>(
         })
         .collect::<Vec<_>>();
 
-    if let Some(directory) = std::env::var_os("FYLO_MCDC_REPORT_DIR") {
+    if let Some(directory) = std::env::var_os("YCKR_MCDC_REPORT_DIR") {
         write_report(
             Path::new(&directory),
             decision_id,

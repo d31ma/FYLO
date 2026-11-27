@@ -244,13 +244,13 @@ impl Settings {
             .ok_or_else(|| "fylo.layout must be \"files\" or \"segments\"".into())
     }
 
-    /// `fylo.chex.binary` selected the external validator FYLO used to spawn.
+    /// `fylo.chex.binary` selected the external validator BYCKR used to spawn.
     /// CHEX now runs in-process, so the setting has nothing left to choose;
     /// say so rather than reporting a generic unknown key.
     fn reject_removed_chex(settings: &Map<String, Value>) -> Result<(), String> {
         if settings.contains_key(Self::CHEX_KEY) {
             return Err(
-                "fylo.chex is no longer supported; CHEX schema validation is built into FYLO, so remove the setting".into(),
+                "fylo.chex is no longer supported; CHEX schema validation is built into BYCKR, so remove the setting".into(),
             );
         }
         Ok(())

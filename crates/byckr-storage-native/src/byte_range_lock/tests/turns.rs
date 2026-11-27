@@ -10,9 +10,9 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const ROLE: &str = "FYLO_BYTE_LOCK_CHILD_ROLE";
-const DATABASE: &str = "FYLO_BYTE_LOCK_CHILD_DATABASE";
-const NAME: &str = "FYLO_BYTE_LOCK_CHILD_NAME";
+const ROLE: &str = "YCKR_BYTE_LOCK_CHILD_ROLE";
+const DATABASE: &str = "YCKR_BYTE_LOCK_CHILD_DATABASE";
+const NAME: &str = "YCKR_BYTE_LOCK_CHILD_NAME";
 const CHILD_TEST: &str = "byte_range_lock::tests::turns::a_child_process";
 const WAIT: Duration = Duration::from_mins(1);
 const WAITER_FIRST: &str = "waiter first";
@@ -110,7 +110,7 @@ fn now_nanos() -> u128 {
 ///   thread had it first.
 /// - `loop`: once the parent says `go`, take the byte [`ROUNDS`] times as a
 ///   writer putting documents one after another would.
-/// - `legacy`: the same, waiting as FYLO did before turns: trying the byte
+/// - `legacy`: the same, waiting as BYCKR did before turns: trying the byte
 ///   alone until it is free.
 /// - `queue`: wait for the byte, which the parent holds, until stopped.
 #[test]

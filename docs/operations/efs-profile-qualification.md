@@ -50,7 +50,7 @@ the historical local pass applies only to its pinned older checkpoint.
 Unsupported-lock refusal needs an actual
 controlled filesystem fixture; supported local contention is not that test.
 
-CHEX schema validation runs in-process, so FYLO starts no validator process
+CHEX schema validation runs in-process, so BYCKR starts no validator process
 and there are no validator children or grandchildren to tear down. The local
 fixture now checks in-process validation, machine exit, and stdio closure.
 Keep the native supervisor's zero-survivor check throughout qualification.
@@ -64,7 +64,7 @@ validator lifetime qualification.
 ## Actual EFS gate
 
 A separately authorized disposable environment is required. Lambda can mount
-EFS; this alone does not establish FYLO compatibility.
+EFS; this alone does not establish BYCKR compatibility.
 [AWS file-system configuration](https://docs.aws.amazon.com/lambda/latest/dg/configuration-filesystem.html).
 
 Retain actual region, filesystem/access-point identity, mount/client/kernel

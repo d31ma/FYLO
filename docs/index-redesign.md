@@ -26,7 +26,7 @@ cap only moves the wall: memory, and the cost of each fold, grow with the
 index.
 
 The goal is an index whose reads and writes cost what they touch, not what
-the collection holds, while keeping FYLO's rules: documents are the truth and
+the collection holds, while keeping BYCKR's rules: documents are the truth and
 the index can always be rebuilt from them; writes are synced; no server;
 the browser engine (OPFS / File System Access) reads the same files.
 
@@ -45,7 +45,7 @@ past the page size, and a new directory is published with one atomic rename.
 - **Crash safety:** copy-on-write pages plus one directory rename; an old
   page is deleted once no directory names it.
 - **Costs:** a new on-disk format the browser engine must learn; many small
-  files, which network and sync filesystems handle badly (FYLO already
+  files, which network and sync filesystems handle badly (BYCKR already
   refuses those for a live root); the directory itself grows with the index
   (16,000 entries at 1 GiB of keys).
 
@@ -106,7 +106,7 @@ two-level LSM tree, and C generalises it with the same crash rule (write
 immutable files, publish one rename). B's streaming merge and streaming
 validation are exactly C's building blocks, so B is not thrown away.
 
-A is not recommended: per-page files multiply small files, which FYLO's own
+A is not recommended: per-page files multiply small files, which BYCKR's own
 storage rules avoid, and copy-on-write pages buy little over C's runs for an
 append-mostly workload.
 

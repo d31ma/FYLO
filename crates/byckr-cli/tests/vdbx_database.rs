@@ -30,14 +30,14 @@ impl Fixture {
     fn run_keyed(&self, secret: &str, arguments: &[&str]) -> Output {
         fs::write(
             self.0.join("keyed.json"),
-            r#"{"fylo":{"encryption":{"key":"${FYLO_CLI_TEST_DATABASE_KEY}","file":true}}}"#,
+            r#"{"fylo":{"encryption":{"key":"${YCKR_CLI_TEST_DATABASE_KEY}","file":true}}}"#,
         )
         .unwrap();
         Command::new(BINARY)
             .current_dir(&self.0)
             .args(arguments)
             .args(["--config", "keyed.json"])
-            .env("FYLO_CLI_TEST_DATABASE_KEY", secret)
+            .env("YCKR_CLI_TEST_DATABASE_KEY", secret)
             .output()
             .unwrap()
     }
@@ -45,12 +45,12 @@ impl Fixture {
 
 impl Fixture {
     /// Run `fylo rekey` on `app.vdbx` opened with `old`, the key
-    /// `keyed.json` names, with `new` as the secret `${FYLO_CLI_TEST_NEW_KEY}`
+    /// `keyed.json` names, with `new` as the secret `${YCKR_CLI_TEST_NEW_KEY}`
     /// names, in the environment.
     fn rekey(&self, old: &str, new: &str, arguments: &[&str]) -> Output {
         fs::write(
             self.0.join("keyed.json"),
-            r#"{"fylo":{"encryption":{"key":"${FYLO_CLI_TEST_DATABASE_KEY}","file":true}}}"#,
+            r#"{"fylo":{"encryption":{"key":"${YCKR_CLI_TEST_DATABASE_KEY}","file":true}}}"#,
         )
         .unwrap();
         Command::new(BINARY)
@@ -58,8 +58,8 @@ impl Fixture {
             .args(["rekey", "app.vdbx"])
             .args(arguments)
             .args(["--config", "keyed.json"])
-            .env("FYLO_CLI_TEST_DATABASE_KEY", old)
-            .env("FYLO_CLI_TEST_NEW_KEY", new)
+            .env("YCKR_CLI_TEST_DATABASE_KEY", old)
+            .env("YCKR_CLI_TEST_NEW_KEY", new)
             .output()
             .unwrap()
     }
@@ -270,8 +270,8 @@ fn a_pack_stopped_after_staging_leaves_no_database() {
     let stopped = Command::new(BINARY)
         .current_dir(&fixture.0)
         .args(["pack", "data", "--out", "app.vdbx"])
-        .env("FYLO_RUST_FAILPOINT", "after-pack-staging")
-        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .env("YCKR_RUST_FAILPOINT", "after-pack-staging")
+        .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
         .output()
         .unwrap();
     assert!(!stopped.status.success(), "{stopped:?}");
@@ -284,7 +284,7 @@ fn a_pack_stopped_after_staging_leaves_no_database() {
     let failed = Command::new(BINARY)
         .current_dir(&fixture.0)
         .args(["pack", "data", "--out", "app.vdbx"])
-        .env("FYLO_RUST_FAILPOINT", "after-pack-staging")
+        .env("YCKR_RUST_FAILPOINT", "after-pack-staging")
         .output()
         .unwrap();
     assert!(!failed.status.success(), "{failed:?}");
@@ -313,8 +313,8 @@ fn a_sealed_pack_stopped_after_staging_leaves_no_database() {
     let stopped = Command::new(BINARY)
         .current_dir(&fixture.0)
         .args(["pack", "data", "--out", "app.vdbx", "--sealed"])
-        .env("FYLO_RUST_FAILPOINT", "after-pack-staging")
-        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .env("YCKR_RUST_FAILPOINT", "after-pack-staging")
+        .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
         .output()
         .unwrap();
     assert!(!stopped.status.success(), "{stopped:?}");
@@ -591,7 +591,7 @@ fn rekey_moves_an_encrypted_database_to_the_secret_new_key_names() {
     let pack = fixture.run_keyed(&old, &["pack", "data", "--out", "app.vdbx", "--encrypt"]);
     assert!(pack.status.success(), "{pack:?}");
     let bytes = fs::read(fixture.0.join("app.vdbx")).unwrap();
-    let new_key = ["--new-key", "${FYLO_CLI_TEST_NEW_KEY}"];
+    let new_key = ["--new-key", "${YCKR_CLI_TEST_NEW_KEY}"];
 
     // The new key is a secret reference, never a literal, and the old key
     // must open the database: a wrong one changes nothing.
@@ -603,11 +603,11 @@ fn rekey_moves_an_encrypted_database_to_the_secret_new_key_names() {
     let wrong = fixture.rekey(&generated_secret("wrong"), &new, &new_key);
     assert!(!wrong.status.success(), "{wrong:?}");
     assert!(String::from_utf8_lossy(&wrong.stderr).contains("EKEY"));
-    let keyless = fixture.run(&["rekey", "app.vdbx", "--new-key", "${FYLO_CLI_TEST_NEW_KEY}"]);
+    let keyless = fixture.run(&["rekey", "app.vdbx", "--new-key", "${YCKR_CLI_TEST_NEW_KEY}"]);
     assert!(!keyless.status.success(), "{keyless:?}");
     for usage in [
         &[][..],
-        &["--encrypt", "--new-key", "${FYLO_CLI_TEST_NEW_KEY}"][..],
+        &["--encrypt", "--new-key", "${YCKR_CLI_TEST_NEW_KEY}"][..],
     ] {
         let refused = fixture.rekey(&old, &new, usage);
         assert!(!refused.status.success(), "{refused:?}");
@@ -661,7 +661,7 @@ fn rekey_moves_an_encrypted_database_to_the_secret_new_key_names() {
     let encrypt = fixture.rekey(
         &new,
         &old,
-        &["--encrypt", "--new-key", "${FYLO_CLI_TEST_NEW_KEY}"],
+        &["--encrypt", "--new-key", "${YCKR_CLI_TEST_NEW_KEY}"],
     );
     assert!(encrypt.status.success(), "{encrypt:?}");
     let got = get(&old);
@@ -675,7 +675,7 @@ fn require_byte_range_locks() {
             .expect("probe TMPDIR");
     assert!(
         filesystem.byte_range_locks_qualified(),
-        "this test needs byte-range locks, which FYLO does not trust on TMPDIR's {} filesystem; \
+        "this test needs byte-range locks, which BYCKR does not trust on TMPDIR's {} filesystem; \
          point TMPDIR at a directory on ext4, tmpfs, APFS or NTFS (CONTRIBUTING.md)",
         filesystem.name
     );

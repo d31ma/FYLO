@@ -1,4 +1,4 @@
-//! FYLO engine orchestration.
+//! BYCKR engine orchestration.
 //!
 //! The current vertical slice is deliberately read-only. It combines native
 //! storage discovery with the portable format and query kernels and verifies a
@@ -54,7 +54,7 @@ const MAX_STABLE_READ_ATTEMPTS: usize = 3;
 /// Drifted index keys reported by one verification.
 const MAX_DRIFT_SAMPLE: usize = 12;
 
-/// Read-only native FYLO engine.
+/// Read-only native BYCKR engine.
 #[derive(Clone)]
 pub struct ReadOnlyEngine {
     root: NativeRoot,
@@ -69,7 +69,7 @@ pub struct ReadOnlyEngine {
     counts: CountCache,
 }
 
-/// Native FYLO write engine.
+/// Native BYCKR write engine.
 ///
 /// The engine owns schema-declared field encryption and canonical document
 /// encoding; `fylo-storage-native` owns durability. Encryption is applied
@@ -998,7 +998,7 @@ impl ReadOnlyEngine {
         self
     }
 
-    /// Open an existing FYLO root without modifying it.
+    /// Open an existing BYCKR root without modifying it.
     ///
     /// # Errors
     ///
@@ -2367,7 +2367,7 @@ pub struct ReadDeletedDocument {
 pub struct ReadFile {
     /// Canonical TTID and filesystem timestamps.
     pub metadata: CanonicalMetadata,
-    /// Existing FYLO raw-file manifest fields.
+    /// Existing BYCKR raw-file manifest fields.
     pub file: RawFileManifest,
     /// Developer-defined xattr/ADS metadata.
     pub custom_metadata: Map<String, Value>,
@@ -2387,7 +2387,7 @@ pub struct ReadDeletedFile {
     pub file: ReadFile,
 }
 
-/// Existing FYLO raw-file manifest representation.
+/// Existing BYCKR raw-file manifest representation.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawFileManifest {
@@ -2593,7 +2593,7 @@ impl EngineError {
     fn damaged_document(error: FormatError, path: &std::path::Path) -> Self {
         Self {
             code: EngineErrorCode::Format,
-            message: format!("damaged FYLO document file {}: {error}", path.display()),
+            message: format!("damaged BYCKR document file {}: {error}", path.display()),
             source: Some(Box::new(error)),
         }
     }

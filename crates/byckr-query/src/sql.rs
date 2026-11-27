@@ -5,7 +5,7 @@ use serde_json::{Map, Number, Value};
 
 use crate::{QueryError, QueryErrorCode, QueryLimits};
 
-/// A deterministic plan for FYLO's currently supported SQL subset.
+/// A deterministic plan for BYCKR's currently supported SQL subset.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SqlPlan {
     /// SQL with any `EXPLAIN` prefix removed.
@@ -24,7 +24,7 @@ pub struct SqlPlan {
     pub access: Vec<AccessPath>,
 }
 
-/// SQL operations recognized by FYLO.
+/// SQL operations recognized by BYCKR.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SqlOperation {
     /// Create a collection.

@@ -112,14 +112,14 @@ mod tests {
             first_lsn: 3,
         };
         let bytes = header.encode();
-        assert_eq!(&bytes[0..8], b"FYLOSEG\0");
+        assert_eq!(&bytes[0..8], b"BYCKRSEG\0");
         assert_eq!(LogSegmentHeader::decode(&bytes), Ok(header));
     }
 
     #[test]
     fn rejects_a_short_header() {
         assert_eq!(
-            LogSegmentHeader::decode(b"FYLOLOG\0"),
+            LogSegmentHeader::decode(b"BYCKRLOG\0"),
             Err(LogFormatError::Truncated)
         );
     }

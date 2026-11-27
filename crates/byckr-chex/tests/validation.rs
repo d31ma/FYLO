@@ -559,7 +559,7 @@ fn throws_when_exact_length_field_is_too_long() {
 }
 
 // ---------------------------------------------------------------------------
-// FYLO's `$encrypted` directive (ADR 0017 section 4)
+// BYCKR's `$encrypted` directive (ADR 0017 section 4)
 // ---------------------------------------------------------------------------
 
 #[test]

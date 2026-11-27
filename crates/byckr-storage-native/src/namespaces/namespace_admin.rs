@@ -24,14 +24,14 @@ pub struct NamespaceAdmin;
 impl NamespaceAdmin {
     /// Create namespace `namespace` in the app folder `layout` names,
     /// making the app folder first when it does not exist yet. `layout` must
-    /// name the canonical app folder; `created_by` is the FYLO version a new
+    /// name the canonical app folder; `created_by` is the BYCKR version a new
     /// app folder records, and `forced` the metadata profile its probe must
     /// choose, if any (slice L1-4).
     ///
     /// # Errors
     ///
     /// `ENAMESPACEEXISTS` when the namespace exists, the errors of
-    /// `AppFolder::prepare` (`ENOTFYLOROOT`, `EFSPROBE`), and `ENATIVE_IO`.
+    /// `AppFolder::prepare` (`ENOTBYCKRROOT`, `EFSPROBE`), and `ENATIVE_IO`.
     pub fn create_namespace(
         layout: &RootLayout,
         namespace: &NamespaceName,

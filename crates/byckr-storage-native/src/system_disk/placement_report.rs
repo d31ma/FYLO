@@ -4,7 +4,7 @@ use super::placement_kind::PlacementKind;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PlacementReport {
     /// Whether the root is on the system disk. `None` when it was not
-    /// looked up: no root, a network root, the opt-out, app mode, or FYLO
+    /// looked up: no root, a network root, the opt-out, app mode, or BYCKR
     /// could not tell.
     pub system_disk: Option<bool>,
     /// Why the root is admitted; `None` when it would be refused.

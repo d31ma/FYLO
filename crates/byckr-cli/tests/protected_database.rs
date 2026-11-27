@@ -26,8 +26,8 @@ impl Fixture {
         Command::new(BINARY)
             .current_dir(&self.0)
             .args(arguments)
-            .env_remove("FYLO_IDENTITY")
-            .env_remove("FYLO_TRUST_ANCHOR")
+            .env_remove("YCKR_IDENTITY")
+            .env_remove("YCKR_TRUST_ANCHOR")
             .envs(environment.iter().copied())
             .output()
             .unwrap()
@@ -235,8 +235,8 @@ fn the_environment_names_the_identity_and_the_anchor() {
     let listed = json(&fixture.run_with(
         &["access", "list", "app.vdbx"],
         &[
-            ("FYLO_IDENTITY", "file:admin.pem"),
-            ("FYLO_TRUST_ANCHOR", &admin),
+            ("YCKR_IDENTITY", "file:admin.pem"),
+            ("YCKR_TRUST_ANCHOR", &admin),
         ],
     ));
     assert_eq!(listed["identity"], admin.as_str());
@@ -537,10 +537,10 @@ fn a_rekey_that_stops_before_the_rename_leaves_the_database_as_it_was() {
             "--trust-anchor",
             &admin,
         ])
-        .env_remove("FYLO_IDENTITY")
-        .env_remove("FYLO_TRUST_ANCHOR")
-        .env("FYLO_RUST_FAILPOINT", "after-pack-staging")
-        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .env_remove("YCKR_IDENTITY")
+        .env_remove("YCKR_TRUST_ANCHOR")
+        .env("YCKR_RUST_FAILPOINT", "after-pack-staging")
+        .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
         .output()
         .unwrap();
     assert!(!stopped.status.success(), "{stopped:?}");
@@ -689,10 +689,10 @@ fn a_sealed_pack_of_a_protected_database_that_stops_leaves_no_copy() {
             "--trust-anchor",
             &admin,
         ])
-        .env_remove("FYLO_IDENTITY")
-        .env_remove("FYLO_TRUST_ANCHOR")
-        .env("FYLO_RUST_FAILPOINT", "after-pack-staging")
-        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .env_remove("YCKR_IDENTITY")
+        .env_remove("YCKR_TRUST_ANCHOR")
+        .env("YCKR_RUST_FAILPOINT", "after-pack-staging")
+        .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
         .output()
         .unwrap();
     assert!(!stopped.status.success(), "{stopped:?}");
@@ -853,8 +853,8 @@ fn loop_handshake(fixture: &Fixture, anchor: &str) -> Value {
         .current_dir(&fixture.0)
         .args(["exec", "--loop", "--root", "app.vdbx"])
         .args(["--identity", "file:admin.pem", "--trust-anchor", anchor])
-        .env_remove("FYLO_IDENTITY")
-        .env_remove("FYLO_TRUST_ANCHOR")
+        .env_remove("YCKR_IDENTITY")
+        .env_remove("YCKR_TRUST_ANCHOR")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -919,7 +919,7 @@ fn require_byte_range_locks() {
             .expect("probe TMPDIR");
     assert!(
         filesystem.byte_range_locks_qualified(),
-        "this test needs byte-range locks, which FYLO does not trust on TMPDIR's {} filesystem; \
+        "this test needs byte-range locks, which BYCKR does not trust on TMPDIR's {} filesystem; \
          point TMPDIR at a directory on ext4, tmpfs, APFS or NTFS (CONTRIBUTING.md)",
         filesystem.name
     );

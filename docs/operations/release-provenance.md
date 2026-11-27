@@ -63,14 +63,14 @@ is applied to the installer process rather than only to `curl`:
 
 ```sh
 curl -fsSL https://fylo.del.ma/install.sh -o /tmp/fylo-install.sh
-FYLO_VERIFY_PROVENANCE=1 sh /tmp/fylo-install.sh
+YCKR_VERIFY_PROVENANCE=1 sh /tmp/fylo-install.sh
 rm /tmp/fylo-install.sh
 ```
 
 On Windows:
 
 ```powershell
-$env:FYLO_VERIFY_PROVENANCE = '1'
+$env:YCKR_VERIFY_PROVENANCE = '1'
 irm https://fylo.del.ma/install.ps1 | iex
 ```
 

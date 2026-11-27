@@ -16,7 +16,7 @@ pub struct RootLayout {
 }
 
 impl RootLayout {
-    /// The hidden folder of FYLO's own files, in an app folder, a namespace
+    /// The hidden folder of BYCKR's own files, in an app folder, a namespace
     /// folder and a collection folder.
     pub const STATE_FOLDER: &'static str = ".fylo";
     const FORMAT_FILE: &'static str = "format.json";

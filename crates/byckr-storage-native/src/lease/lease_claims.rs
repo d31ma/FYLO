@@ -93,7 +93,7 @@ impl LeaseClaims {
         }
         NativeStorageError::new(
             NativeStorageErrorCode::RootLocked,
-            "another process claimed this FYLO root first",
+            "another process claimed this BYCKR root first",
         )
     }
 }

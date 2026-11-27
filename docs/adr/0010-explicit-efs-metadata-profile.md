@@ -9,7 +9,7 @@ a probe when an app folder is created, on every OS, and sidecar files get a
 leading dot. Until then this ADR is in force.
 
 Amended by [ADR 0013 Amendment 2](0013-collection-write-ahead-log.md)
-(accepted 2026-11-21, FYLO Build Coordinator): `efs-sidecar-v1` is the sidecar metadata store under the
+(accepted 2026-11-21, BYCKR Build Coordinator): `efs-sidecar-v1` is the sidecar metadata store under the
 native engine. Its document collections commit through the write-ahead log,
 which writes each sidecar in its apply step; the undo journal stays only for
 what ADR 0013 keeps on it (raw files, the operations outside its scope) and
@@ -17,14 +17,14 @@ for roots opened with the explicit legacy override, until that is removed.
 
 ## Context
 
-FYLO's native Unix profile uses xattrs. EFS lacks xattrs and provides advisory
-locks, so a mount alone cannot establish FYLO's metadata or transaction
+BYCKR's native Unix profile uses xattrs. EFS lacks xattrs and provides advisory
+locks, so a mount alone cannot establish BYCKR's metadata or transaction
 guarantees. [AWS EFS limits](https://docs.aws.amazon.com/efs/latest/ug/limits.html).
 The selected deployment direction is EFS. This decision preserves native
 defaults and public `RootConfig` struct literals; it authorizes no live conversion.
 
-FYLO owns the broader provider-independent serverless runtime contracts. This
-inside-FYLO metadata backend is one first slice; it is not an external AWS shim
+BYCKR owns the broader provider-independent serverless runtime contracts. This
+inside-BYCKR metadata backend is one first slice; it is not an external AWS shim
 or a complete invocation/fencing/retry contract. PaaS retains AWS infrastructure.
 
 ## Decision

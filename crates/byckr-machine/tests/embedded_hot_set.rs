@@ -1,5 +1,5 @@
 //! The hot set in an embedded session that holds the root's exclusive
-//! lease: clients of an application server that embeds FYLO never see an
+//! lease: clients of an application server that embeds BYCKR never see an
 //! incoherent or stale settled row, warm reads come from memory, and the
 //! resident bytes stay within the budget under load.
 

@@ -1,8 +1,8 @@
-# FYLO Domain Context
+# BYCKR Domain Context
 
 ## Purpose
 
-FYLO is a local-filesystem-first document and file database. Documents remain
+BYCKR is a local-filesystem-first document and file database. Documents remain
 ordinary files that users can mount, inspect, back up, and synchronize with
 their chosen infrastructure. Rebuildable prefix indexes make direct disk data
 queryable without turning SQLite or an object-store catalog into the source of
@@ -10,7 +10,7 @@ truth.
 
 ## Core terms
 
-- **Root**: the canonical filesystem boundary owned by one FYLO writer.
+- **Root**: the canonical filesystem boundary owned by one BYCKR writer.
 - **Collection**: a named set of JSON documents.
 - **Bucket**: a named set of raw files.
 - **Kind folder**: in a root of the current layout, `.collections` (document
@@ -38,7 +38,7 @@ truth.
   language shims.
 - **Browser shim**: a JavaScript host using OPFS/FSA and an optional portable
   Rust/Wasm query kernel.
-- **Explorer**: a separately hostable UI that views a user-selected FYLO root.
+- **Explorer**: a separately hostable UI that views a user-selected BYCKR root.
 - **Identity** (ADR 0021): an application's P-256 key pair. Its static
   identifier is `fid1:p256:` and the base32 SHA-256 of the public key; it is
   what a database policy grants `read`, `write` or `admin`.

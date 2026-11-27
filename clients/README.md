@@ -30,8 +30,8 @@ Rust shim.
 | Platform         | File                           | How                                                                                                          |
 | ---------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------ |
 | Browser (JS)     | `browser/fylo.js` loader       | OPFS store                                                                                                   |
-| Android (native) | `io.github.d31ma:fylo-android` | FYLO's native engine through JNI ([Android native engine](#android-native-engine-iogithubd31mafylo-android)) |
-| iOS (native)     | `FyloKit` Swift package        | FYLO's native engine through its C library ([iOS native engine](#ios-native-engine-fylokit))                 |
+| Android (native) | `io.github.d31ma:fylo-android` | BYCKR's native engine through JNI ([Android native engine](#android-native-engine-iogithubd31mafylo-android)) |
+| iOS (native)     | `FyloKit` Swift package        | BYCKR's native engine through its C library ([iOS native engine](#ios-native-engine-fylokit))                 |
 
 The browser client does not support raw-file buckets, schemas, or field
 encryption in this release; see [Local-only limits](#local-only-limits).
@@ -127,7 +127,7 @@ await db.queue.ack('jobs.resize', 'image-workers', delivery)
 
 Other languages use the naming convention in the table. Delivery is at least
 once, so handlers must be idempotent. `queueClaim` returns opaque `receipt`
-values that fence stale workers. FYLO remains one-owner-per-root: concurrent
+values that fence stale workers. BYCKR remains one-owner-per-root: concurrent
 tasks share one engine process; this is brokerless local execution, not a
 distributed cloud queue.
 
@@ -306,8 +306,8 @@ Per-record access was removed. No shim sends a `uid`, `gid`, `groups`, or
 
 Access is now granted per application identity on a protected `.vdbx`
 database. The shim's `fylo` process opens the database as one identity. Set the
-identity with `fylo.identity` in `application.json` or with `FYLO_IDENTITY`,
-and pin the expected signer with `fylo.trustAnchor` or `FYLO_TRUST_ANCHOR`. An
+identity with `fylo.identity` in `application.json` or with `YCKR_IDENTITY`,
+and pin the expected signer with `fylo.trustAnchor` or `YCKR_TRUST_ANCHOR`. An
 administrator grants each identity `read`, `write`, or `admin` with
 `fylo access grant`. To move an existing root, see
 [Migrating to protected databases](../docs/migrating-to-protected-databases.md).
@@ -374,8 +374,8 @@ explicitly selected missing file, invalid setting, or missing secret reference
 fails initialization.
 
 Keep `.env` beside that configuration file and use it only for secrets. Reference
-them explicitly with `"encryption": { "key": "${FYLO_ENCRYPTION_KEY}" }` and
-`"cipher": { "salt": "${FYLO_CIPHER_SALT}" }`. Configure both references together
+them explicitly with `"encryption": { "key": "${YCKR_ENCRYPTION_KEY}" }` and
+`"cipher": { "salt": "${YCKR_CIPHER_SALT}" }`. Configure both references together
 or omit both; literal credentials in JSON are rejected.
 Inherited environment secrets take precedence over the adjacent `.env`; all
 unreferenced variables are ignored. Loading configuration never mutates the
@@ -388,7 +388,7 @@ tenant data. Keep secret files out of source control and owner-readable only
 reference contract.
 
 The browser client does not implicitly read these files because it does
-not spawn the native FYLO binary. Configure its storage adapter directly,
+not spawn the native BYCKR binary. Configure its storage adapter directly,
 and never publish native secrets in website JSON or bundles.
 
 `exclusiveRoot` makes a competing loop reject its startup handshake with
@@ -451,7 +451,7 @@ directly — fully offline, no backend, no network.
 For a regular website, add a version-pinned loader to the document head:
 
 ```html
-<script src="https://d31ma.github.io/FYLO/version/26.45.07/fylo.js"></script>
+<script src="https://d31ma.github.io/BYCKR/version/26.45.07/fylo.js"></script>
 ```
 
 Then open the browser-local database from your application code:
@@ -466,19 +466,19 @@ const metadata = await db.users.get(id).metadata()
 const doc = await db.users.latest(id)
 ```
 
-Use `https://d31ma.github.io/FYLO/version/latest/fylo.js` when you intentionally
+Use `https://d31ma.github.io/BYCKR/version/latest/fylo.js` when you intentionally
 want the newest release. For direct ESM imports, the engine is published beside
 the loader:
 
 ```js
-import { createBrowserClient } from 'https://d31ma.github.io/FYLO/version/26.45.07/fylo-web.mjs'
+import { createBrowserClient } from 'https://d31ma.github.io/BYCKR/version/26.45.07/fylo-web.mjs'
 
 const db = createBrowserClient()
 await db.ready()
 ```
 
 The loader is executable code with the embedding origin's authority, including
-access to that origin's FYLO data. Production applications should pin the
+access to that origin's BYCKR data. Production applications should pin the
 immutable version path; use the mutable `version/latest/` alias only for a
 controlled upgrade policy. Higher-assurance deployments should download the
 loader and all adjacent module, worker, and Wasm assets from the matching
@@ -487,7 +487,7 @@ allowed script, module, worker, and asset origins with CSP. Subresource
 integrity on `fylo.js` alone cannot authenticate the modules it imports
 dynamically.
 
-Enable the worker-hosted Wasm index scanner, or mount a user-selected FYLO root:
+Enable the worker-hosted Wasm index scanner, or mount a user-selected BYCKR root:
 
 ```js
 const local = createBrowserClient({ storage: 'opfs', worker: true, wasm: true })
@@ -537,7 +537,7 @@ fails with `Collection not found`.
 
 ### Android native engine (`io.github.d31ma:fylo-android`)
 
-Since ADR 0026 an Android app links FYLO's **native engine**: the same Rust
+Since ADR 0026 an Android app links BYCKR's **native engine**: the same Rust
 engine as the `fylo` binary, with real files, `.vdbx` databases, schemas,
 identities and field encryption.
 (iOS gets the same engine through the Swift package `FyloKit`; see
@@ -551,7 +551,7 @@ release asset and is published to GitHub Packages:
 dependencyResolutionManagement {
     repositories {
         maven {
-            url = uri("https://maven.pkg.github.com/d31ma/FYLO")
+            url = uri("https://maven.pkg.github.com/d31ma/BYCKR")
             credentials { username = "<github user>"; password = "<token with read:packages>" }
         }
     }
@@ -572,7 +572,7 @@ Fylo.open(File(filesDir, "app.vdbx").path, """{"create": {"mode": "encrypted"}}"
 ```
 
 - Results are `org.json` objects with the machine protocol's shapes;
-  failures throw `FyloException` with FYLO's error `code`.
+  failures throw `FyloException` with BYCKR's error `code`.
 - `create.mode` is `"plain"`, `"encrypted"` (with a key) or `"protected"`
   (with an `"admin"` identity). A missing database is created only when the
   options say so.
@@ -613,7 +613,7 @@ try db.close()
 ```
 
 - Results are dictionaries with the machine protocol's shapes; failures throw
-  `FyloError` with FYLO's error `code`. The key rules are Android's above.
+  `FyloError` with BYCKR's error `code`. The key rules are Android's above.
 - **`ios-keychain:<label>` identities** keep a P-256 key in the Data
   Protection keychain, readable after the first unlock, on this device only,
   never synchronized to iCloud: `FyloIdentity.create("ios-keychain:app.device")`,

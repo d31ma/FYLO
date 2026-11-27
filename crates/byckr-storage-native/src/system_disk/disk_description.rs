@@ -6,7 +6,7 @@ use std::path::PathBuf;
 /// (`disk3`); on Linux the mount's device number, its whole disks and its
 /// ZFS pool; on Windows the volume and its physical disks. Two paths are on
 /// the same disk when their descriptions share a key. `images` are the
-/// files of the disk images the disk is made from, when FYLO already knows
+/// files of the disk images the disk is made from, when BYCKR already knows
 /// them (Linux loop devices); macOS and Windows find them only when asked.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DiskDescription {

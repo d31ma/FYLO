@@ -1,4 +1,4 @@
-# FYLO Rust Engine Project Plan
+# BYCKR Rust Engine Project Plan
 
 - Status: **completed; Rust-native cutover implemented**
 - Plan date: **2026-07-26**
@@ -8,7 +8,7 @@
 
 ## 1. Executive decision
 
-FYLO's native engine generation is implemented in Rust. Compatibility is
+BYCKR's native engine generation is implemented in Rust. Compatibility is
 retained through immutable released executables and versioned fixtures; the
 former JavaScript native implementation is no longer kept in the source tree.
 
@@ -28,14 +28,14 @@ browser storage APIs merely because native code compiles to Wasm.
 This plan does **not** authorize:
 
 - a new on-disk format;
-- two processes writing the same FYLO root;
+- two processes writing the same BYCKR root;
 - replacing the current production engine before compatibility gates pass;
 - adding a built-in remote object-storage backend;
 - rewriting the Explorer or marketing website in Rust;
 - publishing Rust crates as stable public APIs before an explicit RFC;
 - claiming that cross-compilation proves platform support.
 
-FYLO remains filesystem-only. Snapshot, replication, and remote-copy tooling
+BYCKR remains filesystem-only. Snapshot, replication, and remote-copy tooling
 operate outside the engine boundary (ADR 0007). Documents remain authoritative;
 indexes and caches remain rebuildable derived state.
 
@@ -77,9 +77,9 @@ SESAME establishes several useful standards:
 - Empty folders and generic `utils`, `common`, `misc`, or `manager` dumping
   grounds are prohibited.
 
-### 2.2 Practices to strengthen for FYLO
+### 2.2 Practices to strengthen for BYCKR
 
-FYLO should improve on the SESAME bootstrap in these areas:
+BYCKR should improve on the SESAME bootstrap in these areas:
 
 - Land small, reversible, vertically complete pull requests instead of one
   enormous initial commit.
@@ -90,7 +90,7 @@ FYLO should improve on the SESAME bootstrap in these areas:
 - Create a draft release, download and verify every staged asset, run
   installer/upgrade smoke tests, and only then publish.
 - Make storage-format compatibility and crash recovery first-class release
-  evidence; these are deeper concerns for FYLO than for a consumer of FYLO.
+  evidence; these are deeper concerns for BYCKR than for a consumer of BYCKR.
 - Maintain an explicit `unsafe` inventory and review gate for platform code.
 - Add filesystem-specific corruption, power-loss, symlink/reparse-point,
   metadata, and durability matrices.
@@ -118,7 +118,7 @@ A feature is supported only when all applicable rows exist:
 Missing evidence changes the label to **experimental**, **preview**, or
 **unsupported**. It must not be hidden by a broad “cross-platform” claim.
 
-## 3. Non-negotiable FYLO invariants
+## 3. Non-negotiable BYCKR invariants
 
 The rewrite must preserve these rules unless a separately accepted ADR and
 migration RFC replace one:
@@ -321,7 +321,7 @@ artifacts.
 - Update the compiler through reviewed dependency/toolchain pull requests.
 - Record `rustc -Vv`, Cargo version, target, profile, enabled features, commit,
   and lockfile digest in every release manifest.
-- FYLO binaries support the shipped artifacts, not arbitrary local compiler
+- BYCKR binaries support the shipped artifacts, not arbitrary local compiler
   versions.
 - If crates are later published, each declares `rust-version` and CI verifies
   the stated MSRV. No MSRV is implied before then.
@@ -466,7 +466,7 @@ Exit gate:
 
 - clean checkout runs formatting, linting, unit tests, documentation tests, and
   dependency policy on Linux, macOS, and Windows;
-- adding the workspace changes no FYLO production behavior or release bytes.
+- adding the workspace changes no BYCKR production behavior or release bytes.
 
 Rollback:
 
@@ -628,7 +628,7 @@ Deliver:
 - integrity, query-equivalence, permission, encryption, and version-history
   verification after restore;
 - explicit guidance that cloud drives, network filesystems, and object-storage
-  sync tools are deployment choices outside FYLO.
+  sync tools are deployment choices outside BYCKR.
 
 Exit gate:
 
@@ -791,7 +791,7 @@ for seconds without useful executions is not proof.
 
 Benchmark against:
 
-- the latest supported JavaScript FYLO engine;
+- the latest supported JavaScript BYCKR engine;
 - the previous Rust release once one exists;
 - SQLite only for clearly comparable operations and durability settings.
 
@@ -965,11 +965,11 @@ CODEOWNERS should separately own:
 
 Musl, network shares, synchronized folders, mobile OSes, and other targets are
 unassessed until explicitly qualified. Rust compiler target availability is not
-a FYLO support claim.
+a BYCKR support claim.
 
 ### 10.3 Version and compatibility policy
 
-- Preserve FYLO CalVer, including same-date suffixes.
+- Preserve BYCKR CalVer, including same-date suffixes.
 - `VERSION`, package metadata, runtime identity, tag, release manifest, browser
   immutable directory, and Explorer archive must agree.
 - Machine protocol and storage format versions are independent integers.
@@ -1023,7 +1023,7 @@ THIRD_PARTY_LICENSES.txt
 Only supported/preview target assets whose native gates passed are included.
 The manifest records:
 
-- FYLO version, commit, source tag, and release run;
+- BYCKR version, commit, source tag, and release run;
 - Rust/Bun versions and lockfile digests;
 - target triple, OS, architecture, build profile, and enabled features;
 - machine, storage, and Wasm ABI versions;
@@ -1142,7 +1142,7 @@ LICENSE
 VERSION
 ```
 
-Do not change FYLO's license by copying SESAME's Apache-2.0 selection. Licensing
+Do not change BYCKR's license by copying SESAME's Apache-2.0 selection. Licensing
 is a separate owner decision.
 
 ### 12.2 Documentation tree
@@ -1406,4 +1406,4 @@ The writer comes later.
 - [`cargo-auditable`](https://github.com/rust-secure-code/cargo-auditable)
 
 These references guide the plan; the repository's accepted ADRs and versioned
-contracts become authoritative for FYLO behavior.
+contracts become authoritative for BYCKR behavior.

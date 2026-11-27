@@ -2,8 +2,8 @@
 //! folder (ADR 0033 section 4 asks L1-3 to measure them on a network mount).
 //!
 //! Ignored in ordinary runs. Run it with
-//! `FYLO_LEASE_MEASURE_DIR=<folder> cargo test -p fylo-storage-native --test lease_latency -- --ignored --nocapture`.
-//! `FYLO_LEASE_MEASURE_PROFILE=efs` opens the root with the EFS profile, the
+//! `YCKR_LEASE_MEASURE_DIR=<folder> cargo test -p fylo-storage-native --test lease_latency -- --ignored --nocapture`.
+//! `YCKR_LEASE_MEASURE_PROFILE=efs` opens the root with the EFS profile, the
 //! only profile admitted on a network mount before the layout release.
 
 use std::path::PathBuf;
@@ -14,8 +14,8 @@ use byckr_storage_native::{
     RootOpenOptions,
 };
 
-const MEASURE_DIR: &str = "FYLO_LEASE_MEASURE_DIR";
-const MEASURE_PROFILE: &str = "FYLO_LEASE_MEASURE_PROFILE";
+const MEASURE_DIR: &str = "YCKR_LEASE_MEASURE_DIR";
+const MEASURE_PROFILE: &str = "YCKR_LEASE_MEASURE_PROFILE";
 const ROUNDS: usize = 40;
 const ITEMS: &str = "items";
 
@@ -57,9 +57,9 @@ fn timed(action: impl FnOnce()) -> Duration {
 }
 
 #[test]
-#[ignore = "measures a given folder; set FYLO_LEASE_MEASURE_DIR"]
+#[ignore = "measures a given folder; set YCKR_LEASE_MEASURE_DIR"]
 fn measure_open_read_commit_and_fencing_latency() {
-    let base = PathBuf::from(std::env::var(MEASURE_DIR).expect("set FYLO_LEASE_MEASURE_DIR"));
+    let base = PathBuf::from(std::env::var(MEASURE_DIR).expect("set YCKR_LEASE_MEASURE_DIR"));
     let folder = base.join(format!("fylo-lease-latency-{}", std::process::id()));
     let root = folder.join("db");
     std::fs::create_dir_all(&root).unwrap();

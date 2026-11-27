@@ -15,7 +15,7 @@ pub struct Collection<'root> {
     name: &'root str,
 }
 
-/// A structured FYLO query (`api/query/v1`), checked once and reusable.
+/// A structured BYCKR query (`api/query/v1`), checked once and reusable.
 #[derive(Clone, Debug)]
 pub struct Query(StructuredQuery);
 
@@ -39,11 +39,11 @@ impl<'root> Collection<'root> {
         Self { root, name }
     }
 
-    /// Store a new document under a FYLO-assigned TTID, and return the TTID.
+    /// Store a new document under a BYCKR-assigned TTID, and return the TTID.
     ///
     /// # Errors
     ///
-    /// Fails for a missing collection, a document FYLO refuses (an array of
+    /// Fails for a missing collection, a document BYCKR refuses (an array of
     /// objects, or a schema violation), or a failed durable write.
     pub fn put(&self, document: Document) -> Result<String, Error> {
         let writer = self.root.writer()?;
@@ -56,7 +56,7 @@ impl<'root> Collection<'root> {
     ///
     /// # Errors
     ///
-    /// `ENATIVE_NOT_FOUND` for a missing document, a merged document FYLO
+    /// `ENATIVE_NOT_FOUND` for a missing document, a merged document BYCKR
     /// refuses, or a failed durable write.
     pub fn patch(&self, id: &str, changes: &Map<String, Value>) -> Result<(), Error> {
         self.root

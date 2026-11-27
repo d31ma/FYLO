@@ -304,7 +304,7 @@ fn qualify(options: &Options) -> io::Result<bool> {
     } else {
         report.note(
             "lock checks skipped",
-            "the filesystem refuses byte-range locks; FYLO uses the lock-free lease here",
+            "the filesystem refuses byte-range locks; BYCKR uses the lock-free lease here",
         );
         Ok(())
     };

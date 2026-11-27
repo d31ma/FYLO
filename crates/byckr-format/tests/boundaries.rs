@@ -93,7 +93,7 @@ fn error_display_remains_stable() {
     let error = Document::parse(b"[]", DocumentLimits::default()).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "EDOCUMENTROOT: FYLO document root must be a JSON object"
+        "EDOCUMENTROOT: BYCKR document root must be a JSON object"
     );
 }
 
@@ -215,7 +215,7 @@ fn empty_identifier_preserves_diagnostic() {
         FormatFixture::identifier_error(""),
         (
             FormatErrorCode::InvalidDocumentId,
-            "identifier length is outside FYLO bounds".to_owned()
+            "identifier length is outside BYCKR bounds".to_owned()
         )
     );
 }

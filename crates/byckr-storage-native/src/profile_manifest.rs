@@ -138,7 +138,7 @@ impl ProfileManifest {
             (FilesystemProfile::Native, None) => Ok(None),
             (FilesystemProfile::Native, Some(_)) => Err(NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,
-                "marked FYLO root requires its explicit filesystem profile",
+                "marked BYCKR root requires its explicit filesystem profile",
             )),
             (FilesystemProfile::EfsSidecarV1, Some(descriptor)) => Ok(Some(descriptor)),
             (FilesystemProfile::EfsSidecarV1, None) => {

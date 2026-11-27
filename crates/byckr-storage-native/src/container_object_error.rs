@@ -40,7 +40,7 @@ pub enum ContainerObjectError {
         written: u64,
     },
     /// A chunk number was about to be sealed a second time under the same
-    /// object key. FYLO refuses it.
+    /// object key. BYCKR refuses it.
     NonceReuse {
         /// The chunk number.
         index: u64,

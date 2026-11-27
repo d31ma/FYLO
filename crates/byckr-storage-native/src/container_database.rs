@@ -1,4 +1,4 @@
-//! A `.vdbx` file opened as a FYLO root (ADR 0016 section 11,
+//! A `.vdbx` file opened as a BYCKR root (ADR 0016 section 11,
 //! `docs/vdbx-segment-backend.md`, "Root integration").
 //!
 //! A root path that names a regular file is a database: one file holding
@@ -94,7 +94,7 @@ impl ContainerDatabase {
             if short || error.code() == "EVDBX_NOT_VDBX" {
                 NativeStorageError::new(
                     NativeStorageErrorCode::WrongType,
-                    "FYLO root is neither a directory nor a .vdbx database",
+                    "BYCKR root is neither a directory nor a .vdbx database",
                 )
             } else {
                 ContainerMedium::error(error)
@@ -349,7 +349,7 @@ impl ContainerDatabase {
         if self.locked && self.protected {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::NoIdentity,
-                "the .vdbx database is protected: open it with an identity (--identity, fylo.identity or FYLO_IDENTITY)",
+                "the .vdbx database is protected: open it with an identity (--identity, fylo.identity or YCKR_IDENTITY)",
             ));
         }
         if self.locked {

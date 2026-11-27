@@ -303,7 +303,7 @@ fn execute_sql_keeps_mesails_literal_shapes() {
     let fixture = Fixture::new();
     fixture.with_one_post();
     // Mesail's devicebox renders `$1`/`$2` to literals and sends `executeSQL`
-    // with no `parameters` field, so these all reach FYLO as placeholder-free
+    // with no `parameters` field, so these all reach BYCKR as placeholder-free
     // statements. They must keep executing unchanged (no EQUERY_INVALID).
     let shapes = [
         // 1. dotted path `waiting.<deviceKey> = true`, lowercase `true`.

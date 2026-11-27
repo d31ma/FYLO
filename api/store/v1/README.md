@@ -1,13 +1,13 @@
-# FYLO Store Contract v1 (FROZEN)
+# BYCKR Store Contract v1 (FROZEN)
 
 **Frozen on 2026-11-21 by [ADR 0035](../../../docs/adr/0035-fylos-own-sdk-in-the-store-shape.md).
-Not built yet; slices SDK-2 and SDK-3 build it, and it ships in the next FYLO
+Not built yet; slices SDK-2 and SDK-3 build it, and it ships in the next BYCKR
 release.** TACHYON and Mesail code against this text. A change needs an
 amendment to ADR 0035 and a notice to their Build Coordinators.
 Amendment 1 (2026-11-21, ADR 0035): `ne` never matches `null` or a missing
 field, and `storeSave` takes `requireExisting`.
 
-The Store is FYLO's document API in the shape of TACHYON's `Store`: a
+The Store is BYCKR's document API in the shape of TACHYON's `Store`: a
 Repository base and queries with AND-joined predicates, an order and a page.
 The machine operations that carry it are in
 [`api/machine/v2`](../../machine/v2/README.md). The JSON shapes are in
@@ -40,7 +40,7 @@ Every Store operation takes:
 
 | Field | Type | Required | Meaning |
 | ----- | ---- | -------- | ------- |
-| `collection` | string | yes (not for `listCollections`) | FYLO collection name rules |
+| `collection` | string | yes (not for `listCollections`) | BYCKR collection name rules |
 | `namespace` | string | no, default `public` | ADR 0033 namespace |
 | `idField` | string | no, default `"id"` | the field of the entity that holds the document id, in requests and results |
 | `transaction` | string | no | a handle from `transactionBegin` (section "Transactions") |
@@ -48,13 +48,13 @@ Every Store operation takes:
 ## Documents and ids
 
 - A result **entity** is the document's JSON object with its id added under
-  `idField`. The id is FYLO's TTID string.
-- The stored document never contains the `idField` key; FYLO removes it on
+  `idField`. The id is BYCKR's TTID string.
+- The stored document never contains the `idField` key; BYCKR removes it on
   write and adds it on read.
-- **`save(entity)`**: when `entity[idField]` is missing or `null`, FYLO
+- **`save(entity)`**: when `entity[idField]` is missing or `null`, BYCKR
   creates a new document with a new TTID. When it names an id that exists,
-  FYLO replaces the whole document (same id). When it names a valid TTID that
-  does not exist, FYLO creates the document with that id. An id that is not a
+  BYCKR replaces the whole document (same id). When it names a valid TTID that
+  does not exist, BYCKR creates the document with that id. An id that is not a
   valid TTID fails with `EINVALIDDOCID`. The answer is the saved entity.
 - **`save(entity, { requireExisting: true })`** (machine field
   `requireExisting`, default `false`; Amendment 1): the save only replaces.
@@ -68,7 +68,7 @@ Every Store operation takes:
 - **`findById(id)`**: the entity, or `null` when the id does not exist (not
   an error).
 - **`deleteById(id)`**: the number deleted, `0` or `1`.
-- Writes keep every check FYLO makes today: schemas (`_v` stamp), encrypted
+- Writes keep every check BYCKR makes today: schemas (`_v` stamp), encrypted
   fields, word fields, identities and policies, the drive rule, the lease.
 
 ## Queries
@@ -97,13 +97,13 @@ Every Store operation takes:
 | `isNull` | none | the field is `null` or missing |
 | `isNotNull` | none | the field is present and not `null` |
 
-- **FYLO extensions** (TACHYON does not use them): `like` (string pattern
+- **BYCKR extensions** (TACHYON does not use them): `like` (string pattern
   with `%` and `_`, as SQL `LIKE`, case-sensitive) and `match` (word search on
   word fields, ADR 0023; `value` is the search text). A top-level `anyOf`
   (a list of up to 8 predicate lists, OR between lists, AND inside) gives OR.
 - A **scalar** is a string, a finite number, a boolean or `null`.
 - `orderBy`: up to 4 `{ field, direction }` items, `direction` `asc` (default)
-  or `desc`. FYLO always adds the id ascending as the last tie-breaker.
+  or `desc`. BYCKR always adds the id ascending as the last tie-breaker.
 
 ### Equality
 
@@ -189,7 +189,7 @@ several collections). A transaction over one collection is ADR 0035 section
 - **Handle:** an opaque string, valid only in the `fylo` process that gave
   it. After that process ends, or for any other string: `ETXNUNKNOWN`.
 - **Time limit:** `timeoutMs` from begin, default 30,000, maximum 300,000
-  (a FYLO setting may lower the maximum). After it the transaction is rolled
+  (a BYCKR setting may lower the maximum). After it the transaction is rolled
   back; the next call with its handle answers `ETXNEXPIRED`. TACHYON passes
   the rest of its own store-time budget, so a transaction ends before TACHYON
   stops `fylo`.

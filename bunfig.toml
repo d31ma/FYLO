@@ -1,4 +1,4 @@
-# FYLO's tests and scripts open roots in the OS temp folder, on the system
+# BYCKR's tests and scripts open roots in the OS temp folder, on the system
 # disk; ADR 0032 refuses those unless the opt-out is on (see
 # tests/setup/allow-system-disk.js).
 preload = ["./tests/setup/allow-system-disk.js"]

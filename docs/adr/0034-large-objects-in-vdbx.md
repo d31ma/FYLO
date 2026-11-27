@@ -3,11 +3,11 @@
 - Status: **Accepted, not yet built** (2026-11-21). The user chose to design
   it now (N7: "Design it now"), through the hub. Slices L1-9a (native) and
   L1-9b (WebAssembly, mobile, encryption, pack and unpack) build it. It ships
-  in the layout release of ADR 0033, **after the next FYLO release** (the S5
+  in the layout release of ADR 0033, **after the next BYCKR release** (the S5
   release).
-- Release changed (2026-11-21): the user decided "there should be no later FYLO release"; this ADR now ships in **the next FYLO release**, together with ADR 0033 and [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md). Where this ADR says "after the next FYLO release", read "in the next FYLO release".
+- Release changed (2026-11-21): the user decided "there should be no later BYCKR release"; this ADR now ships in **the next BYCKR release**, together with ADR 0033 and [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md). Where this ADR says "after the next BYCKR release", read "in the next BYCKR release".
 - Date: **2026-11-21**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Extends: **ADR 0016** (single-file `.vdbx`). Section 1 of ADR 0016 left
   "buckets, which need large-object extents that span more than one extent"
   to a follow-up ADR. This is that ADR.
@@ -93,7 +93,7 @@ Facts that decide the design:
   checked (and its tag, when encrypted). A whole read also checks the
   object's SHA-256 at the end.
 - **Range reads.** `getFileData` gains an optional byte range (`start`,
-  `end`). FYLO reads only the chunks that cover it. This is what a video
+  `end`). BYCKR reads only the chunks that cover it. This is what a video
   player's seek needs. A range read checks each chunk it reads, not the whole
   object's SHA-256. How bytes cross the machine protocol does not change.
 
@@ -116,7 +116,7 @@ Facts that decide the design:
   new salt. So a (key, nonce) pair is used once.
 - **A key is never used twice with the same nonce.** Overwriting, appending
   to or compacting a large object gives it a new key (a new salt) or a new
-  object id; FYLO never encrypts a chunk number again under the old key.
+  object id; BYCKR never encrypts a chunk number again under the old key.
 - A range read decrypts only the chunks it reads.
 - The browser engine with a host key (ADR 0025) and protected files (ADR
   0021) use the same frames. A policy that may not read the collection may
@@ -209,7 +209,7 @@ its own decision.
 
 ### 11. Decisions made while building (L1-9a)
 
-Accepted by the FYLO Build Coordinator on 2026-11-21.
+Accepted by the BYCKR Build Coordinator on 2026-11-21.
 
 - **A `stamp` in the record.** The object record also carries `stamp`: the
   sequence number of the first extent the write took. Sequence numbers are

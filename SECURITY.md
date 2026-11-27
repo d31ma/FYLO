@@ -3,12 +3,12 @@
 ## Supported versions
 
 The native Rust engine is the public executable implementation. The current
-FYLO release follows the support window published with that release; security
+BYCKR release follows the support window published with that release; security
 fixes are prioritized on the default branch.
 
 | Surface | Security support |
 | --- | --- |
-| Current FYLO release | Published release window |
+| Current BYCKR release | Published release window |
 | Unreleased Rust candidate | Best effort; no production claim |
 | Historical previews | No guaranteed backports |
 

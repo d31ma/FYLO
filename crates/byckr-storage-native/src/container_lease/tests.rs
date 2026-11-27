@@ -5,7 +5,7 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const CHILD_DATABASE: &str = "FYLO_VDBX_LEASE_CHILD_DATABASE";
+const CHILD_DATABASE: &str = "YCKR_VDBX_LEASE_CHILD_DATABASE";
 const CHILD_TEST: &str = "container_lease::tests::a_child_process";
 
 struct Database(PathBuf);
@@ -269,7 +269,7 @@ fn a_killed_owner_on_this_host_is_taken_over_at_once_and_a_live_one_is_not() {
     );
     kill(child);
     // "At once" means without the 30 s takeover time. On a busy machine the
-    // dead-process check alone can take over a second (FYLO-FLAKE-LEASE), so
+    // dead-process check alone can take over a second (BYCKR-FLAKE-LEASE), so
     // the bound is a third of the takeover time, not a fixed second.
     let timing = ContainerLeaseTiming::default();
     let at_once = Duration::from_secs(10);
@@ -311,7 +311,7 @@ fn require_byte_range_locks() {
         crate::FilesystemInfo::of_directory(&std::env::temp_dir()).expect("probe TMPDIR");
     assert!(
         filesystem.byte_range_locks_qualified(),
-        "this test needs byte-range locks, which FYLO does not trust on TMPDIR's {} filesystem; \
+        "this test needs byte-range locks, which BYCKR does not trust on TMPDIR's {} filesystem; \
          point TMPDIR at a directory on ext4, tmpfs, APFS or NTFS (CONTRIBUTING.md)",
         filesystem.name
     );

@@ -1,6 +1,6 @@
-# FYLO Machine Protocol v1
+# BYCKR Machine Protocol v1
 
-FYLO's machine interface is a local, bounded NDJSON protocol. One UTF-8 JSON
+BYCKR's machine interface is a local, bounded NDJSON protocol. One UTF-8 JSON
 request and one UTF-8 JSON response occupy one LF-delimited frame.
 
 The canonical artifacts are:
@@ -50,7 +50,7 @@ uses the session's default: `fylo exec --namespace <ns>`, else `public`. The
 handshake reports the default as `storage.namespace`.
 
 A name is 2-64 bytes of lowercase `a-z`, digits and `-`, starting and ending
-with a letter or digit; Windows device names and FYLO's reserved words are
+with a letter or digit; Windows device names and BYCKR's reserved words are
 refused. A bad name fails the frame with `ENAMESPACE` (not retryable) before
 the operation runs; a value that is not a string fails with `EBADREQUEST`.
 Until the layout release the engine stores every collection in the root's
@@ -58,7 +58,7 @@ existing layout, so a second namespace would share the default namespace's
 data. So any namespace other than `public`, in the field or as the session
 default, fails the frame with `ENAMESPACEUNSUPPORTED` (not retryable) before
 the operation runs, with the message "namespaces are not yet supported in this
-build; namespace separation arrives with the FYLO layout release (L1-5)".
+build; namespace separation arrives with the BYCKR layout release (L1-5)".
 
 ### Creating, listing and dropping namespaces
 
@@ -154,17 +154,17 @@ EFS profile is admitted there as before.
 
 A local root on the system disk is refused the same way, with `ESYSTEMDISK`
 (not retryable), unless the opt-out (`--allow-system-disk`,
-`FYLO_ALLOW_SYSTEM_DISK=1`, `fylo.allowSystemDisk`) or app mode (`--app-id`,
-`FYLO_APP_ID`, `fylo.appId`) admits it
+`YCKR_ALLOW_SYSTEM_DISK=1`, `fylo.allowSystemDisk`) or app mode (`--app-id`,
+`YCKR_APP_ID`, `fylo.appId`) admits it
 ([ADR 0032](../../../docs/adr/0032-primary-root-on-a-data-disk.md)). The
 refusal is always an error frame on stdout: the first frame with
 `--exclusive-root`, otherwise the first request that opens the root; a
 handshake alone opens no root and answers `ok`. `rootLock` reports
 `systemDisk` (`true`, `false`, or `null` when it was not looked up: no
-default root, a remote root, the opt-out, app mode, or FYLO could not tell)
+default root, a remote root, the opt-out, app mode, or BYCKR could not tell)
 and `placement`, why the root is admitted (`dataDisk`, `systemDiskAllowed`,
 `appOwned`), or `null` when it would be refused. An invalid
-`FYLO_ALLOW_SYSTEM_DISK` value or app id stops the CLI at start with a
+`YCKR_ALLOW_SYSTEM_DISK` value or app id stops the CLI at start with a
 message on stderr and exit code 1.
 
 A root whose parent folder is not a mount point is refused the same way,
@@ -173,7 +173,7 @@ with `ENOTVOLUMEROOT` (not retryable), before its disk is read
 section 5). The message names the nearest mount point above the root. The
 opt-out waives it; app mode admits the app's own folder. `storage.volume`
 reports the mount point of the default root's parent folder, or `null`
-without a default root or when FYLO cannot tell.
+without a default root or when BYCKR cannot tell.
 
 Frame limits, schema/encryption configuration, operation names and stable errors
 retain their existing contracts. EFS queue operations currently fail closed at
@@ -331,8 +331,8 @@ partial files and the last sweep; `fylo cache clear` deletes the folder.
 
 Access control is per application identity on protected `.vdbx` databases
 (ADR 0021). The session opens databases as the identity its configuration
-names (`fylo.identity` or `FYLO_IDENTITY`, pinned with `fylo.trustAnchor` or
-`FYLO_TRUST_ANCHOR`, or `--identity` and `--trust-anchor`); a request never
+names (`fylo.identity` or `YCKR_IDENTITY`, pinned with `fylo.trustAnchor` or
+`YCKR_TRUST_ANCHOR`, or `--identity` and `--trust-anchor`); a request never
 names one.
 
 Every handshake reports top-level `identity`: `null` when no identity is

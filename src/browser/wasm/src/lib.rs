@@ -1,4 +1,4 @@
-//! Narrow C ABI for the portable FYLO prefix-index kernel.
+//! Narrow C ABI for the portable BYCKR prefix-index kernel.
 //!
 //! All parsing, validation, and scanning lives in the safe `fylo-query`
 //! crate. Unsafe code is confined to copying bytes across the WebAssembly

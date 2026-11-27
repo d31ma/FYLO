@@ -10,7 +10,7 @@ use crate::hardware_key::HardwareKey;
 use crate::identity_error::IdentityError;
 
 /// Opens a [`crate::key_wrap::KeyWrap`] wrap with a hardware key, which
-/// gives FYLO its ECDH shared secret but never its private key: RFC 9180
+/// gives BYCKR its ECDH shared secret but never its private key: RFC 9180
 /// HPKE base mode, DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM,
 /// single shot, with the KEM's Diffie-Hellman step done by the hardware.
 /// The `hpke` crate takes only a private key, so the key schedule is

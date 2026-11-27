@@ -11,13 +11,13 @@ crate for `fylo identity create` and `fylo identity show`.
 | Targets | Native; pure Rust, so the browser build can use it in phase 5 | macOS only |
 | Features | `arithmetic`, `pem`, `std`; defaults off, so no precomputed tables and no `ecdh` yet. `pem` brings `ecdsa` and `pkcs8` along; `std` brings `getrandom` for key generation | Defaults off: no TLS (`alpn`, `session-tickets`) and no macOS version gates beyond the crate's baseline |
 | License | Apache-2.0 OR MIT | MIT OR Apache-2.0 |
-| New transitive crates | `base16ct`, `base64ct`, `crypto-bigint`, `der`, `ecdsa`, `elliptic-curve`, `ff`, `group`, `pem-rfc7468`, `pkcs8`, `primefield`, `primeorder`, `sec1`, `serdect`, `signature`, `spki`, `wnaf`, all RustCrypto. They share `sha2` 0.11, `digest` 0.11, `rand_core` 0.10 and `getrandom` 0.4 with FYLO's existing `aes-gcm`, `hmac` and `sha2`, so no second version of those | None: it and `security-framework-sys` and `core-foundation` were already in the graph through `rustls-platform-verifier` (`reqwest`, `fylo-machine`) |
-| Unsafe and native code | Pure Rust. Scalar and field arithmetic is constant-time by design (`subtle`, `crypto-bigint`) | FFI to Apple's Security.framework, behind safe wrappers; FYLO's code calls only the safe API, so `unsafe_code = "forbid"` stands |
+| New transitive crates | `base16ct`, `base64ct`, `crypto-bigint`, `der`, `ecdsa`, `elliptic-curve`, `ff`, `group`, `pem-rfc7468`, `pkcs8`, `primefield`, `primeorder`, `sec1`, `serdect`, `signature`, `spki`, `wnaf`, all RustCrypto. They share `sha2` 0.11, `digest` 0.11, `rand_core` 0.10 and `getrandom` 0.4 with BYCKR's existing `aes-gcm`, `hmac` and `sha2`, so no second version of those | None: it and `security-framework-sys` and `core-foundation` were already in the graph through `rustls-platform-verifier` (`reqwest`, `fylo-machine`) |
+| Unsafe and native code | Pure Rust. Scalar and field arithmetic is constant-time by design (`subtle`, `crypto-bigint`) | FFI to Apple's Security.framework, behind safe wrappers; BYCKR's code calls only the safe API, so `unsafe_code = "forbid"` stands |
 | Build script | None | None (links the system framework) |
-| Secrets | The private key, held in `SecretKey`, which zeroizes on drop; PEM and DER encodings are `Zeroizing` | The PKCS#8 DER key passes through the item's data; FYLO copies it into a `Zeroizing` buffer |
+| Secrets | The private key, held in `SecretKey`, which zeroizes on drop; PEM and DER encodings are `Zeroizing` | The PKCS#8 DER key passes through the item's data; BYCKR copies it into a `Zeroizing` buffer |
 | Untrusted input | Key files and keychain items: decoded with `pkcs8`'s DER parser, refused with `EIDENTITY_KEY` if not a P-256 PKCS#8 key | Keychain labels are checked by `KeyReference` (letters, digits, `.`, `_`, `-`) before they reach the keychain |
 | Maintenance | RustCrypto `elliptic-curves`, active; the de facto pure-Rust P-256 | kornelski, active; used by `native-tls` and `rustls-platform-verifier` |
-| Removal path | `ring` or `aws-lc-rs` offer P-256 too, but need a C or assembly build and no PKCS#8 PEM writer for EC keys; `p256` is the RustCrypto line FYLO already uses for AES-GCM and HMAC | Shell out to `/usr/bin/security`, which would put the key on a command line; or drop `keychain:` for `file:` |
+| Removal path | `ring` or `aws-lc-rs` offer P-256 too, but need a C or assembly build and no PKCS#8 PEM writer for EC keys; `p256` is the RustCrypto line BYCKR already uses for AES-GCM and HMAC | Shell out to `/usr/bin/security`, which would put the key on a command line; or drop `keychain:` for `file:` |
 
 ## Phase 3: `hpke` 0.15.1, and `p256`'s `ecdsa` feature
 
@@ -26,7 +26,7 @@ crate for `fylo identity create` and `fylo identity show`.
 | Purpose | Wrapping a protected database's catalog and collection keys for each identity: RFC 9180 base mode, DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM, single shot |
 | Owning crate | `fylo-identity` (`KeyWrap`), used by `fylo-storage-native` natively |
 | Targets | Native only: `fylo-storage-native` and `fylo-machine` take `fylo-identity` outside WebAssembly, so `fylo-browser.wasm` does not grow (measured: +190,624 bytes with it, +1,002 without) |
-| Features | `aes`, `alloc`, `getrandom`, `nistp`; defaults off, so no X25519, ChaCha20-Poly1305 or ML-KEM. `nistp` also builds `p384` and `p521`, which FYLO never calls; the linker drops them |
+| Features | `aes`, `alloc`, `getrandom`, `nistp`; defaults off, so no X25519, ChaCha20-Poly1305 or ML-KEM. `nistp` also builds `p384` and `p521`, which BYCKR never calls; the linker drops them |
 | License | MIT OR Apache-2.0 |
 | New transitive crates | `hkdf` 0.13, `p384`, `p521`, `fiat-crypto` (for `p521`), `rfc6979` (deterministic ECDSA nonces, from `p256`'s `ecdsa`), `zeroize_derive`. Same `p256` 0.14, `aes-gcm` 0.11, `sha2` 0.11, `rand_core` 0.10 and `getrandom` 0.4 as the rest of the graph |
 | Unsafe and native code | Pure Rust |

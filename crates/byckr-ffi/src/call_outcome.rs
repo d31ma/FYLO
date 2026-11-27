@@ -25,8 +25,8 @@ impl CallOutcome {
         }
     }
 
-    /// A request FYLO could not read is the caller's mistake
-    /// (`FYLO_INVALID_ARGUMENT`); anything else is FYLO's answer.
+    /// A request BYCKR could not read is the caller's mistake
+    /// (`YCKR_INVALID_ARGUMENT`); anything else is BYCKR's answer.
     pub(crate) fn failed(failure: CallFailure) -> CallOutcome {
         if failure.is_bad_request() {
             return CallOutcome::Invalid(failure);
@@ -56,7 +56,7 @@ impl CallOutcome {
             CallOutcome::Closed => Self::message(Self::CLOSED, "the root handle is closed"),
             CallOutcome::Panicked => Self::message(
                 Self::PANICKED,
-                "FYLO panicked; the root handle is dead: close it and open the root again",
+                "BYCKR panicked; the root handle is dead: close it and open the root again",
             ),
         }
     }

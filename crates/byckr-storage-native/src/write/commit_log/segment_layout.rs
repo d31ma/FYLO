@@ -23,7 +23,7 @@ pub(crate) struct SegmentLayout;
 
 impl SegmentLayout {
     const FENCE: &'static [u8] =
-        b"This collection keeps its documents in segments/ (FYLO ADR 0015).\n";
+        b"This collection keeps its documents in segments/ (BYCKR ADR 0015).\n";
     const FIRST_LSN: u64 = 1;
     const MARKER_FORMAT: &'static str = "fylo.collection-segments.v1";
 

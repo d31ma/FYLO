@@ -2,7 +2,7 @@
 
 - Status: **Accepted** (approved by Samuel, 2026-10-28)
 - Date: **2026-10-28**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Amends: the "one canonical JSON file per document" layout in `README.md`
   and `CLAUDE.md`, for document collections that opt in. Builds on ADR 0013
   (the record format and commit protocol) and keeps ADR 0014's hot-set check
@@ -37,7 +37,7 @@ append-only segment files made of ADR 0013 log records. The segment the
 writer appends to is also the collection's write-ahead log, so a commit is the
 append itself and there is no apply step for document bodies. Every document
 record holds the document's canonical JSON byte for byte, with its complete
-FYLO attribute set inline, so documents remain the source of truth: every
+BYCKR attribute set inline, so documents remain the source of truth: every
 derived structure rebuilds from the records alone, and the per-document file
 tree can be exported exactly.
 
@@ -89,7 +89,7 @@ creates a file only once per 64 MiB written.
 Defined in `fylo-format` beside the log types, so the browser kernel, the
 salvage tool and offline readers share one parser.
 
-**Segment header** (32 bytes): ADR 0013's header with magic `FYLOSEG\0`,
+**Segment header** (32 bytes): ADR 0013's header with magic `BYCKRSEG\0`,
 format version `1`, flags `0`, the segment number, and the LSN of its first
 record, with the same CRC-32C. A segment written by compaction sets flag bit 0
 ("compacted") and its first-LSN field is the lowest LSN it holds.
@@ -111,7 +111,7 @@ lists one entry per document the mutation touched, in the order applied:
 | `id`             | canonical TTID                                                                                                                  |
 | `state`          | `live`, `deleted` (soft-deleted, restorable) or `absent`                                                                        |
 | `body`           | blob offset, length and SHA-256 of the canonical JSON; omitted for `absent`                                                     |
-| `attributes`     | the complete FYLO attribute set (`user.fylo.*` names to base64 values), exactly what `flistxattr` returns today, sorted by name |
+| `attributes`     | the complete BYCKR attribute set (`user.fylo.*` names to base64 values), exactly what `flistxattr` returns today, sorted by name |
 | `modifiedMillis` | the document's modification time, which `updatedAt` reads today from the file's mtime                                           |
 | `mode`           | the file mode the file layout would give the document                                                                           |
 
@@ -327,13 +327,13 @@ location files are created `0600` and owned by the root owner. Two
 consequences:
 
 - `.as({ uid, gid, mode })` on a segment collection stores the descriptor and
-  is enforced by FYLO, but no `chown` or `chmod` happens, so a put no longer
+  is enforced by BYCKR, but no `chown` or `chmod` happens, so a put no longer
   fails when the process lacks `chown` permission;
 - a local OS user who is not the root owner can read no record at all
   directly, where today they could read the records whose mode allowed it.
 
 A collection that relies on per-record OS ownership for processes outside
-FYLO should stay on the file layout. `fylo layout --to segments` warns and
+BYCKR should stay on the file layout. `fylo layout --to segments` warns and
 requires `--allow-engine-only-access` when the collection holds any record
 whose descriptor names a uid or gid other than the root owner's.
 
@@ -450,7 +450,7 @@ Costs:
   stay. Using the data segment as the log is the standard log-structured
   design and is simpler.
 - **An embedded key-value engine (an LSM tree such as RocksDB or sled).** A
-  large native dependency against ADR 0004, a second format FYLO does not own,
+  large native dependency against ADR 0004, a second format BYCKR does not own,
   and no way to keep the browser kernel on the same format.
 - **One file per shard instead of segments.** Rewrites a whole shard file per
   write, or needs the same append-and-compact machinery per shard.

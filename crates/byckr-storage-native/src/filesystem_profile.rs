@@ -21,7 +21,7 @@ impl FilesystemProfile {
             "efs-sidecar-v1" => Ok(Self::EfsSidecarV1),
             _ => Err(NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,
-                "unknown FYLO filesystem profile",
+                "unknown BYCKR filesystem profile",
             )),
         }
     }

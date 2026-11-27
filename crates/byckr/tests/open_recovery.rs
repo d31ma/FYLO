@@ -2,7 +2,7 @@
 //! first read, as the machine protocol does when `fylo exec` starts.
 //!
 //! The crash runs in a child copy of this test binary with
-//! `FYLO_RUST_FAILPOINT` set, so `abort` really loses the process.
+//! `YCKR_RUST_FAILPOINT` set, so `abort` really loses the process.
 
 use std::fs;
 use std::path::PathBuf;
@@ -13,9 +13,9 @@ use byckr::{OpenOptions, Query, Root};
 use byckr_storage_native::NativeWriteRoot;
 use serde_json::json;
 
-const CHILD_ROOT: &str = "FYLO_OPEN_RECOVERY_ROOT";
+const CHILD_ROOT: &str = "YCKR_OPEN_RECOVERY_ROOT";
 const CHILD_TEST: &str = "open_recovery_child";
-const FINISHED: &str = "FYLO-OPEN-RECOVERY-CHILD-FINISHED";
+const FINISHED: &str = "BYCKR-OPEN-RECOVERY-CHILD-FINISHED";
 
 /// Runs only as the child: the parent sets the environment.
 #[test]
@@ -59,8 +59,8 @@ impl Case {
         let output = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads", "1"])
             .env(CHILD_ROOT, &self.0)
-            .env("FYLO_RUST_FAILPOINT", failpoint)
-            .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+            .env("YCKR_RUST_FAILPOINT", failpoint)
+            .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
             .output()
             .unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();

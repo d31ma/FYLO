@@ -2,7 +2,7 @@
 
 ## Our standard
 
-FYLO contributors, maintainers, users, and reviewers are expected to make
+BYCKR contributors, maintainers, users, and reviewers are expected to make
 participation respectful, safe, and productive. Be considerate, assume good
 faith while requiring evidence, welcome constructive disagreement, and focus
 criticism on behavior, designs, and code rather than people.

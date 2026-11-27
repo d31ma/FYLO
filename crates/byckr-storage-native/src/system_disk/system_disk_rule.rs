@@ -34,7 +34,7 @@ impl SystemDiskRule {
     /// Returns `ENOTVOLUMEROOT` for a root whose parent is not a mount
     /// point, and `ESYSTEMDISK` for a root on the system disk, on a memory
     /// filesystem, on a disk image whose file is on the system disk, or on a
-    /// disk FYLO cannot tell.
+    /// disk BYCKR cannot tell.
     pub(crate) fn admit(
         path: &Path,
         placement: &RootPlacement,
@@ -76,7 +76,7 @@ impl SystemDiskRule {
         static WARNING: Once = Once::new();
         WARNING.call_once(|| {
             eprintln!(
-                "FYLO warning: system-disk check disabled by {} (ADR 0032); a root on the system disk is allowed.",
+                "BYCKR warning: system-disk check disabled by {} (ADR 0032); a root on the system disk is allowed.",
                 source.describe()
             );
         });

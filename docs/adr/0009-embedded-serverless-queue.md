@@ -2,22 +2,22 @@
 
 - Status: **Accepted**
 - Date: **2026-08-09**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Extends: [ADR 0007](0007-filesystem-only-native-storage.md)
 
 ## Context
 
-The pre-Rust FYLO engine included a local queue backed by append-only topic
+The pre-Rust BYCKR engine included a local queue backed by append-only topic
 logs, consumer checkpoints, advisory leases, retries, and dead letters. The
 Rust cutover deliberately removed that JavaScript native engine and therefore
 removed the queue. What remained were an in-memory client response FIFO, the
 collection transaction journal, and browser event buffers. None is an
 application delivery queue.
 
-FYLO should support event-driven local and edge applications without requiring
+BYCKR should support event-driven local and edge applications without requiring
 a network broker. Calling the feature serverless must not imply a managed
 cloud service, distributed consensus, or concurrent filesystem writers that
-violate FYLO's one-root-owner invariant.
+violate BYCKR's one-root-owner invariant.
 
 ## Decision
 

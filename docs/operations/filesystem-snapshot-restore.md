@@ -1,16 +1,16 @@
 # Filesystem Snapshot and Restore
 
-FYLO is filesystem-only (ADR 0007). Disaster recovery copies a quiesced root
+BYCKR is filesystem-only (ADR 0007). Disaster recovery copies a quiesced root
 with a platform tool that preserves file bytes, directory structure, ownership,
 permissions, timestamps, extended attributes, and NTFS alternate data streams.
-Object-storage and cloud-drive synchronization are not FYLO transaction or
+Object-storage and cloud-drive synchronization are not BYCKR transaction or
 restore protocols.
 
 ## Snapshot
 
 1. Stop every process that can open the root for writes. Do not snapshot a
    live root merely because its document files look idle.
-2. Record the FYLO binary identity, source path, filesystem type, snapshot tool
+2. Record the BYCKR binary identity, source path, filesystem type, snapshot tool
    and version, wall-clock time, and the root's byte count.
 3. Copy the entire root, including `.fylo-catalog`, `.fylo-transactions`,
    `.fylo-queue/v1`, `.fylo-vcs`, `.collections`, and `.buckets`. Queue
@@ -36,7 +36,7 @@ their flags do not prove that a provider preserves xattrs or ADS.
 2. Restore the complete snapshot with the corresponding metadata-preserving
    profile.
 3. Compare the restored inventory with the retained snapshot inventory before
-   opening FYLO.
+   opening BYCKR.
 4. Open the restored root exclusively. Startup recovery may complete a journal
    captured at a documented durable boundary; repeat the open to prove recovery
    is idempotent.
@@ -44,7 +44,7 @@ their flags do not prove that a provider preserves xattrs or ADS.
    when required, and verify the reachable version history and object hashes.
 6. Verify known queue topic/group pairs with `queueStats` and
    `queueDeadLetters` without claiming, acknowledging, or rejecting messages.
-   FYLO does not yet expose a whole-queue offline verifier, so this check proves
+   BYCKR does not yet expose a whole-queue offline verifier, so this check proves
    that recorded queue state is readable but does not replace the exact path,
    size, metadata, and content-hash inventory comparison in step 3.
 7. Run the representative non-empty query and permission corpus. Encryption

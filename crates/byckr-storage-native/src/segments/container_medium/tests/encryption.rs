@@ -18,9 +18,9 @@ use crate::{
     NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RootOpenOptions,
 };
 
-const ROLE: &str = "FYLO_VDBX_ENCRYPTION_CHILD_ROLE";
-const DATABASE: &str = "FYLO_VDBX_ENCRYPTION_CHILD_DATABASE";
-const KEY: &str = "FYLO_VDBX_ENCRYPTION_CHILD_KEY";
+const ROLE: &str = "YCKR_VDBX_ENCRYPTION_CHILD_ROLE";
+const DATABASE: &str = "YCKR_VDBX_ENCRYPTION_CHILD_DATABASE";
+const KEY: &str = "YCKR_VDBX_ENCRYPTION_CHILD_KEY";
 const CHILD_TEST: &str =
     "segments::container_medium::tests::encryption::an_encryption_child_process";
 /// Text in every document, which must never appear in an encrypted file.
@@ -693,8 +693,8 @@ fn stopped(role: &str, database: &Encrypted, failpoint: &str) {
         .env(ROLE, role)
         .env(DATABASE, database.path())
         .env(KEY, &database.secret)
-        .env("FYLO_RUST_FAILPOINT", failpoint)
-        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .env("YCKR_RUST_FAILPOINT", failpoint)
+        .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

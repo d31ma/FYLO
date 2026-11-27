@@ -5,7 +5,7 @@ use std::io;
 /// The whole-file advisory lock a root lease holds on its lock file.
 ///
 /// `std`'s `File::try_lock` is not built for Android, where it always answers
-/// `Unsupported`, so there FYLO calls `flock(2)` itself. Every other target
+/// `Unsupported`, so there BYCKR calls `flock(2)` itself. Every other target
 /// keeps `std`'s lock.
 pub(crate) struct KernelFileLock;
 

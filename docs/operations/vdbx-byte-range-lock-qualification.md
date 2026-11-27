@@ -2,7 +2,7 @@
 
 ADR 0016 section 7 lets several local processes share one `.vdbx` file through
 OS byte-range locks, and only on a filesystem where the multi-process harness
-has passed. FYLO is embedded, like SQLite, so nothing here relies on a server
+has passed. BYCKR is embedded, like SQLite, so nothing here relies on a server
 process. On any other filesystem, including one that refuses byte-range locks
 (SMB without lock support, FAT, exFAT, some FUSE filesystems), a `.vdbx` still
 works under the lock-free lease (`ContainerLease`): one writer at a time,
@@ -11,7 +11,7 @@ filesystems have passed.
 
 ## Choosing locks or the lock-free lease
 
-At open, FYLO checks two things, both in `fylo-storage-native`:
+At open, BYCKR checks two things, both in `fylo-storage-native`:
 
 - `FilesystemInfo::of(file)` names the filesystem (`fstatfs` on Linux and
   macOS, `GetVolumeInformationByHandleW` and the remote-protocol query on
@@ -21,7 +21,7 @@ At open, FYLO checks two things, both in `fylo-storage-native`:
 - `ByteRangeLockFile::probe()` takes and releases a reserved byte (2⁶² + 2).
   Any failure counts as "no locks".
 
-| Qualified | Probe | What FYLO uses                         | Harness reports |
+| Qualified | Probe | What BYCKR uses                         | Harness reports |
 | --------- | ----- | -------------------------------------- | --------------- |
 | yes       | yes   | byte-range locks, many writers         | qualified       |
 | no        | yes   | lock-free lease, one writer at a time  | unqualified     |
@@ -195,7 +195,7 @@ full sequence are in `docs/QUERY_RELEASE_QUALIFICATION.md`, "Single-file
 
 Beyond the lock harness, each of these filesystems ran a whole database
 through the release CLI and the spike harness
-(`/Volumes/FORGE/Logs/FYLO/fxdb-atlas/scripts/fxdbcheck.rs`), at develop
+(`/Volumes/FORGE/Logs/BYCKR/fxdb-atlas/scripts/fxdbcheck.rs`), at develop
 `70d468b`. The checks:
 
 - **CLI round trip:** `create`, `createCollection`, three `INSERT`s, then
@@ -211,7 +211,7 @@ through the release CLI and the spike harness
 
 | Check | exFAT, macOS 27.2 | NTFS, Windows 11 (F:) |
 | ----- | ----------------- | --------------------- |
-| What FYLO picks | lease, lease byte held exclusive (probe granted, unqualified) | byte-range locks (qualified) |
+| What BYCKR picks | lease, lease byte held exclusive (probe granted, unqualified) | byte-range locks (qualified) |
 | CLI round trip | passed | passed |
 | `fylo pack` onto the filesystem | passed (10.7 s for 2 × 2,000 documents) | passed (3.4 s) |
 | `fylo unpack` onto the filesystem | **fails**: directory root, see below | passed, all 2,000 documents match |
@@ -263,8 +263,8 @@ Known failures:
   allocated, so another filesystem error at that point could leave the same
   mismatch.
 
-Logs and raw JSON: `/Volumes/FORGE/Logs/FYLO/fxdb-atlas/exfat/` and
-`/Volumes/FORGE/Logs/FYLO/fxdb-atlas/ntfs/`. The run at `7f7d1ec`, before
+Logs and raw JSON: `/Volumes/FORGE/Logs/BYCKR/fxdb-atlas/exfat/` and
+`/Volumes/FORGE/Logs/BYCKR/fxdb-atlas/ntfs/`. The run at `7f7d1ec`, before
 the ENOTTY fix, is in `exfat-7f7d1ec/`.
 
 A filesystem joins `QUALIFIED` in
@@ -285,16 +285,16 @@ processes, and when they open a database in a shared app-group container,
 two processes use one `.vdbx`. That case relies on the lease behaving on iOS
 as it does on the other platforms, which no iOS test has shown yet.
 
-On Linux every NFS version has one `fstatfs` magic number, so FYLO reads the
+On Linux every NFS version has one `fstatfs` magic number, so BYCKR reads the
 mount table: an NFS 4.1 mount is named `nfs4.1`, and a mount whose locks stay
 on the client (`nolock`, `local_lock=posix` or `local_lock=all`) is named
 `nfs-local-lock` and is never qualified. The Linux NFS client answers some
-cross-client conflicts with `EDEADLK` even to a non-waiting request; FYLO
+cross-client conflicts with `EDEADLK` even to a non-waiting request; BYCKR
 treats it as a conflict and retries.
 
 NFS stays unqualified. Across two clients, exclusion held in ten runs on two
 exports, but one earlier run saw a holder read a counter one behind the last
 holder's flushed write, which is what a client page cache that missed the
 other client's change looks like. Byte-range locks on NFS would also need
-every reader to revalidate its cache after each lock, which FYLO does not
+every reader to revalidate its cache after each lock, which BYCKR does not
 promise. On NFS a `.vdbx` uses the lock-free lease.

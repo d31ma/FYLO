@@ -1,4 +1,4 @@
-//! FYLO's C ABI (ADR 0026): the `fylo` crate for iOS and Android apps, and
+//! BYCKR's C ABI (ADR 0026): the `fylo` crate for iOS and Android apps, and
 //! any other host that links a C library.
 //!
 //! The header is `include/fylo.h`. Every input is a pointer and a length,

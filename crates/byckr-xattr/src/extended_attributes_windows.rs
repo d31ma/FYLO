@@ -3,7 +3,7 @@ use std::io;
 use std::path::Path;
 
 /// A file's extended attributes by path, never following a symlink. Windows
-/// has no extended-attribute backend in FYLO yet (ADR 0026), so every call is
+/// has no extended-attribute backend in BYCKR yet (ADR 0026), so every call is
 /// a no-op: reads report no attribute and writes succeed without storing.
 pub struct ExtendedAttributes;
 

@@ -12,10 +12,10 @@ pub(crate) struct AttributeLimit;
 
 impl AttributeLimit {
     const NAMES_AND_OTHER_ATTRIBUTES: u32 = 4 * 1024;
-    /// The room one record's attributes need: FYLO's largest metadata value
+    /// The room one record's attributes need: BYCKR's largest metadata value
     /// plus its name and the record's other attributes (key, checksum,
     /// access). A file system with less keeps a whole app folder's metadata
-    /// in sidecar files (ADR 0033 section 6, FYLO-L1-4b).
+    /// in sidecar files (ADR 0033 section 6, BYCKR-L1-4b).
     #[expect(
         clippy::cast_possible_truncation,
         reason = "MAX_META_VALUE_BYTES is 60 KiB"

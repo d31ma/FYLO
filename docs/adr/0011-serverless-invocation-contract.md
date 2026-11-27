@@ -8,7 +8,7 @@ Extended by: [ADR 0028](0028-cli-invocation-mode.md) (the `fylo exec
 
 ## Context
 
-Serverless lifetime is separate from metadata representation. FYLO owns the
+Serverless lifetime is separate from metadata representation. BYCKR owns the
 request, storage, recovery and teardown contracts; PaaS owns AWS infrastructure.
 `efs-sidecar-v1` is one unqualified backend candidate, not a general runtime mode.
 Object stores do not inherit POSIX rename, sync or advisory-lock guarantees.

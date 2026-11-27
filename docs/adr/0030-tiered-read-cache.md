@@ -4,7 +4,7 @@
   same day. Slice R (fewer file calls per read, section "Slice R") is built;
   the temp tier waits for the user's decision on its numbers.
 - Date: **2026-11-14**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Amends: ADR 0014 (the hot set also keeps query results; the lookup order
   gains a temp-disk tier).
 - Related: ADR 0003 (one owner per root, caches are derived), ADR 0010 (EFS
@@ -21,7 +21,7 @@ The user asked for three read tiers: the root's disk (the true copy), a disk
 cache in the OS temp folder for documents read often, and memory for query
 results.
 
-What FYLO has today:
+What BYCKR has today:
 
 - **Hot set** (ADR 0014): parsed documents, index snapshots, id lists and
   collection headers in memory, only in exclusive sessions, cleared around
@@ -40,7 +40,7 @@ What FYLO has today:
 Facts that decide the design:
 
 1. A temp folder is faster than the root only when the root is slow and the
-   temp folder is local. The only slow root FYLO admits is EFS through the
+   temp folder is local. The only slow root BYCKR admits is EFS through the
    explicit EFS profile (ADR 0029 refuses other network roots). That profile
    uses the files layout only: one JSON file per document plus a mandatory
    `.fylo-attrs` manifest, no write-ahead log, no segments, no `.vdbx`.
@@ -153,9 +153,9 @@ the document file and, in the EFS profile, of its `.fylo-attrs` manifest.
 | drop and re-create under the same name | new incarnation id; no `state.json` and no id means not cacheable |
 | `rebuildCollection`, reshard, layout move | generation bump (structural journal) and file identity |
 | a document changed while the collection stamp moved | document stamp (new file or new ctime) |
-| an older FYLO release writing the root | it rewrites `state.json` (new identity), even though it does not know the incarnation id |
+| an older BYCKR release writing the root | it rewrites `state.json` (new identity), even though it does not know the incarnation id |
 | a torn or corrupt temp entry | the entry's checksum (section 4.4) |
-| an edit to the root's files by a tool other than FYLO | see 3.4 |
+| an edit to the root's files by a tool other than BYCKR | see 3.4 |
 
 **Incarnation id.** Like ADR 0027's layout id: a TTID clock tick of the
 writing process, in a new file `.fylo-transactions/<namespace>/<name>/incarnation`
@@ -168,7 +168,7 @@ by older releases.
 
 #### 3.4 Out-of-band edits
 
-An edit to a document file by a tool other than FYLO does not change
+An edit to a document file by a tool other than BYCKR does not change
 `state.json`. While the collection stamp is unchanged, the temp tier will
 not see it. This is the same limit the hot set accepted in ADR 0014, and
 such edits are unsupported. The user chose **collection** validation (D2).
@@ -198,7 +198,7 @@ document stamp) was considered and is not built.
 
 - `off`: nothing is read from or written to the temp folder. This is the
   switch to turn the tier off, per process, without a release.
-- `auto`: FYLO decides once, when the session opens its root. The tier is
+- `auto`: BYCKR decides once, when the session opens its root. The tier is
   active only when **all** of these hold:
   1. the root is a folder root (not `.vdbx`) opened with
      `--filesystem-profile efs-sidecar-v1`. Today this is the only way a
@@ -240,7 +240,7 @@ says why it is inactive.
 - An existing cache folder is used only if it is a real folder (not a
   symbolic link or reparse point), owned by the process's effective user,
   and (Unix) has no group or other permission bits. Otherwise the tier is off
-  for this process and the handshake reports `unsafe folder`. FYLO never
+  for this process and the handshake reports `unsafe folder`. BYCKR never
   changes or deletes a folder it does not own.
 - Every file under it is opened relative to the opened folder handle with
   no-follow flags, so a swapped link cannot redirect a read or write.
@@ -329,7 +329,7 @@ files, anything of a `.vdbx`.
 - **Authorization is never cached.** Folder roots: access is the OS user's
   permission on the root's files. A process can only find entries it wrote
   itself or that another process of the same OS user wrote after reading the
-  root. After any FYLO write (stamp changed), revalidation opens the root's
+  root. After any BYCKR write (stamp changed), revalidation opens the root's
   file, so the kernel checks permission again. Protected `.vdbx`: the temp tier is never used; the query
   tier is per session, a session has one identity, and every listed document
   still goes through the per-read signature, key-epoch and grant checks.
@@ -385,7 +385,7 @@ hides one that a primary read would have raised at the same state.
   unchanged collection without opening document or manifest files on EFS.
   Only the stable `state.json` reads remain (two per read, as today).
 - Measured on two NFS servers (the planning benchmark): the document read is about
-  half of a `getDoc` (FYLO makes about 35 NFS calls for a document and its
+  half of a `getDoc` (BYCKR makes about 35 NFS calls for a document and its
   manifest). A temp hit should save about 50 to 55% of a `getDoc` in a long
   session, and about 12 to 17% of a one-request invocation process, where
   process start, recovery and the lease cost more. The hot set stays far
@@ -418,7 +418,7 @@ hides one that a primary read would have raised at the same state.
   document in a shared session costs the same as the first (8 ms on fast NFS,
   55 to 90 ms on slower NFS). The temp tier removes those opens when the
   collection is unchanged.
-- **Only cut FYLO's NFS calls per read, with no new cache.** Not rejected:
+- **Only cut BYCKR's NFS calls per read, with no new cache.** Not rejected:
   it is decision D6. It helps every read, needs no stamp, and may give much
   of the same gain. It does not give memory-speed reads.
 - **Generation number as the key.** Unsafe (QUERY_INDEX_REUSE).
@@ -560,7 +560,7 @@ ended; query hits are counted).
 - **D3. Memory tiers: exclusive sessions only.**
 - **D4. One memory budget:** query results share `--hot-set-bytes`.
 - **D5. Query results never on disk.**
-- **D6. Order of work: cut FYLO's NFS calls per read first** (PLAN slice R),
+- **D6. Order of work: cut BYCKR's NFS calls per read first** (PLAN slice R),
   measure again, and build the temp tier (S0, S2 to S5) only if it still
   pays. The user decides that after the new numbers.
 
@@ -581,7 +581,7 @@ Per slice, in short:
 - crash tests (kill during an entry write), wipe tests, budget tests;
 - permission tests per OS (owner, mode, links, Windows DACL);
 - opt-in network tests on NFS mounts with the EFS profile
-  (`FYLO_TEST_NETWORK_ROOTS`, as ADR 0029);
+  (`YCKR_TEST_NETWORK_ROOTS`, as ADR 0029);
 - a benchmark gate on NFS here, and a real Lambda + EFS gate in PaaS before
   `auto` becomes the default.
 
@@ -643,7 +643,7 @@ back (for example the "after" index keys of an SQL `UPDATE`).
 **What a same-stamp hit does not re-check.** A hit under the current stamp
 makes no file call on the root, so it does not repeat the per-file checks of
 a root read (the content checksum attribute, the no-follow open, the
-`legacyAccess` notice). It relies on the stamp: every FYLO change moves it.
+`legacyAccess` notice). It relies on the stamp: every BYCKR change moves it.
 A file changed, swapped or deleted by another tool while `state.json` stays
 the same is not seen, the limit 3.4 accepts (decision D2). A stamped
 generation read that fails clears the window and answers as a handle
@@ -674,7 +674,7 @@ oversized documents are not kept; `auto` on a local root and `.vdbx` roots
 create nothing. `fylo-cli/tests/temp_tier_processes.rs` (3): separate
 `fylo` processes see each other's writes, and a process stopped in the
 middle of an entry, or before renaming it
-(`FYLO_RUST_TEMP_CACHE_FAILPOINT`), leaves only a partial file.
+(`YCKR_RUST_TEMP_CACHE_FAILPOINT`), leaves only a partial file.
 
 **What it does not do yet.** No NFS gain can be measured in this slice: the
 native profile refuses a network root (ADR 0029), so the tier's real target,
@@ -753,7 +753,7 @@ A real Lambda + EFS run is still needed before this ADR is Accepted.
 **Tests.** The machine tests of S3 now also run on an EFS-profile root (16
 more); the CLI tests add an EFS process test, an `exec --invocation` test,
 and an opt-in test on real network mounts
-(`FYLO_TEST_NETWORK_ROOTS`, `--run-ignored only`) where the default `auto`
+(`YCKR_TEST_NETWORK_ROOTS`, `--run-ignored only`) where the default `auto`
 turns the tier on; it passed on both mounts above. Unit tests cover the
 binding check and entry format v2.
 

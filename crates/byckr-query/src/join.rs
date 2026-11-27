@@ -1,4 +1,4 @@
-//! Validated FYLO join specifications.
+//! Validated BYCKR join specifications.
 //!
 //! A join is a query shape rather than a protocol shape, so it is parsed and
 //! bounded here and executed by the engine.

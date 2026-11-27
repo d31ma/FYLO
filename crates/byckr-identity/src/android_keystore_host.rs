@@ -3,8 +3,8 @@ use std::sync::OnceLock;
 use crate::android_keystore::AndroidKeystore;
 use crate::identity_error::IdentityError;
 
-/// Where FYLO finds the [`AndroidKeystore`] for `android-keystore:` keys:
-/// installed once per process by FYLO's Android library.
+/// Where BYCKR finds the [`AndroidKeystore`] for `android-keystore:` keys:
+/// installed once per process by BYCKR's Android library.
 pub struct AndroidKeystoreHost;
 
 impl AndroidKeystoreHost {
@@ -17,7 +17,7 @@ impl AndroidKeystoreHost {
     pub(crate) fn installed() -> Result<&'static dyn AndroidKeystore, IdentityError> {
         Self::slot().get().map(Box::as_ref).ok_or_else(|| {
             IdentityError::Unsupported(
-                "android-keystore: keys need Android 12 or newer and FYLO's Android library \
+                "android-keystore: keys need Android 12 or newer and BYCKR's Android library \
                  (io.github.d31ma:fylo-android); use file:<path> or the store of this system"
                     .to_owned(),
             )

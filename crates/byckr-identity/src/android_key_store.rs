@@ -5,7 +5,7 @@ use crate::hardware_key_store::HardwareKeyStore;
 use crate::identity_error::IdentityError;
 
 /// `android-keystore:<alias>` (ADR 0026, section 8): a hardware key in the
-/// Android Keystore, like `enclave:` and `tpm:`. FYLO signs records with
+/// Android Keystore, like `enclave:` and `tpm:`. BYCKR signs records with
 /// session keys (ADR 0021, section 8), so only opening a database and one
 /// session certificate a day use the Keystore.
 pub(crate) struct AndroidKeyStore {

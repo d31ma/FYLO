@@ -8,7 +8,7 @@ use crate::hardware_key::HardwareKey;
 use crate::identity_error::IdentityError;
 
 /// One key in the Android Keystore, named by its alias. The Keystore signs
-/// and agrees; FYLO holds only the public key.
+/// and agrees; BYCKR holds only the public key.
 pub(crate) struct AndroidKey {
     alias: String,
     keystore: &'static dyn AndroidKeystore,

@@ -13,8 +13,8 @@ use byckr_storage_native::layout::{
 };
 use byckr_storage_native::{FilesystemProbe, FilesystemProfile, NativeStorageErrorCode};
 
-const NO_ATTRIBUTE_DIRECTORY: &str = "FYLO_TEST_NO_XATTR_DIR";
-const PLAIN_EXT4_DIRECTORY: &str = "FYLO_TEST_PLAIN_EXT4_DIR";
+const NO_ATTRIBUTE_DIRECTORY: &str = "YCKR_TEST_NO_XATTR_DIR";
+const PLAIN_EXT4_DIRECTORY: &str = "YCKR_TEST_PLAIN_EXT4_DIR";
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 struct Directory(PathBuf);
@@ -276,7 +276,7 @@ fn the_probe_of_a_new_app_folder_leaves_only_byckr_files() {
 }
 
 #[test]
-#[ignore = "needs FYLO_TEST_NO_XATTR_DIR on a file system without extended attributes"]
+#[ignore = "needs YCKR_TEST_NO_XATTR_DIR on a file system without extended attributes"]
 fn a_file_system_without_attributes_gets_sidecar_files() {
     let directory = Directory::without_attributes();
 
@@ -288,7 +288,7 @@ fn a_file_system_without_attributes_gets_sidecar_files() {
 }
 
 #[test]
-#[ignore = "needs FYLO_TEST_NO_XATTR_DIR on a file system without extended attributes"]
+#[ignore = "needs YCKR_TEST_NO_XATTR_DIR on a file system without extended attributes"]
 fn a_new_app_folder_on_a_share_without_attributes_records_sidecar_files() {
     let drive = Directory::without_attributes();
     let layout = RootLayout::waived(drive.0.join("app"));
@@ -302,7 +302,7 @@ fn a_new_app_folder_on_a_share_without_attributes_records_sidecar_files() {
 }
 
 #[test]
-#[ignore = "needs FYLO_TEST_NO_XATTR_DIR on a file system without extended attributes"]
+#[ignore = "needs YCKR_TEST_NO_XATTR_DIR on a file system without extended attributes"]
 fn the_native_override_fails_with_efsprobe_without_attributes() {
     let directory = Directory::without_attributes();
 
@@ -313,7 +313,7 @@ fn the_native_override_fails_with_efsprobe_without_attributes() {
 }
 
 #[test]
-#[ignore = "needs FYLO_TEST_NO_XATTR_DIR on a file system without extended attributes"]
+#[ignore = "needs YCKR_TEST_NO_XATTR_DIR on a file system without extended attributes"]
 fn an_app_folder_copied_to_a_share_without_attributes_fails_its_open_check() {
     let directory = Directory::without_attributes();
 
@@ -334,7 +334,7 @@ fn an_app_folder_copied_to_a_share_without_attributes_fails_its_open_check() {
 }
 
 #[test]
-#[ignore = "needs FYLO_TEST_PLAIN_EXT4_DIR on plain ext4 (no ea_inode)"]
+#[ignore = "needs YCKR_TEST_PLAIN_EXT4_DIR on plain ext4 (no ea_inode)"]
 fn plain_ext4_gets_sidecar_files_and_records_its_small_attribute_limit() {
     let directory = Directory::on_plain_ext4();
 
@@ -349,7 +349,7 @@ fn plain_ext4_gets_sidecar_files_and_records_its_small_attribute_limit() {
 }
 
 #[test]
-#[ignore = "needs FYLO_TEST_PLAIN_EXT4_DIR on plain ext4 (no ea_inode)"]
+#[ignore = "needs YCKR_TEST_PLAIN_EXT4_DIR on plain ext4 (no ea_inode)"]
 fn a_new_app_folder_on_plain_ext4_records_sidecar_files() {
     let drive = Directory::on_plain_ext4();
     let layout = RootLayout::waived(drive.0.join("app"));
@@ -363,7 +363,7 @@ fn a_new_app_folder_on_plain_ext4_records_sidecar_files() {
 }
 
 #[test]
-#[ignore = "needs FYLO_TEST_PLAIN_EXT4_DIR on plain ext4 (no ea_inode)"]
+#[ignore = "needs YCKR_TEST_PLAIN_EXT4_DIR on plain ext4 (no ea_inode)"]
 fn the_native_override_fails_with_efsprobe_on_plain_ext4() {
     let directory = Directory::on_plain_ext4();
 
@@ -374,7 +374,7 @@ fn the_native_override_fails_with_efsprobe_on_plain_ext4() {
 }
 
 #[test]
-#[ignore = "needs FYLO_TEST_PLAIN_EXT4_DIR on plain ext4 (no ea_inode)"]
+#[ignore = "needs YCKR_TEST_PLAIN_EXT4_DIR on plain ext4 (no ea_inode)"]
 fn an_app_folder_copied_to_plain_ext4_fails_its_open_check() {
     let directory = Directory::on_plain_ext4();
 

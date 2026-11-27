@@ -1,6 +1,6 @@
 use std::ffi::OsStr;
 
-/// Tells FYLO's extended attributes apart from the ones the kernel keeps.
+/// Tells BYCKR's extended attributes apart from the ones the kernel keeps.
 ///
 /// Linux and Android list the kernel's own attributes, such as
 /// `security.selinux`, next to a file's `user.` ones. An app cannot remove

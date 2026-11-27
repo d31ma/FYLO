@@ -1,4 +1,4 @@
-//! The first request of a fresh session reads only the files it needs (FYLO-CR1).
+//! The first request of a fresh session reads only the files it needs (BYCKR-CR1).
 //!
 //! On a cold page cache every distinct file a request opens is a disk read,
 //! so a check that a collection exists must not read its documents. These

@@ -1,6 +1,6 @@
-//! A stand-in for an application server that embeds FYLO, for tests only.
+//! A stand-in for an application server that embeds BYCKR, for tests only.
 //!
-//! FYLO ships no server. An application opens its database in its own
+//! BYCKR ships no server. An application opens its database in its own
 //! process, as it would an `SQLite` file, and answers its own clients. This
 //! fixture is the smallest such application: it takes the root's exclusive
 //! lease, opens one embedded `FrameSession` (one database handle, like one

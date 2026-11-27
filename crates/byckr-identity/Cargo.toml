@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "FYLO application identities: P-256 key pairs named by key references (ADR 0021)"
+description = "BYCKR application identities: P-256 key pairs named by key references (ADR 0021)"
 publish = false
 
 [dependencies]

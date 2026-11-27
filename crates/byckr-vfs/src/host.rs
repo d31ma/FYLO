@@ -108,7 +108,7 @@ pub struct HostVfs {
     /// Report the wall clock in whole Unix milliseconds.
     ///
     /// `SystemTime::now` panics on `wasm32-unknown-unknown` — there is no
-    /// clock behind it — and FYLO stamps records, leases, and transactions with
+    /// clock behind it — and BYCKR stamps records, leases, and transactions with
     /// one. A browser worker answers with `Date.now()`.
     pub now_unix_ms: unsafe extern "C" fn(*mut u64) -> i32,
     /// Fill a buffer with cryptographically secure random bytes.

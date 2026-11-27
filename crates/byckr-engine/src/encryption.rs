@@ -65,12 +65,12 @@ impl EncryptionReader {
         registry: SchemaRegistry,
     ) -> Result<Self, String> {
         let schema_root = fs::canonicalize(schema_root.as_ref())
-            .map_err(|error| format!("cannot open FYLO schema root: {error}"))?;
+            .map_err(|error| format!("cannot open BYCKR schema root: {error}"))?;
         if !fs::metadata(&schema_root)
-            .map_err(|error| format!("cannot inspect FYLO schema root: {error}"))?
+            .map_err(|error| format!("cannot inspect BYCKR schema root: {error}"))?
             .is_dir()
         {
-            return Err("FYLO schema root is not a directory".into());
+            return Err("BYCKR schema root is not a directory".into());
         }
         Self::unconfigured(registry).with_credentials(credentials, Some(schema_root))
     }

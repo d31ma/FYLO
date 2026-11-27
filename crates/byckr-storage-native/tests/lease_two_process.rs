@@ -3,8 +3,8 @@
 //! paused owner, an owner on "another machine" (a test machine id), and an
 //! owner whose kernel lock was lost as a router reboot loses it.
 //!
-//! The roots live in the test folder (`FYLO_TEST_ROOT`, else TMPDIR). `FYLO_LEASE_TEST_DIR` puts them in another
-//! folder, and `FYLO_LEASE_TEST_PROFILE=efs` takes them with the EFS profile,
+//! The roots live in the test folder (`YCKR_TEST_ROOT`, else TMPDIR). `YCKR_LEASE_TEST_DIR` puts them in another
+//! folder, and `YCKR_LEASE_TEST_PROFILE=efs` takes them with the EFS profile,
 //! which is how a root on an NFS mount is opened before the layout release.
 
 use std::fs;
@@ -18,13 +18,13 @@ use byckr_storage_native::{
     NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RootLease, RootOpenOptions,
 };
 
-const CHILD: &str = "FYLO_LEASE_TEST_CHILD";
-const ROOT: &str = "FYLO_LEASE_TEST_ROOT";
-const TEST_DIR: &str = "FYLO_LEASE_TEST_DIR";
-const TEST_PROFILE: &str = "FYLO_LEASE_TEST_PROFILE";
-const MACHINE: &str = "FYLO_TEST_LEASE_MACHINE";
-const NAMESPACE: &str = "FYLO_LEASE_TEST_NAMESPACE";
-const GO_WAIT: &str = "FYLO_LEASE_TEST_GO_WAIT_SECONDS";
+const CHILD: &str = "YCKR_LEASE_TEST_CHILD";
+const ROOT: &str = "YCKR_LEASE_TEST_ROOT";
+const TEST_DIR: &str = "YCKR_LEASE_TEST_DIR";
+const TEST_PROFILE: &str = "YCKR_LEASE_TEST_PROFILE";
+const MACHINE: &str = "YCKR_TEST_LEASE_MACHINE";
+const NAMESPACE: &str = "YCKR_LEASE_TEST_NAMESPACE";
+const GO_WAIT: &str = "YCKR_LEASE_TEST_GO_WAIT_SECONDS";
 const ITEMS: &str = "items";
 const HEARTBEAT_SECONDS: &str = "0.05";
 // On Windows a taker reads the owner's start time through PowerShell, which
@@ -151,8 +151,8 @@ fn start_child(
         .args(["--exact", "lease_child", "--nocapture", "--test-threads=1"])
         .env(CHILD, mode)
         .env(ROOT, &scratch.root)
-        .env("FYLO_LEASE_HEARTBEAT_SECONDS", HEARTBEAT_SECONDS)
-        .env("FYLO_LEASE_TAKEOVER_SECONDS", TAKEOVER_SECONDS)
+        .env("YCKR_LEASE_HEARTBEAT_SECONDS", HEARTBEAT_SECONDS)
+        .env("YCKR_LEASE_TAKEOVER_SECONDS", TAKEOVER_SECONDS)
         .stdout(std::process::Stdio::null());
     if let Some(machine) = machine {
         command.env(MACHINE, machine);
@@ -199,7 +199,7 @@ fn wait_for_content(path: &Path) -> String {
     }
 }
 
-/// How long a holding child waits for `go`: `FYLO_LEASE_TEST_GO_WAIT_SECONDS`,
+/// How long a holding child waits for `go`: `YCKR_LEASE_TEST_GO_WAIT_SECONDS`,
 /// else [`READY_WAIT`].
 fn go_wait() -> Duration {
     std::env::var(GO_WAIT)
@@ -244,8 +244,8 @@ fn timed<T>(action: impl FnOnce() -> T) -> (T, Duration) {
 /// one document and writes the outcome to `result`. `lose-kernel-lock`
 /// first gives up its kernel lock, as a router reboot does. `crash` only
 /// takes the root: a failpoint set by the parent aborts it on the way.
-/// A child that takes namespace `FYLO_LEASE_TEST_NAMESPACE` of the app
-/// folder `FYLO_LEASE_TEST_ROOT` (mode `take-namespace`), or drops it (mode
+/// A child that takes namespace `YCKR_LEASE_TEST_NAMESPACE` of the app
+/// folder `YCKR_LEASE_TEST_ROOT` (mode `take-namespace`), or drops it (mode
 /// `drop-namespace`), and writes the outcome to `result-<namespace>`.
 fn namespace_child(mode: &str, app: &Path) {
     let namespace = NamespaceName::parse(&std::env::var(NAMESPACE).unwrap()).unwrap();
@@ -381,8 +381,8 @@ fn crash_then_take(failpoint: &str, machine: Option<&str>) -> (Duration, Scratch
         "crash",
         machine,
         &[
-            ("FYLO_RUST_FAILPOINT", failpoint),
-            ("FYLO_RUST_FAILPOINT_ACTION", "abort"),
+            ("YCKR_RUST_FAILPOINT", failpoint),
+            ("YCKR_RUST_FAILPOINT_ACTION", "abort"),
         ],
     );
     assert!(
@@ -455,9 +455,9 @@ impl RemoteMachine {
 
     fn from_environment() -> Self {
         Self {
-            host: std::env::var("FYLO_LEASE_REMOTE_HOST").expect("set FYLO_LEASE_REMOTE_HOST"),
-            local_prefix: PathBuf::from(std::env::var("FYLO_LEASE_LOCAL_PREFIX").unwrap()),
-            remote_prefix: PathBuf::from(std::env::var("FYLO_LEASE_REMOTE_PREFIX").unwrap()),
+            host: std::env::var("YCKR_LEASE_REMOTE_HOST").expect("set YCKR_LEASE_REMOTE_HOST"),
+            local_prefix: PathBuf::from(std::env::var("YCKR_LEASE_LOCAL_PREFIX").unwrap()),
+            remote_prefix: PathBuf::from(std::env::var("YCKR_LEASE_REMOTE_PREFIX").unwrap()),
         }
     }
 
@@ -472,7 +472,7 @@ impl RemoteMachine {
 
     fn start_child(&self, scratch: &Scratch) -> Child {
         let timing = format!(
-            "FYLO_LEASE_HEARTBEAT_SECONDS={} FYLO_LEASE_TAKEOVER_SECONDS={}",
+            "YCKR_LEASE_HEARTBEAT_SECONDS={} YCKR_LEASE_TAKEOVER_SECONDS={}",
             Self::HEARTBEAT_SECONDS,
             Self::TAKEOVER_SECONDS
         );
@@ -480,7 +480,7 @@ impl RemoteMachine {
     }
 
     /// A holding child on the remote machine with the environment `timing`
-    /// (empty for FYLO's default 5 s heartbeat and 20 s takeover).
+    /// (empty for BYCKR's default 5 s heartbeat and 20 s takeover).
     fn start_child_with(&self, scratch: &Scratch, timing: &str) -> Child {
         fs::write(scratch.marker("ready"), b"").unwrap();
         fs::write(scratch.marker("result"), b"").unwrap();
@@ -522,9 +522,9 @@ impl RemoteMachine {
     }
 }
 
-/// Run with `FYLO_LEASE_REMOTE_HOST`, `FYLO_LEASE_LOCAL_PREFIX`,
-/// `FYLO_LEASE_REMOTE_PREFIX`, `FYLO_LEASE_TEST_DIR` (under the local
-/// prefix) and `FYLO_LEASE_TEST_PROFILE=efs`, `--ignored --nocapture`.
+/// Run with `YCKR_LEASE_REMOTE_HOST`, `YCKR_LEASE_LOCAL_PREFIX`,
+/// `YCKR_LEASE_REMOTE_PREFIX`, `YCKR_LEASE_TEST_DIR` (under the local
+/// prefix) and `YCKR_LEASE_TEST_PROFILE=efs`, `--ignored --nocapture`.
 #[test]
 #[ignore = "needs a second machine that shares a folder; see the doc comment"]
 fn a_root_shared_with_another_machine_has_one_owner_at_a_time() {
@@ -650,7 +650,7 @@ fn a_taken_over_writer_appends_nothing_to_a_commit_log_collection() {
     assert_eq!(ids, [identifier(1)]);
 }
 
-/// The bench of the FYLO Build Coordinator (2026-11-21): with FYLO's default
+/// The bench of the BYCKR Build Coordinator (2026-11-21): with BYCKR's default
 /// timing (5 s heartbeat, 20 s takeover) and the NFS mount's default
 /// attribute caches, a process on this machine that reads the record over
 /// NFS never takes over from a live owner on the other machine during 60 s,

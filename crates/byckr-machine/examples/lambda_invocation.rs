@@ -2,7 +2,7 @@
 //!
 //! Qualification harness only, not a supported deployment: it speaks the
 //! Lambda runtime API over plain HTTP on the loopback socket Lambda provides,
-//! runs one FYLO core request per event against `FYLO_ROOT` with the
+//! runs one BYCKR core request per event against `YCKR_ROOT` with the
 //! `efs-sidecar-v1` profile, and reports the response with timing. Each event
 //! gets a fresh budget from the provider deadline.
 // ponytail: hand-rolled HTTP/1.1 against the local runtime API only; use a
@@ -22,7 +22,7 @@ type Headers = Vec<(String, String)>;
 
 fn main() -> io::Result<()> {
     let api = std::env::var("AWS_LAMBDA_RUNTIME_API").map_err(io::Error::other)?;
-    let root = std::env::var("FYLO_ROOT").unwrap_or_else(|_| "/mnt/state/root".into());
+    let root = std::env::var("YCKR_ROOT").unwrap_or_else(|_| "/mnt/state/root".into());
     // The root sits one level under the EFS mount so its owner lock, which
     // lives beside the root, lands on EFS too. The profile needs the root to
     // exist, and nothing else provisions it on Lambda.

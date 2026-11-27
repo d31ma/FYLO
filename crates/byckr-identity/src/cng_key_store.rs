@@ -3,11 +3,11 @@
 //! - `cng:<name>` (ADR 0021, decision P5-2): a P-256 key persisted under
 //!   `name` in the Microsoft Software Key Storage Provider, which keeps it
 //!   encrypted with the user's DPAPI key. It signs in software (Q8), so the
-//!   key is imported with an export policy that lets FYLO read it back as
+//!   key is imported with an export policy that lets BYCKR read it back as
 //!   PKCS#8.
 //! - `tpm:<name>` (phase 8, ADR 0021 section 8): a P-256 key the Microsoft
 //!   Platform Crypto Provider makes inside the TPM 2.0 and never exports.
-//!   FYLO asks the TPM to sign (`NCryptSignHash`) and to agree
+//!   BYCKR asks the TPM to sign (`NCryptSignHash`) and to agree
 //!   (`NCryptSecretAgreement`, raw secret). A machine without a TPM fails
 //!   with `EIDENTITY_UNSUPPORTED`.
 //!
@@ -189,7 +189,7 @@ impl CngKeyStore {
 
     fn already_exists(&self) -> IdentityError {
         IdentityError::AlreadyExists(format!(
-            "{} already has a key; FYLO never replaces a key",
+            "{} already has a key; BYCKR never replaces a key",
             self.reference()
         ))
     }
@@ -415,7 +415,7 @@ impl PlatformKeyStore {
 
     fn already_exists(&self) -> IdentityError {
         IdentityError::AlreadyExists(format!(
-            "{} already has a key; FYLO never replaces a key",
+            "{} already has a key; BYCKR never replaces a key",
             self.reference()
         ))
     }

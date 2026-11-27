@@ -99,7 +99,7 @@ impl NativeWriteRoot {
             // order they have, so the new file lists them as the old did.
             let names = database.collection_names();
             let collections = self.packed_collections(&names)?;
-            // A database's records have their access enforced in FYLO only
+            // A database's records have their access enforced in BYCKR only
             // already, so copying them changes nothing.
             let (report, built) = Self::renewing(&database, writer.is_some(), || {
                 self.stage_pack(&collections.1, &path, (key, sealed))

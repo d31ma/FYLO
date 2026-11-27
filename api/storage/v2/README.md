@@ -1,4 +1,4 @@
-# FYLO Storage Contract v2 (DRAFT)
+# BYCKR Storage Contract v2 (DRAFT)
 
 **Draft. Not built, not released.** This contract describes the on-disk layout
 of [ADR 0033](../../../docs/adr/0033-primary-layout-on-a-data-drive.md) and the
@@ -62,7 +62,7 @@ the visible tree, and no name of an app, namespace or collection starts with
 
 App, namespace and collection names: lowercase `a-z`, digits `0-9` and `-`;
 2 to 64 bytes; first and last character a letter or a digit; Windows device
-names (`con`, `prn`, `aux`, `nul`, `com1`-`com9`, `lpt1`-`lpt9`) and FYLO's
+names (`con`, `prn`, `aux`, `nul`, `com1`-`com9`, `lpt1`-`lpt9`) and BYCKR's
 reserved words refused. The schemas carry the character rule as a pattern;
 the device names and reserved words are checked by the engine.
 

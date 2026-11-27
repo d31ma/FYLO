@@ -21,7 +21,7 @@ pub struct FilesystemInfo {
 impl FilesystemInfo {
     const PROBE_PREFIX: &'static str = ".fylo-filesystem-probe";
 
-    /// `(magic, name, remote)` for every Linux filesystem FYLO names. FUSE may be
+    /// `(magic, name, remote)` for every Linux filesystem BYCKR names. FUSE may be
     /// anything, sshfs and rclone included, so it is remote; so is a virtual
     /// machine's host share (virtiofs, 9p), whose files another kernel writes.
     const LINUX_MAGIC: &[(u64, &str, bool)] = &[

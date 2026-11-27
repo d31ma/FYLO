@@ -1,10 +1,10 @@
 //! Time of one document commit and of a 25-document send, in a given folder
-//! (FYLO-PERF1). On a network mount every flush, rename and lookup is a
+//! (BYCKR-PERF1). On a network mount every flush, rename and lookup is a
 //! round trip, so this is the number to cut.
 //!
 //! Ignored in ordinary runs. Run it with
-//! `FYLO_COMMIT_COST_DIR=<folder> cargo test -p fylo-storage-native --test commit_cost -- --ignored --nocapture`.
-//! `FYLO_COMMIT_COST_PROFILE=efs` opens the root with the EFS profile, the
+//! `YCKR_COMMIT_COST_DIR=<folder> cargo test -p fylo-storage-native --test commit_cost -- --ignored --nocapture`.
+//! `YCKR_COMMIT_COST_PROFILE=efs` opens the root with the EFS profile, the
 //! profile a network share gets. A call-counting library loaded with
 //! `DYLD_INSERT_LIBRARIES` can watch the `stat` of `/fylo-trace/begin` and
 //! `/fylo-trace/end/<label>/<commits>` to print the calls per commit.
@@ -18,8 +18,8 @@ use byckr_storage_native::{
 };
 use serde_json::{Map, Value, json};
 
-const MEASURE_DIR: &str = "FYLO_COMMIT_COST_DIR";
-const MEASURE_PROFILE: &str = "FYLO_COMMIT_COST_PROFILE";
+const MEASURE_DIR: &str = "YCKR_COMMIT_COST_DIR";
+const MEASURE_PROFILE: &str = "YCKR_COMMIT_COST_PROFILE";
 const SINGLE_ROUNDS: usize = 40;
 const SEND_ROUNDS: usize = 8;
 const SEND_SIZE: usize = 25;
@@ -102,9 +102,9 @@ fn send(writer: &NativeWriteRoot, first: usize) {
 }
 
 #[test]
-#[ignore = "measures a given folder; set FYLO_COMMIT_COST_DIR"]
+#[ignore = "measures a given folder; set YCKR_COMMIT_COST_DIR"]
 fn measure_single_put_and_a_send_of_25() {
-    let base = PathBuf::from(std::env::var(MEASURE_DIR).expect("set FYLO_COMMIT_COST_DIR"));
+    let base = PathBuf::from(std::env::var(MEASURE_DIR).expect("set YCKR_COMMIT_COST_DIR"));
     let folder = base.join(format!("fylo-commit-cost-{}", std::process::id()));
     let root = folder.join("db");
     std::fs::create_dir_all(&root).unwrap();

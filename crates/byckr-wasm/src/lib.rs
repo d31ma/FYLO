@@ -1,4 +1,4 @@
-//! FYLO as a WebAssembly module for a host that owns storage.
+//! BYCKR as a WebAssembly module for a host that owns storage.
 //!
 //! The WASI build already runs the whole engine wherever there are files and
 //! stdio. This crate is for the one environment that has neither: a browser,

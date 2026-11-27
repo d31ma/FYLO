@@ -15,7 +15,7 @@ use super::windows_folder::WindowsFolder;
 /// only the current user). An existing folder is used only when it is a
 /// real folder, not a link or reparse point, owned by the process's user,
 /// and (Unix) without group or other permission bits (Windows: its DACL
-/// grants only the current user). FYLO never changes a folder it does not
+/// grants only the current user). BYCKR never changes a folder it does not
 /// own.
 ///
 /// Files below it are opened with no-follow flags: on Unix relative to the

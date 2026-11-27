@@ -3,10 +3,10 @@
 - Status: **Accepted** (2026-11-14, the hub's review; see "Review" at the
   end). Windows unsafe calls: accepted 2026-11-15, the user approved ("Yes,
   with review"); hub review of the SAFETY summary: <date, before merge>. The user chose the scope ("Servers only (Recommended)", option A)
-  and the timing ("This FYLO release") the same day, through the hub.
+  and the timing ("This BYCKR release") the same day, through the hub.
 - To be amended by [ADR 0033](0033-primary-layout-on-a-data-drive.md) (accepted, not yet built) when its layout release ships: the root's parent must also be a mount point ("not the boot disk" stays the disk rule). Until then this ADR is in force as written.
 - Date: **2026-11-14**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Extends: ADR 0029 (no root on a network filesystem). Uses the same check
   points, the same error rules and the same handshake object.
 - Related: ADR 0003 (one owner per root), ADR 0010 (EFS profile), ADR 0011
@@ -15,9 +15,9 @@
 
 ## Context
 
-The user set three storage tiers for FYLO on 2026-11-14:
+The user set three storage tiers for BYCKR on 2026-11-14:
 
-> "i'm think for FYLO the data has to come from a mounted source (primary
+> "i'm think for BYCKR the data has to come from a mounted source (primary
 > disk). `/mnt` for linux, `/Volume` for mac and a drive letter that is not
 > `C:/` from Windows. then secondary disk (frequently accessed document) has
 > to be set in the `/tmp` location (equivalent in windows and mac). then
@@ -28,7 +28,7 @@ copy of the data) may live.
 
 For a root on the system disk the user chose: "Refuse, allow an opt-out
 (Recommended)". For the scope the user chose option A, "Servers only
-(Recommended)": the rule applies to FYLO as a server or command-line
+(Recommended)": the rule applies to BYCKR as a server or command-line
 database; a root inside an app's own data folder is allowed; tests and
 laptops use the opt-out.
 
@@ -42,12 +42,12 @@ Facts that decide the design:
 2. Measured on this Mac (the hub, 2026-11-14): `/` is `/dev/disk3s1s1` and
    `/System/Volumes/Data` is `/dev/disk3s5`. They are different volumes in
    one APFS container, `disk3`. `/Volumes/HANGAR` is `/dev/disk7s1`,
-   container `disk7`. So comparing volumes (`st_dev`) is not enough; FYLO
+   container `disk7`. So comparing volumes (`st_dev`) is not enough; BYCKR
    must compare the disk (on macOS the APFS container).
-3. TACHYON runs FYLO only inside `ty` (`ty start`, `ty dev`, `ty preview`,
+3. TACHYON runs BYCKR only inside `ty` (`ty start`, `ty dev`, `ty preview`,
    `ty handler invoke`), with an absolute root from `application.json`. Its
    tests and CI lanes put roots in the OS temp folder, on the system disk.
-   No TACHYON native app runs FYLO today.
+   No TACHYON native app runs BYCKR today.
 4. Mesail keeps its gate and nightly test data on a local APFS sparse disk
    image (`~/Developer/AtlasFylo/mesail`) whose image file is on ATLAS
    (NFS). Its dev host keeps roots on the Lima VM's ext4 data disk, and its
@@ -60,7 +60,7 @@ Facts that decide the design:
 
 A native root must be on a **local disk that is not the system disk**,
 unless one of the two exceptions in section 3 applies. A root on the system
-disk is refused with the new stable code **`ESYSTEMDISK`**, before FYLO
+disk is refused with the new stable code **`ESYSTEMDISK`**, before BYCKR
 creates the root, the lock file or any other file.
 
 The rule runs at exactly the points of ADR 0029 section 1, in the same
@@ -103,10 +103,10 @@ every row.
 
 ### 2. What "the system disk" is, per OS
 
-FYLO describes two things the same way: the disk that holds the root (its
+BYCKR describes two things the same way: the disk that holds the root (its
 nearest existing parent, as in ADR 0029), and the disk that holds the
 running OS. The root is on the system disk when the two are the same disk.
-FYLO looks only at devices, never at path names.
+BYCKR looks only at devices, never at path names.
 
 **macOS.** `statfs` gives the device (`f_mntfromname`, such as
 `/dev/disk3s5`). The disk is the whole disk of that device, the `diskN` part
@@ -125,7 +125,7 @@ HD/...` are all in the boot container: refused.
 Reading the BSD name needs no new unsafe code or framework link (ADR 0004);
 `statfs` is already called for ADR 0029.
 
-**Linux (not Android).** FYLO reads `/proc/self/mountinfo` and finds the
+**Linux (not Android).** BYCKR reads `/proc/self/mountinfo` and finds the
 mount that holds the root's canonical path (the longest mount point that is
 a parent) and the mount of `/`. The root is on the system disk when:
 
@@ -141,7 +141,7 @@ a parent) and the mount of `/`. The root is on the system disk when:
 `stat`'s `st_dev` is not used: btrfs gives each subvolume its own.
 
 In a container, `/` is the container's own root filesystem (often
-`overlay`). FYLO cannot see the host's disks, so "the system disk" there
+`overlay`). BYCKR cannot see the host's disks, so "the system disk" there
 means the container's root filesystem: a root on it (the container's `/tmp`
 included) is refused, and a root on a mounted volume is admitted.
 
@@ -149,7 +149,7 @@ included) is refused, and a root on a mounted volume is admitted.
 are not disks; a root there is lost at reboot. (Many Linux systems mount
 `/tmp` as tmpfs.) The opt-out admits them, for tests.
 
-**Windows.** FYLO finds the volume of the root's nearest existing parent
+**Windows.** BYCKR finds the volume of the root's nearest existing parent
 (`GetVolumePathNameW`, then `GetVolumeNameForVolumeMountPointW`, giving
 `\\?\Volume{GUID}\`) and the volume of the Windows folder
 (`GetWindowsDirectoryW`; this is `%SystemDrive%`, never a hard-coded `C:`).
@@ -159,9 +159,9 @@ physical disk numbers of the two volumes share a disk
 admitted; `D:` as a second partition of the system disk is refused; a
 `SUBST` drive or a folder junction that leads to the system volume is
 refused. A volume with no disk extents (the query fails) is judged by the
-volume comparison alone. A volume with more extents than FYLO reads (64; a
+volume comparison alone. A volume with more extents than BYCKR reads (64; a
 spanned or striped dynamic volume answers `ERROR_MORE_DATA` with a partial
-list) is "could not tell": FYLO never compares a partial list (the hub's
+list) is "could not tell": BYCKR never compares a partial list (the hub's
 review of the SAFETY summary, 2026-11-15).
 
 **iOS and Android.** The rule does not apply: there is no other disk.
@@ -169,9 +169,9 @@ These builds always run in app mode (section 3.2).
 
 **The browser engine** (OPFS) is not affected.
 
-#### 2.1 When FYLO cannot tell
+#### 2.1 When BYCKR cannot tell
 
-If FYLO cannot describe the root's disk or the system disk (an unreadable
+If BYCKR cannot describe the root's disk or the system disk (an unreadable
 mountinfo, a device name it does not know), it refuses with `ESYSTEMDISK`
 and says it could not tell. The opt-out admits such a root.
 
@@ -182,7 +182,7 @@ follows the image to its backing file** (the hub's review, confirmed by the
 user for Mesail's case). Otherwise any `.dmg`, `.sparseimage`, loop file or
 `.vhdx` kept on the system disk would get around the rule.
 
-When the root's disk is a disk image, FYLO finds the image's backing file
+When the root's disk is a disk image, BYCKR finds the image's backing file
 and applies the system-disk test to that file's disk:
 
 | Backing file is on       | Result                                                                                                                                                       |
@@ -190,9 +190,9 @@ and applies the system-disk test to that file's disk:
 | the system disk          | refused, `ESYSTEMDISK` ("is on a disk image whose file `<image>` is on the system disk")                                                                     |
 | another local disk       | admitted, `placement:"dataDisk"`                                                                                                                             |
 | a network share          | admitted, `placement:"dataDisk"`, no warning                                                                                                                 |
-| a place FYLO cannot find | refused, `ESYSTEMDISK` ("is on a disk image (`<disk>`, `<image path if known>`) and FYLO could not tell which disk holds the image file"), as in section 2.1 |
+| a place BYCKR cannot find | refused, `ESYSTEMDISK` ("is on a disk image (`<disk>`, `<image path if known>`) and BYCKR could not tell which disk holds the image file"), as in section 2.1 |
 
-A network-backed image is admitted on purpose. The volume FYLO sees is a
+A network-backed image is admitted on purpose. The volume BYCKR sees is a
 local filesystem with local locks, and macOS attaches an image read-write on
 one machine at a time, so ADR 0029's two-owner failure cannot happen through
 it. Its durability is that of the image file's storage. For Mesail's image on
@@ -204,7 +204,7 @@ An image inside an image is followed down, at most 4 levels; deeper is
 
 How the backing file is found:
 
-- **macOS:** FYLO runs `/usr/bin/hdiutil info -plist` (absolute path,
+- **macOS:** BYCKR runs `/usr/bin/hdiutil info -plist` (absolute path,
   no shell, no arguments from input) and reads each attached image's
   `image-path` and the `dev-entry` of its `system-entities`. The root's disk
   is an image when its `diskN` is one of those entries (an APFS image lists
@@ -214,15 +214,15 @@ How the backing file is found:
   is off, and its answer is kept for the process. Measured on this Mac:
   10 to 20 ms. The user chose this way over IOKit ("A: Apple's hdiutil tool
   (Recommended)", through the hub, 2026-11-15), so no unsafe code is added.
-    - FYLO runs it only by its absolute path `/usr/bin/hdiutil`, never
+    - BYCKR runs it only by its absolute path `/usr/bin/hdiutil`, never
       through `PATH`, so a fake `hdiutil` earlier in `PATH` cannot answer.
-    - It has a time limit of 5 seconds. On timeout FYLO kills the child and
+    - It has a time limit of 5 seconds. On timeout BYCKR kills the child and
       waits for it.
     - **One retry, with a longer limit.** On a timeout, a non-zero exit, or
-      output FYLO cannot parse, FYLO runs it once more with a 15-second limit
+      output BYCKR cannot parse, BYCKR runs it once more with a 15-second limit
       (at most 20 seconds in all). A busy Mac (load 40 to 90 during batch
       rechecks) can slow a small child process for a few seconds; one failure
-      alone must not fail a gate. The retry is logged on stderr: `FYLO
+      alone must not fail a gate. The retry is logged on stderr: `BYCKR
 warning: hdiutil <reason>; trying again (ADR 0032).`
     - **One answer per process.** The parsed answer (all attached images and
       their disks) is kept for the life of the process, so a process that
@@ -255,7 +255,7 @@ One explicit setting, in three forms. Any one of them turns it on:
 | Form                 | Name                     | Values                                                                                                    |
 | -------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------- |
 | CLI flag             | `--allow-system-disk`    | no value                                                                                                  |
-| Environment variable | `FYLO_ALLOW_SYSTEM_DISK` | `1` or `true` turn it on; unset, empty, `0` or `false` leave it off; any other value is an error at start |
+| Environment variable | `YCKR_ALLOW_SYSTEM_DISK` | `1` or `true` turn it on; unset, empty, `0` or `false` leave it off; any other value is an error at start |
 | Config key           | `fylo.allowSystemDisk`   | `true` or `false`                                                                                         |
 
 - The flag is a global option, like `--root`: it works with every command
@@ -267,15 +267,15 @@ One explicit setting, in three forms. Any one of them turns it on:
 - The library also takes it as an explicit option (section 5).
 - It admits a local root on the system disk and on a memory filesystem. It
   never admits a network root (ADR 0029 is unchanged); a test checks this.
-- **When it is on, FYLO says so.** The first time in a process that the
-  setting is read as on, FYLO prints one line on stderr (never on stdout,
+- **When it is on, BYCKR says so.** The first time in a process that the
+  setting is read as on, BYCKR prints one line on stderr (never on stdout,
   which carries the machine protocol):
 
     ```text
-    FYLO warning: system-disk check disabled by <source> (ADR 0032); a root on the system disk is allowed.
+    BYCKR warning: system-disk check disabled by <source> (ADR 0032); a root on the system disk is allowed.
     ```
 
-    `<source>` is `--allow-system-disk`, `FYLO_ALLOW_SYSTEM_DISK=1` or
+    `<source>` is `--allow-system-disk`, `YCKR_ALLOW_SYSTEM_DISK=1` or
     `fylo.allowSystemDisk` (the first that is on, in that order). The
     handshake also shows it, as `placement:"systemDiskAllowed"`. So nobody
     runs a server with the opt-out on without seeing it.
@@ -289,12 +289,12 @@ One explicit setting, in three forms. Any one of them turns it on:
 
 #### 3.2 App mode: a root in the app's own data folder
 
-An app that keeps FYLO data in its own per-app data folder declares it:
+An app that keeps BYCKR data in its own per-app data folder declares it:
 
 | Form                 | Name                                                                    | Value        |
 | -------------------- | ----------------------------------------------------------------------- | ------------ |
 | CLI flag             | `--app-id <id>`                                                         | the app's id |
-| Environment variable | `FYLO_APP_ID`                                                           | the app's id |
+| Environment variable | `YCKR_APP_ID`                                                           | the app's id |
 | Config key           | `fylo.appId`                                                            | the app's id |
 | Library              | `RootPlacement::AppOwned(AppId)`, installed for the process (section 5) | the app's id |
 
@@ -312,13 +312,13 @@ Any other value is an error before any path is built: the CLI stops at
 start with a message on stderr and exit code 1, and a library host that
 reads it from the environment gets `ESYSTEMDISK` ("cannot be checked") at
 the root check. After
-FYLO joins the id to the OS folder, it canonicalizes both the app folder and
+BYCKR joins the id to the OS folder, it canonicalizes both the app folder and
 the root's nearest existing parent (symbolic links, and on Windows junctions
 and mount points, resolved) and admits the root only when the root is inside
 the app folder, compared by path components. A link or junction that leads
 out of the app folder is refused.
 
-FYLO then **computes the app's folder from the OS**, never from the root
+BYCKR then **computes the app's folder from the OS**, never from the root
 path, and admits the root only when its canonical path is inside that folder
 (compared by path components, after both are canonicalized):
 
@@ -336,25 +336,25 @@ path, and admits the root only when its canonical path is inside that folder
 - On desktop it is explicit: without an app id, a root in an app folder is
   just a root on the system disk, and is refused.
 - A root in app mode that is outside the app's folder is refused with
-  `ESYSTEMDISK`, and the message names the folder FYLO expected.
+  `ESYSTEMDISK`, and the message names the folder BYCKR expected.
 - App mode never admits a network root: an app folder in a network home
   directory is still `EREMOTEROOT`; a test checks this.
 - If the app folder is on a data disk (a moved home directory), the root is
   admitted by the main rule anyway.
 
-No TACHYON native app runs FYLO today, so app mode is tested by FYLO's own
+No TACHYON native app runs BYCKR today, so app mode is tested by BYCKR's own
 tests, one per OS folder rule (section 7).
 
 ### 4. The refusal message
 
 ```text
-FYLO root <path> is on the system disk (<disk>). A FYLO server keeps its
+BYCKR root <path> is on the system disk (<disk>). A BYCKR server keeps its
 data on another local disk: a disk under /Volumes on macOS, a mounted disk
 such as /mnt/<disk> on Linux, or a drive other than the Windows drive on
 Windows. To use the system disk anyway (tests, CI, a laptop), pass
---allow-system-disk, set FYLO_ALLOW_SYSTEM_DISK=1 or set
+--allow-system-disk, set YCKR_ALLOW_SYSTEM_DISK=1 or set
 fylo.allowSystemDisk to true. An app that keeps its data in its own data
-folder passes --app-id <id> (FYLO_APP_ID, fylo.appId).
+folder passes --app-id <id> (YCKR_APP_ID, fylo.appId).
 ```
 
 The message is one line in the error frame; it is wrapped here only for
@@ -391,10 +391,10 @@ pub struct PlacementSettings {
   result the placement of every root the process opens. The CLI does this
   once, when it loads its configuration.
 - A host that installs nothing gets `RootPlacement::current()`, which reads
-  `FYLO_ALLOW_SYSTEM_DISK` and `FYLO_APP_ID` alone. So every library open
+  `YCKR_ALLOW_SYSTEM_DISK` and `YCKR_APP_ID` alone. So every library open
   (`NativeRoot`, `NativeWriteRoot`, `RootLease`, the `fylo` crate) and the C
   ABI (ADR 0026) follow the environment without code in the host; a C ABI
-  host on a desktop sets `FYLO_APP_ID` for app mode.
+  host on a desktop sets `YCKR_APP_ID` for app mode.
 - `RootFilesystem::admit(path, profile)` keeps its signature and runs the
   rule after the network check. `RootFilesystem::describe(path)` reports
   the same without refusing, for the handshake, and
@@ -409,7 +409,7 @@ placement }`.
 `result.storage.rootLock` gains two fields, next to ADR 0029's `filesystem`
 and `remote`:
 
-- `systemDisk`: `true`, `false`, or `null` when FYLO did not look it up (no
+- `systemDisk`: `true`, `false`, or `null` when BYCKR did not look it up (no
   default root, a remote root, the opt-out, app mode) or could not tell;
 - `placement`: why the root is admitted: `"dataDisk"`,
   `"systemDiskAllowed"` (the opt-out), `"appOwned"`, or `null` when there is
@@ -426,23 +426,23 @@ the repository**, so a lane needs no setup of its own:
 
 | Where                                                                                               | How                                                                                                                                                        |
 | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cargo test`, `cargo nextest` (all crates, also on the Linux and Windows lanes and the nightly run) | new `.cargo/config.toml` in the repository: `[env] FYLO_ALLOW_SYSTEM_DISK = "1"`                                                                           |
-| `bun test` (`tests/browser`, `tests/interop`, every language client the interop tests start)        | new `bunfig.toml`: `[test] preload = ["./tests/setup/allow-system-disk.js"]`, which sets `process.env.FYLO_ALLOW_SYSTEM_DISK ??= "1"`; children inherit it |
+| `cargo test`, `cargo nextest` (all crates, also on the Linux and Windows lanes and the nightly run) | new `.cargo/config.toml` in the repository: `[env] YCKR_ALLOW_SYSTEM_DISK = "1"`                                                                           |
+| `bun test` (`tests/browser`, `tests/interop`, every language client the interop tests start)        | new `bunfig.toml`: `[test] preload = ["./tests/setup/allow-system-disk.js"]`, which sets `process.env.YCKR_ALLOW_SYSTEM_DISK ??= "1"`; children inherit it |
 | `scripts/*.mjs` verify scripts that start `fylo` on temp roots                                      | set it in their spawn environment (one shared helper)                                                                                                      |
-| GitHub workflows (`ci.yml`, `rust-nightly.yml`, `publish.yml`)                                      | workflow-level `env: FYLO_ALLOW_SYSTEM_DISK: "1"`                                                                                                          |
-| Local nightly (`nightly-full`, FYLO product script) and the Linux (Colima) and Windows VM gates     | covered by the two files above; the nightly product script also exports it, so a run outside the repository's cargo and bun config is covered too          |
+| GitHub workflows (`ci.yml`, `rust-nightly.yml`, `publish.yml`)                                      | workflow-level `env: YCKR_ALLOW_SYSTEM_DISK: "1"`                                                                                                          |
+| Local nightly (`nightly-full`, BYCKR product script) and the Linux (Colima) and Windows VM gates     | covered by the two files above; the nightly product script also exports it, so a run outside the repository's cargo and bun config is covered too          |
 
 Tests of the rule itself force it on, because the repository, CI and the
-nightly run (Platform sets `FYLO_ALLOW_SYSTEM_DISK=1` there) all turn the
+nightly run (Platform sets `YCKR_ALLOW_SYSTEM_DISK=1` there) all turn the
 opt-out on in the parent environment:
 
 - unit tests pass `RootPlacement` explicitly, with fake disk descriptions,
   so the environment is never read;
-- CLI tests start `fylo` with `env_remove("FYLO_ALLOW_SYSTEM_DISK")` and
-  `env_remove("FYLO_APP_ID")`, with no `--allow-system-disk` or `--app-id`,
+- CLI tests start `fylo` with `env_remove("YCKR_ALLOW_SYSTEM_DISK")` and
+  `env_remove("YCKR_APP_ID")`, with no `--allow-system-disk` or `--app-id`,
   and with `--config` pointing at a test `application.json` that sets neither
   key (so a stray `./application.json` cannot turn it on);
-- one test proves this: with `FYLO_ALLOW_SYSTEM_DISK=1` set in the test
+- one test proves this: with `YCKR_ALLOW_SYSTEM_DISK=1` set in the test
   process itself, the child that runs with the cleared environment is still
   refused with `ESYSTEMDISK`, and its handshake has no `systemDiskAllowed`.
 
@@ -467,7 +467,7 @@ New tests:
   before any path is built; `com.example.app`, `com.example-app_2` and a
   255-byte id are accepted.
 - Network roots are never admitted: an NFS (or, opt-in, any
-  `FYLO_TEST_NETWORK_ROOTS`) root with the opt-out on is `EREMOTEROOT`; an
+  `YCKR_TEST_NETWORK_ROOTS`) root with the opt-out on is `EREMOTEROOT`; an
   app-mode root whose app folder is on a network share is `EREMOTEROOT`. The
   unit form runs everywhere with fake filesystem descriptions; the real form
   runs where ADR 0029's network tests run.
@@ -496,7 +496,7 @@ New tests:
 - CLI (`crates/fylo-cli/tests/system_disk.rs`): a temp root is refused in
   every mode with nothing written; the flag, the environment variable and the
   config key each admit it; the handshake fields; app mode on the host OS.
-  Opt-in, like ADR 0029: roots named in `FYLO_TEST_DATA_DISK_ROOTS` must be
+  Opt-in, like ADR 0029: roots named in `YCKR_TEST_DATA_DISK_ROOTS` must be
   admitted with `placement:"dataDisk"`. On this Mac: Mesail's sparse image
   (`~/Developer/AtlasFylo/mesail`, the network-backed image case) and a
   folder on HANGAR. On Linux in Colima: the VM's data disk. On Windows: a
@@ -508,7 +508,7 @@ New tests:
 
 ### 8. Versioning: how the break is marked
 
-FYLO uses CalVer (`YY.WW.DD`), which has no major number. A breaking change
+BYCKR uses CalVer (`YY.WW.DD`), which has no major number. A breaking change
 is marked the way 26.45.07 marked the removal of POSTIX:
 
 - the release's CHANGELOG entry has a `### Breaking Changes` section, and
@@ -535,17 +535,17 @@ Who must act before upgrading:
     Or keep it there and set `fylo.allowSystemDisk: true` (or the flag, or
     the environment variable).
 
-2. **Tests, CI and laptops.** Set `FYLO_ALLOW_SYSTEM_DISK=1` in the test or
+2. **Tests, CI and laptops.** Set `YCKR_ALLOW_SYSTEM_DISK=1` in the test or
    CI environment.
 3. **Desktop apps** that keep data in their own data folder: pass the app
-   id (`--app-id`, `FYLO_APP_ID`, `fylo.appId`, or the library and C ABI
+   id (`--app-id`, `YCKR_APP_ID`, `fylo.appId`, or the library and C ABI
    option). Mobile apps need nothing.
 4. **Linux roots on tmpfs:** move them to a disk, or use the opt-out.
 
 Known users on 2026-11-14:
 
 - **TACHYON:** `ty dev`, `ty preview`, `ty handler invoke`, its tests, CI
-  lanes and nightly set `FYLO_ALLOW_SYSTEM_DISK=1`. `ty start` does not: a
+  lanes and nightly set `YCKR_ALLOW_SYSTEM_DISK=1`. `ty start` does not: a
   real server on the system disk turns on the setting itself. TACHYON maps
   `ESYSTEMDISK` to its message TY2160.
 - **Mesail:** gate and nightly data on the sparse image needs nothing;
@@ -557,21 +557,21 @@ Known users on 2026-11-14:
 ```markdown
 ### Breaking Changes
 
-- **A root on the system disk is refused (ADR 0032).** FYLO keeps its data
+- **A root on the system disk is refused (ADR 0032).** BYCKR keeps its data
   on a local disk that is not the system disk: a disk under `/Volumes` on
   macOS, a mounted disk on Linux, a drive other than the Windows drive on
   Windows. A root on the system disk (also the OS temp folder, and on Linux
   `tmpfs`) is refused with the new code `ESYSTEMDISK` before anything is
   written, in every `fylo exec` mode, the other commands and the library.
-  FYLO compares disks, not paths: on macOS the APFS container, on Linux the
+  BYCKR compares disks, not paths: on macOS the APFS container, on Linux the
   device and its whole disk, on Windows the volume and its physical disk.
   A disk image counts as its disk, but an image whose file is on the system
-  disk is refused too (on macOS FYLO asks `/usr/bin/hdiutil`).
+  disk is refused too (on macOS BYCKR asks `/usr/bin/hdiutil`).
   To keep using the system disk (tests, CI, a laptop), pass
-  `--allow-system-disk`, set `FYLO_ALLOW_SYSTEM_DISK=1` or set
-  `fylo.allowSystemDisk` to `true`; FYLO then prints one warning line on
+  `--allow-system-disk`, set `YCKR_ALLOW_SYSTEM_DISK=1` or set
+  `fylo.allowSystemDisk` to `true`; BYCKR then prints one warning line on
   stderr saying the check is off. A desktop app that keeps its data in its
-  own data folder passes `--app-id <id>` (`FYLO_APP_ID`, `fylo.appId`);
+  own data folder passes `--app-id <id>` (`YCKR_APP_ID`, `fylo.appId`);
   iOS and Android apps need nothing. Network roots stay refused
   (`EREMOTEROOT`, ADR 0029); the EFS profile works as before. See the
   migration note in ADR 0032.
@@ -585,7 +585,7 @@ Known users on 2026-11-14:
 - Every existing root on the system disk stops opening until it is moved or
   the opt-out is set. On most laptops that is every root.
 - A Mac or PC with one disk needs the opt-out, or an external disk, to run
-  FYLO as a server.
+  BYCKR as a server.
 - The cost is one more device lookup per root open: on Linux one read of
   `/proc/self/mountinfo` (and sysfs for block devices); on Windows two
   volume queries, and for a virtual disk one dependency query; on macOS one
@@ -628,7 +628,7 @@ Required changes, all applied: the app id is validated against path escapes
 opt-out's effect on `cargo run` is stated here and in `CONTRIBUTING.md`
 (section 3.1); tests prove network roots are never admitted by the opt-out
 or by app mode (section 7). The CHANGELOG "Breaking Changes" section and the
-migration note are the right mark for FYLO's CalVer.
+migration note are the right mark for BYCKR's CalVer.
 
 The user then chose `hdiutil` over IOKit for macOS disk images (2026-11-15).
 The hub added: run it only as `/usr/bin/hdiutil`, with a 5-second limit, and

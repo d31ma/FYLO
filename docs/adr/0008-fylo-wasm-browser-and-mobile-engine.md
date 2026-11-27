@@ -2,13 +2,13 @@
 
 - Status: **Accepted**
 - Date: **2026-08-03**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Supersedes: the browser-product section of [ADR 0003](0003-native-and-browser-storage-boundaries.md)
 - Amends: [ADR 0005](0005-narrow-wasm-linear-memory-boundary.md)
 
 ## Context
 
-FYLO currently ships two engines. The Rust engine owns native storage,
+BYCKR currently ships two engines. The Rust engine owns native storage,
 recovery, indexing, querying, schema, permissions, encryption, and version
 control in 9,972 lines of `fylo-storage-native` plus 3,022 of `fylo-engine`.
 The browser runs a separate JavaScript engine of 5,833 lines that reimplements
@@ -33,12 +33,12 @@ first-class target for the whole product, including mobile embeddings.
 SQLite is the reference case. `sqlite-wasm` did not port cleanly because it was
 C; it ported cleanly because SQLite has always routed every byte through one
 `sqlite3_vfs` interface, so a browser build meant writing one new VFS rather
-than touching the engine. FYLO has no such layer: `fylo-storage-native` calls
+than touching the engine. BYCKR has no such layer: `fylo-storage-native` calls
 `std::fs` in roughly 300 places.
 
 ## Decision
 
-Build `fylo-wasm`: the FYLO engine compiled to WebAssembly, owning storage.
+Build `fylo-wasm`: the BYCKR engine compiled to WebAssembly, owning storage.
 
 WebAssembly is not a browser technology. `wasm32-wasip1` has real files and
 real stdio, so the same engine runs under any WASI runtime — server, edge, or
@@ -143,7 +143,7 @@ backend.
   answered write in order, and a timed soak with reopens and kills checks the
   copy against a model, on both the OPFS and the IndexedDB backend, in
   Chromium, Firefox and WebKit (`tests/browser/e2e/vdbx-indexeddb.spec.mjs`).
-  The soak runs 45 seconds by default (`FYLO_BROWSER_SOAK_SECONDS`), not the
+  The soak runs 45 seconds by default (`YCKR_BROWSER_SOAK_SECONDS`), not the
   native engine's duration gates.
 - Pending before replacing the JavaScript engine for folder roots: the same
   failpoint matrix and duration gates as the native engine.

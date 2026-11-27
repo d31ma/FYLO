@@ -1,4 +1,4 @@
-//! A `.vdbx` file opened as a FYLO root (ADR 0016 section 11,
+//! A `.vdbx` file opened as a BYCKR root (ADR 0016 section 11,
 //! `docs/vdbx-segment-backend.md`, "Root integration"): every collection
 //! lives in the one file, and nothing is created beside it but the lease
 //! file a writer holds.
@@ -498,12 +498,12 @@ fn creating_over_an_existing_path_fails() {
     assert!(!NativeRoot::open(directory).unwrap().is_database());
 }
 
-const CHILD_ROLE: &str = "FYLO_VDBX_ROOT_CHILD_ROLE";
-const CHILD_DATABASE: &str = "FYLO_VDBX_ROOT_CHILD_DATABASE";
-const CHILD_COLLECTION: &str = "FYLO_VDBX_ROOT_CHILD_COLLECTION";
-const CHILD_FIRST: &str = "FYLO_VDBX_ROOT_CHILD_FIRST";
+const CHILD_ROLE: &str = "YCKR_VDBX_ROOT_CHILD_ROLE";
+const CHILD_DATABASE: &str = "YCKR_VDBX_ROOT_CHILD_DATABASE";
+const CHILD_COLLECTION: &str = "YCKR_VDBX_ROOT_CHILD_COLLECTION";
+const CHILD_FIRST: &str = "YCKR_VDBX_ROOT_CHILD_FIRST";
 const CHILD_TEST: &str = "a_child_process";
-const OLDER_TEST_EXE: &str = "FYLO_VDBX_OLDER_TEST_EXE";
+const OLDER_TEST_EXE: &str = "YCKR_VDBX_OLDER_TEST_EXE";
 /// Documents each writer process puts, of about 48 KiB each once
 /// compressed, so the extents of a database fill and every writer takes
 /// several.
@@ -628,7 +628,7 @@ fn read_until_done(database: &Path, directory: &Path) {
 enum SecondUsersWriter<'a> {
     /// This test binary, like the other writers.
     Current,
-    /// A test binary built from an older FYLO.
+    /// A test binary built from an older BYCKR.
     Older(&'a Path),
     /// This test binary, failing on purpose once the parent says `go`.
     Failing,
@@ -837,11 +837,11 @@ fn writer_processes_share_a_database_under_byte_range_locks() {
     fixture.assert_only_the_database();
 }
 
-/// A writer process of an older FYLO, which waits for lock bytes without
+/// A writer process of an older BYCKR, which waits for lock bytes without
 /// taking turns (ADR 0016 section 7), shares the database with newer
 /// writers of the same collection and of another: every document arrives,
-/// and nothing is lost or damaged. `FYLO_VDBX_OLDER_TEST_EXE` names this
-/// test binary built from the older FYLO; without it the test is skipped.
+/// and nothing is lost or damaged. `YCKR_VDBX_OLDER_TEST_EXE` names this
+/// test binary built from the older BYCKR; without it the test is skipped.
 #[test]
 fn an_older_writer_process_shares_a_database_with_newer_ones() {
     let Ok(older) = std::env::var(OLDER_TEST_EXE) else {
@@ -884,7 +884,7 @@ fn a_failing_writer_child_leaves_no_child_process_running() {
 
 /// How long one writer alone takes per `put_document`, at the 50th and the
 /// 99th percentile, with nothing else using the database. A measurement,
-/// run on purpose; the test binary built from an older FYLO runs it too.
+/// run on purpose; the test binary built from an older BYCKR runs it too.
 #[test]
 #[ignore = "a measurement: run with --run-ignored"]
 fn measure_put_document_for_one_writer_alone() {

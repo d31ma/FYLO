@@ -15,8 +15,8 @@ use crate::write::SegmentSchemas;
 use crate::{CollectionKind, ContainerFile, NativeRoot, NativeStorageErrorCode, NativeWriteRoot};
 
 const SCHEMAS: ContainerExtentKind = ContainerExtentKind::Schemas;
-const ROLE: &str = "FYLO_VDBX_SCHEMA_CHILD_ROLE";
-const DATABASE: &str = "FYLO_VDBX_SCHEMA_CHILD_DATABASE";
+const ROLE: &str = "YCKR_VDBX_SCHEMA_CHILD_ROLE";
+const DATABASE: &str = "YCKR_VDBX_SCHEMA_CHILD_DATABASE";
 const CHILD_TEST: &str = "segments::container_medium::tests::schemas::a_schema_child_process";
 
 /// A `.vdbx` database root holding the document collections `items` and
@@ -148,8 +148,8 @@ fn child(role: &str, database: &Path, failpoint: &str, action: &str) -> bool {
         .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
         .env(ROLE, role)
         .env(DATABASE, database)
-        .env("FYLO_RUST_FAILPOINT", failpoint)
-        .env("FYLO_RUST_FAILPOINT_ACTION", action)
+        .env("YCKR_RUST_FAILPOINT", failpoint)
+        .env("YCKR_RUST_FAILPOINT_ACTION", action)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

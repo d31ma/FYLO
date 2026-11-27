@@ -21,7 +21,7 @@ struct Place(PathBuf, &'static [&'static str]);
 
 impl Place {
     const BINARY: &'static str = env!("CARGO_BIN_EXE_fylo-rust");
-    const FAILPOINT: &'static str = "FYLO_RUST_TEMP_CACHE_FAILPOINT";
+    const FAILPOINT: &'static str = "YCKR_RUST_TEMP_CACHE_FAILPOINT";
 
     #[cfg(unix)]
     const EFS: &'static [&'static str] = &["--filesystem-profile", "efs-sidecar-v1"];
@@ -66,7 +66,7 @@ impl Place {
             .args(["--temp-cache", "on", "--temp-cache-dir"])
             .arg(self.base())
             .current_dir(&self.0)
-            .env_remove("FYLO_ROOT")
+            .env_remove("YCKR_ROOT")
             .env_remove(Self::FAILPOINT);
         command
     }
@@ -257,7 +257,7 @@ struct DataDiskRoot {
 }
 
 impl DataDiskRoot {
-    const LIST: &'static str = "FYLO_TEST_DATA_DISK_ROOTS";
+    const LIST: &'static str = "YCKR_TEST_DATA_DISK_ROOTS";
 
     fn below(parent: &Path) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -286,9 +286,9 @@ impl DataDiskRoot {
             .arg(self.folder.join("application.json"))
             .args(["--temp-cache", "on"])
             .current_dir(&self.folder)
-            .env_remove("FYLO_ROOT")
-            .env_remove("FYLO_APP_ID")
-            .env_remove("FYLO_ALLOW_SYSTEM_DISK")
+            .env_remove("YCKR_ROOT")
+            .env_remove("YCKR_APP_ID")
+            .env_remove("YCKR_ALLOW_SYSTEM_DISK")
             .env_remove(Place::FAILPOINT);
         command
     }
@@ -417,7 +417,7 @@ struct NetworkRoot(PathBuf);
 
 #[cfg(unix)]
 impl NetworkRoot {
-    const LIST: &'static str = "FYLO_TEST_NETWORK_ROOTS";
+    const LIST: &'static str = "YCKR_TEST_NETWORK_ROOTS";
 
     fn below(parent: &Path) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -439,7 +439,7 @@ impl NetworkRoot {
             .arg(self.0.join("root"))
             .args(Place::EFS)
             .current_dir(&self.0)
-            .env_remove("FYLO_ROOT")
+            .env_remove("YCKR_ROOT")
             .env_remove(Place::FAILPOINT);
         command
     }
@@ -500,12 +500,12 @@ fn assert_auto_reads_through_the_tier(parent: &Path) {
 }
 
 /// Run against real network mounts:
-/// `FYLO_TEST_NETWORK_ROOTS=/mnt/nfs cargo nextest run -p fylo-cli --test
+/// `YCKR_TEST_NETWORK_ROOTS=/mnt/nfs cargo nextest run -p fylo-cli --test
 /// temp_tier_processes --run-ignored only`. Each folder gets a throwaway
 /// subfolder, removed afterwards.
 #[cfg(unix)]
 #[test]
-#[ignore = "needs FYLO_TEST_NETWORK_ROOTS naming folders on network mounts"]
+#[ignore = "needs YCKR_TEST_NETWORK_ROOTS naming folders on network mounts"]
 fn auto_reads_an_efs_root_on_a_network_mount_through_the_tier() {
     let roots = std::env::var_os(NetworkRoot::LIST).unwrap_or_default();
     for parent in std::env::split_paths(&roots).filter(|path| !path.as_os_str().is_empty()) {

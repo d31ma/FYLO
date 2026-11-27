@@ -44,7 +44,7 @@ impl Fixture {
             .args(["exec", "--invocation", "--root", &self.root()])
             .args(["--deadline-ms", deadline, "--cleanup-reserve-ms", reserve])
             .args(["--request", &request.to_string()])
-            .env_remove("FYLO_ROOT")
+            .env_remove("YCKR_ROOT")
             .output()
             .unwrap()
     }
@@ -62,7 +62,7 @@ impl Fixture {
                 "--request",
                 &request.to_string(),
             ])
-            .env_remove("FYLO_ROOT")
+            .env_remove("YCKR_ROOT")
             .output()
             .unwrap()
     }
@@ -98,7 +98,7 @@ impl Fixture {
         assert_eq!(output.status.success(), ok, "{stdout}{stderr}");
         let other: Vec<&str> = stderr
             .lines()
-            .filter(|line| !line.starts_with("FYLO warning: system-disk check disabled by "))
+            .filter(|line| !line.starts_with("BYCKR warning: system-disk check disabled by "))
             .collect();
         assert!(other.is_empty(), "{stderr}");
         assert_eq!(stdout.lines().count(), 1, "{stdout}");
@@ -119,7 +119,7 @@ impl Fixture {
     fn hold_root(&self) -> (Child, BufReader<ChildStdout>) {
         let mut child = Command::new(Self::BINARY)
             .args(["exec", "--loop", "--exclusive-root", "--root", &self.root()])
-            .env_remove("FYLO_ROOT")
+            .env_remove("YCKR_ROOT")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -286,7 +286,7 @@ fn an_oversized_request_is_refused_with_the_frame_code() {
         .args(["exec", "--invocation", "--root", &fixture.root()])
         .args(["--deadline-ms", Fixture::LONG_DEADLINE])
         .args(["--cleanup-reserve-ms", Fixture::RESERVE, "--request", "-"])
-        .env_remove("FYLO_ROOT")
+        .env_remove("YCKR_ROOT")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -344,7 +344,7 @@ fn host_configuration_errors_go_to_stderr() {
         let output = Command::new(Fixture::BINARY)
             .args(["exec", "--invocation", "--root", &fixture.root()])
             .args(arguments)
-            .env_remove("FYLO_ROOT")
+            .env_remove("YCKR_ROOT")
             .output()
             .unwrap();
         assert!(!output.status.success());
@@ -439,7 +439,7 @@ fn unknown_and_valueless_exec_options_are_configuration_errors() {
         let output = Command::new(Fixture::BINARY)
             .args(["exec", "--root", &fixture.root()])
             .args(arguments)
-            .env_remove("FYLO_ROOT")
+            .env_remove("YCKR_ROOT")
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -461,7 +461,7 @@ fn other_subcommands_refuse_unknown_options_too() {
         let output = Command::new(Fixture::BINARY)
             .args(&arguments)
             .args(["--root", &fixture.root()])
-            .env_remove("FYLO_ROOT")
+            .env_remove("YCKR_ROOT")
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(1), "{arguments:?}");
@@ -474,7 +474,7 @@ fn other_subcommands_refuse_unknown_options_too() {
 fn the_handshake_reports_the_invocation_capability() {
     let output = Command::new(Fixture::BINARY)
         .args(["version", "--output", "json"])
-        .env_remove("FYLO_ROOT")
+        .env_remove("YCKR_ROOT")
         .output()
         .unwrap();
     assert!(output.status.success());

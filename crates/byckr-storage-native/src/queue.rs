@@ -1,4 +1,4 @@
-//! Durable brokerless queues rooted in the FYLO filesystem.
+//! Durable brokerless queues rooted in the BYCKR filesystem.
 //!
 //! Messages are immutable and globally ordered. Each consumer group owns one
 //! atomically replaced state file containing a compacted cursor and the small
@@ -209,7 +209,7 @@ enum DeliveryState {
     Completed,
 }
 
-/// Queue entry point bound to one canonical FYLO root.
+/// Queue entry point bound to one canonical BYCKR root.
 #[derive(Clone, Debug)]
 pub struct NativeQueue {
     root: NativeRoot,
@@ -221,7 +221,7 @@ impl NativeQueue {
     ///
     /// # Errors
     ///
-    /// Returns an error when the FYLO root is missing, unsafe, or inaccessible.
+    /// Returns an error when the BYCKR root is missing, unsafe, or inaccessible.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, NativeStorageError> {
         let lease = RootLease::acquire(path)?;
         Self::open_with_lease(lease)
@@ -234,7 +234,7 @@ impl NativeQueue {
     ///
     /// # Errors
     ///
-    /// Returns an error when the lease generation was lost or the FYLO root
+    /// Returns an error when the lease generation was lost or the BYCKR root
     /// is missing, unsafe, or inaccessible.
     pub fn open_with_lease(lease: RootLease) -> Result<Self, NativeStorageError> {
         lease.assert_owned()?;

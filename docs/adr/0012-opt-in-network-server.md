@@ -2,11 +2,11 @@
 
 - Status: **Withdrawn** (2026-10-29)
 - Date: **2026-10-28**
-- Owners: **FYLO maintainers**
-- Amended: ADR 0007 (FYLO no longer "opens no server"); withdrawn, so ADR 0007
+- Owners: **BYCKR maintainers**
+- Amended: ADR 0007 (BYCKR no longer "opens no server"); withdrawn, so ADR 0007
   stands as written
 
-> **Withdrawn 2026-10-29.** FYLO is an embedded library, like SQLite: apps open
+> **Withdrawn 2026-10-29.** BYCKR is an embedded library, like SQLite: apps open
 > the database files directly in their own process. `fylo serve`, its flags,
 > `Fylo.connect` and the `fyloServe` hello were removed before release, and no
 > network server ships. The hot set moved to embedded sessions that hold the
@@ -16,12 +16,12 @@
 
 ## Context
 
-A FYLO root on a network filesystem is slow because every operation becomes
+A BYCKR root on a network filesystem is slow because every operation becomes
 hundreds of remote file calls. The 2026-10-28 ATLAS measurements put a durable
 put at about 490 file calls, each one an SMB round trip. Network filesystems
-also weaken the lock, permission and path-identity guarantees FYLO relies on.
+also weaken the lock, permission and path-identity guarantees BYCKR relies on.
 
-The remedy is to run FYLO next to its disk and move the network to the other
+The remedy is to run BYCKR next to its disk and move the network to the other
 side of the engine: one round trip per operation, with every file call local.
 The machine protocol is already a versioned, bounded NDJSON stream, so it can
 cross a socket unchanged.
@@ -62,7 +62,7 @@ answers the machine protocol v1 over TCP.
   accepting, lets running frames finish and write their responses, closes idle
   connections within 200 ms, and releases the root with the checked release
   that removes its owner record. Killing the process is a crash: the kernel
-  drops the lock, and the next owner recovers the root as after any FYLO crash.
+  drops the lock, and the next owner recovers the root as after any BYCKR crash.
 - **Clients.** The Node and Rust shims gain a TCP transport beside the
   subprocess one (`Fylo.connect`). Other shims follow the same hello.
 

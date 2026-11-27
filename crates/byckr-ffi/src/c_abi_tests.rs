@@ -1,4 +1,4 @@
-//! A panic inside a call (ADR 0026, D6): it returns `FYLO_PANIC`, the handle
+//! A panic inside a call (ADR 0026, D6): it returns `YCKR_PANIC`, the handle
 //! refuses every later call, and closing still frees it.
 
 use std::path::PathBuf;

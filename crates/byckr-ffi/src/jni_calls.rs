@@ -5,8 +5,8 @@
 //! answer is one `byte[]`: its first byte is the `FyloStatus`, the rest is
 //! the same JSON the C ABI returns. `open` answers `{"root": <handle>}`.
 //! The `jni` crate attaches the thread, catches panics and turns a JNI
-//! failure into a Java exception; a panic inside FYLO is caught first and
-//! answers `FYLO_PANIC`, as in the C ABI. No `unsafe` code is needed here:
+//! failure into a Java exception; a panic inside BYCKR is caught first and
+//! answers `YCKR_PANIC`, as in the C ABI. No `unsafe` code is needed here:
 //! only the exported names are `#[unsafe(no_mangle)]`.
 
 #![allow(

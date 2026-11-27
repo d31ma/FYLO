@@ -3,11 +3,11 @@
 - Status: **Accepted, not yet built** (2026-11-21). The user made every
   decision below in five rounds of questions through the hub on 2026-11-21
   (quoted in "Context"). Slices L1-1 to L1-13 build it. It ships in **its own
-  release, after the next FYLO release** (the S5 release of ADR 0030). Until
+  release, after the next BYCKR release** (the S5 release of ADR 0030). Until
   that release, ADRs 0010, 0029 and 0032 stay in force as written.
-- Release changed (2026-11-21): the user decided "there should be no later FYLO release"; this ADR now ships in **the next FYLO release**, together with ADR 0034 and [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md). Where this ADR says "its own release, after the next FYLO release", read "the next FYLO release".
+- Release changed (2026-11-21): the user decided "there should be no later BYCKR release"; this ADR now ships in **the next BYCKR release**, together with ADR 0034 and [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md). Where this ADR says "its own release, after the next BYCKR release", read "the next BYCKR release".
 - Date: **2026-11-21**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Replaces: **ADR 0029** (no root on a network filesystem), when this ADR
   ships. The `EREMOTEROOT` refusal by filesystem type goes away (section 6).
 - Amends: **ADR 0003** (one owner per root becomes one owner per namespace,
@@ -20,20 +20,20 @@
 - Related: ADR 0009 (queue), ADR 0013 (write-ahead log), ADR 0015 (segments),
   ADR 0017 (schemas), ADR 0021 (identities), ADR 0024 (change feed), ADR 0028
   (invocation mode), ADR 0034 (large objects in `.vdbx`).
-- Spec: FYLO-L1, `L1-spec.md` (outside the repository, in the FYLO logs
+- Spec: BYCKR-L1, `L1-spec.md` (outside the repository, in the BYCKR logs
   folder), sections 8 to 15. Where the spec and this ADR differ, this ADR wins.
 
 ## Context
 
 The user's request, 2026-11-21, quoted exactly:
 
-> "for FYLO project i think we should have a the primary database in this
+> "for BYCKR project i think we should have a the primary database in this
 > format `<app_name>/<namespace>/<collection>/<TTID>.json` and it should
 > always be at the root of an external disk/volume/drive"
 
 Today a document is `<root>/.collections/<collection>/docs/<shard>/<TTID>.json`.
 The root can be any folder on a local disk that is not the system disk (ADR
-0032). Its lease files sit beside it, in its parent folder. FYLO has no app
+0032). Its lease files sit beside it, in its parent folder. BYCKR has no app
 level and no namespace level. In the code, the word "namespace" means
 `.collections` versus `.buckets`.
 
@@ -52,7 +52,7 @@ to the same question.
 | Q9 Existing databases | "Offline copy command (Rec.)" |
 | Q2b Depth below the mount point | "for testing we can use namespaces feature for the slices" |
 | N1 How a file links to a document | "Id stored in a field (Rec.)" |
-| N5 File-system type | "FYLO should not care about what type of file system is being mounted on. it should just have a guard that says it should be mounted on an external drive" |
+| N5 File-system type | "BYCKR should not care about what type of file system is being mounted on. it should just have a guard that says it should be mounted on an external drive" |
 | N6 App mode (ADR 0032) | "Keep as the exception (Rec.)" |
 | N7 Files in `.vdbx` | "Design it now" (ADR 0034) |
 | N8 When a collection grows | "Automatic (Rec.)" |
@@ -64,7 +64,7 @@ to the same question.
 | N15 windows-vm test images (replaced, see "Test images" below) | "figure out how to mount ATLAS volume on windows VM" |
 | N16 What "external drive" means | "Not the boot disk (Rec.)" |
 | Q4 Tests and CI | "Real disk images" |
-| Test images (replaces N4 "On the ATLAS drive", N14 and N15 for test images) | "actually i've changed my mind, for testing lets create a virtual disk image that can be used for all FYLO testing instead of ATLAS as ATLAS is used for production data"; where the file lives: "HANGAR SSD (Rec.)" |
+| Test images (replaces N4 "On the ATLAS drive", N14 and N15 for test images) | "actually i've changed my mind, for testing lets create a virtual disk image that can be used for all BYCKR testing instead of ATLAS as ATLAS is used for production data"; where the file lives: "HANGAR SSD (Rec.)" |
 | N17 One image for all testing, or one per system | "One image per system (Rec.)" |
 
 Facts that decide the design:
@@ -82,7 +82,7 @@ Facts that decide the design:
   disk it boots from**. This is why N16 is "not the boot disk".
 - **Kernel file locks are not enough on every file system.** On an unfsd
   NFSv3 mount, two machines both held the root lock and both wrote (Mesail
-  trial, 2026-11-12, ADR 0029). On ATLAS over NFSv4 the lock worked. FYLO
+  trial, 2026-11-12, ADR 0029). On ATLAS over NFSv4 the lock worked. BYCKR
   cannot tell these cases apart from the client. So "do not care about the
   type" (N5) needs a lease that is safe without trusting the kernel lock.
 - **Users pass one full root path per app today.** TACHYON:
@@ -129,14 +129,14 @@ Rules:
   with a TTID.
 - **Soft-deleted items** move to `<collection>/.fylo/deleted/` (same disk,
   so the move is an atomic rename). `restore` reads them from there.
-- **Guard files.** An old FYLO binary looks for the folders `.collections`,
+- **Guard files.** An old BYCKR binary looks for the folders `.collections`,
   `.buckets` and `.fylo-catalog`. In a new app folder and in every namespace
   folder they are empty plain files, so an old binary fails when it tries to
   use them as folders, instead of starting an empty database. ADR 0015
   already uses this trick (a plain file named `docs`).
-- **`format.json`** names the layout (`fylo.layout.v2`), the FYLO version
+- **`format.json`** names the layout (`fylo.layout.v2`), the BYCKR version
   that created the app folder, and the probe result (section 6). A folder
-  without it is not a FYLO app folder (section 5.4).
+  without it is not a BYCKR app folder (section 5.4).
 - **Backups.** The write-ahead log (ADR 0013) can hold the newest commits
   until a checkpoint. A copy of the visible tree is complete only after
   `fylo checkpoint` or a clean stop. `fylo pack` is the safe backup of a live
@@ -154,13 +154,13 @@ Rules:
   - 2 to 64 bytes (64 bytes is a new maximum for collection names);
   - the first and last character is a letter or a digit;
   - refused: Windows device names (`con`, `prn`, `aux`, `nul`, `com1` to
-    `com9`, `lpt1` to `lpt9`) and FYLO's reserved words (today's collection
+    `com9`, `lpt1` to `lpt9`) and BYCKR's reserved words (today's collection
     list: `sql`, `as`, `then`, `db`, `engine`, `cache`, and the rest).
   - Lowercase only, because APFS and NTFS treat `Mail` and `mail` as the same
     folder by default.
 - **Errors** (new, stable, not retryable, sent like `ESYSTEMDISK`: an error
   frame before anything is written):
-  - `EAPPNAME`: "the root's folder name `<name>` is not a valid FYLO app
+  - `EAPPNAME`: "the root's folder name `<name>` is not a valid BYCKR app
     name: <reason>. Use 2-64 lowercase letters, digits or '-', starting and
     ending with a letter or digit." The reason is one of: too short, too
     long, character not allowed (names the first bad character), bad first
@@ -191,10 +191,10 @@ Q1: "its basically the equivalent of a `schema` in Postgres".
   may read collections of several namespaces of one app, but only when the
   process can hold every namespace's lease (section 4). If another process
   owns one of them, the read fails with `EROOTLOCKED`. This is stricter than
-  Postgres, which has a server; FYLO has none.
-- **No transactions across namespaces.** FYLO has no transactions across
+  Postgres, which has a server; BYCKR has none.
+- **No transactions across namespaces.** BYCKR has no transactions across
   collections today, even in one namespace. A namespace does not change that.
-  If FYLO adds multi-collection transactions later, they must work across
+  If BYCKR adds multi-collection transactions later, they must work across
   namespaces too.
 - **New machine operations:** `createNamespace`, `dropNamespace` (with an
   explicit `cascade` flag; without it only an empty namespace can be
@@ -225,7 +225,7 @@ lock may bind only one machine.
 **Where.** The lease files of namespace `<ns>` sit beside its folder, inside
 the app folder: `<app>/.<ns>.fylo-root-owner.lock`,
 `<app>/.<ns>.fylo-root-owner.lock.json` and `<app>/.<ns>.fylo-root-turn.lock`.
-FYLO writes nothing in the drive's top folder except the app folders it
+BYCKR writes nothing in the drive's top folder except the app folders it
 creates.
 
 **What a process owns.** A process owns a namespace when it holds both:
@@ -367,10 +367,10 @@ checked before anything is written, at the points where ADR 0032 checks
 today (every `fylo exec` mode, the other commands and the library):
 
 1. **The root's parent folder is a mount point** (Q2, Q2b: strict, no
-   deeper folders). FYLO compares the parent with the mount point of its own
+   deeper folders). BYCKR compares the parent with the mount point of its own
    file system: `statfs` on macOS, `/proc/self/mountinfo` on Linux,
    `GetVolumePathNameW` on Windows (a drive root such as `D:\`, or an NTFS
-   folder mount point). A bind mount or a Docker volume counts: FYLO sees the
+   folder mount point). A bind mount or a Docker volume counts: BYCKR sees the
    mounts of its own container.
 2. **The drive is not the boot disk** (N16: "Not the boot disk (Rec.)"). The
    boot disk is what each OS reports: macOS the boot volume's APFS container;
@@ -381,7 +381,7 @@ today (every `fylo exec` mode, the other commands and the library):
    boot disk, so it passes.
 3. **The file system is not a memory file system** (N11: "Keep refusing"):
    `tmpfs` and `ramfs` are refused, because their data is lost at every
-   restart. This is the only file-system type FYLO still checks.
+   restart. This is the only file-system type BYCKR still checks.
 
 What passes: a USB or Thunderbolt disk, a second internal disk, a cloud data
 volume, a VM's second virtual disk, a Docker volume, a disk image whose file
@@ -394,7 +394,7 @@ container's own root file system (overlay), a disk image whose file is on the
 boot disk, a memory file system, and any folder that is not directly below a
 mount point.
 
-**Inside VMs and containers** FYLO judges from inside: it sees the VM's
+**Inside VMs and containers** BYCKR judges from inside: it sees the VM's
 virtual disks and the container's mounts, never the host's disks. A second
 virtual disk passes even when its file is on the host's internal disk. The
 host's operator is responsible for where that file lives (documented in the
@@ -413,12 +413,12 @@ README).
 #### 5.3 The opt-out and app mode stay
 
 - **The ADR 0032 opt-out, in all three forms** (`--allow-system-disk`,
-  `FYLO_ALLOW_SYSTEM_DISK=1`, `fylo.allowSystemDisk`), waives all three
+  `YCKR_ALLOW_SYSTEM_DISK=1`, `fylo.allowSystemDisk`), waives all three
   checks of section 5.1 and the app-name check, with the same single warning
   line on stderr. The handshake reports `placement: "systemDiskAllowed"`.
   TACHYON's tests, `ty dev` and `ty preview` use it with temporary folders.
 - **App mode stays the one exception** (N6). With `--app-id <id>`
-  (`FYLO_APP_ID`, `fylo.appId`), and always on iOS and Android, the app's own
+  (`YCKR_APP_ID`, `fylo.appId`), and always on iOS and Android, the app's own
   OS data folder plays the part of `<drive>/<app>`: namespaces live directly
   inside it. The app-name rule is not applied there (the id may contain dots
   and capitals); the handshake reports `storage.appName: null` and
@@ -428,15 +428,15 @@ README).
 #### 5.4 Several apps on one drive
 
 Q7: "Yes, several (Rec.)". Each app folder is its own set of namespaces and
-leases. FYLO touches only app folders and the files inside them, never other
-folders on the drive (Mesail keeps `/mnt/data/blobs` there). FYLO refuses to
+leases. BYCKR touches only app folders and the files inside them, never other
+folders on the drive (Mesail keeps `/mnt/data/blobs` there). BYCKR refuses to
 adopt an existing, non-empty folder that has no `.fylo/format.json`, with the
-new code `ENOTFYLOROOT`, instead of writing into it. An empty folder, or a
+new code `ENOTBYCKRROOT`, instead of writing into it. An empty folder, or a
 missing one, becomes a new app folder.
 
 ### 6. Any file system: a probe at creation
 
-N5: "FYLO should not care about what type of file system is being mounted
+N5: "BYCKR should not care about what type of file system is being mounted
 on". N12: "Test drive once (Rec.)".
 
 **ADR 0029 is replaced** when this ADR ships. There is no `EREMOTEROOT` by
@@ -444,7 +444,7 @@ file-system type. A root on NFS, SMB, EFS or another network share is
 admitted when it passes section 5. Dropping a refusal does not break callers.
 `EREMOTEROOT` stays in the error catalog as a retired code.
 
-**The probe.** When FYLO creates an app folder it tests the file system once
+**The probe.** When BYCKR creates an app folder it tests the file system once
 (about ten small operations, under 50 ms) inside `<app>/.fylo/`:
 
 | Need | Probe | When it fails |
@@ -493,9 +493,9 @@ Q3 and N1.
   Many documents may link one file, a document may link many files, and a
   file may exist alone.
   - A field is a link only when the collection's schema (ADR 0017) declares
-    it as one, with the format `fylo-file-id`. FYLO cannot guess which
+    it as one, with the format `fylo-file-id`. BYCKR cannot guess which
     strings are ids.
-  - **On write** FYLO checks that every declared link names a live file in
+  - **On write** BYCKR checks that every declared link names a live file in
     the same collection, and refuses the write otherwise (`EFILELINK`, new,
     stable, not retryable).
   - **Deleting a linked file is allowed.** The link then points at nothing;
@@ -512,7 +512,7 @@ Q6: "Shard only when big". N8: "Automatic (Rec.)".
   1 (36 folders) up to about 360,000, then width 2 (1,296 folders). Width 0,
   removed in 2026-08, comes back on purpose. ADR 0006's rule otherwise holds:
   the shard is the last characters of the TTID's creation segment.
-- Lookups never depend on folder size (FYLO builds the path from the id).
+- Lookups never depend on folder size (BYCKR builds the path from the id).
   The limit protects listing: `ls`, Finder, Explorer, backup tools, and
   network shares, where a large folder listing is slow. ADR 0006 measured
   that too many small folders costs time too, so small collections stay
@@ -532,10 +532,10 @@ Q6: "Shard only when big". N8: "Automatic (Rec.)".
   4. documents keep their bytes; query order does not change;
   5. the handshake and `inspectCollection` report the width and
      `resharding: true` while it runs.
-- **FYLO never goes back to a smaller width by itself.** Only `fylo reshard`
+- **BYCKR never goes back to a smaller width by itself.** Only `fylo reshard`
   does that, so a collection near the limit does not move back and forth.
 - **Tools that read paths** find an entry as `<collection>/<TTID>.json` or
-  `<collection>/*/<TTID>.json`, or ask FYLO (`inspectCollection`, or the new
+  `<collection>/*/<TTID>.json`, or ask BYCKR (`inspectCollection`, or the new
   `fylo path <collection> <id>`). A copy of a live folder during a move can
   miss or duplicate an entry; back up with `fylo pack` or after `fylo
   checkpoint`.
@@ -550,7 +550,7 @@ Q6: "Shard only when big". N8: "Automatic (Rec.)".
 - **`auto` rule 1 becomes "the namespace's file system is a network file
   system"** (N13: "Network file system (Rec.)"), not "opened with
   `--filesystem-profile efs-sidecar-v1`". It is a speed hint only, never a
-  refusal. The other `auto` rules do not change. FYLO-S already routes rule
+  refusal. The other `auto` rules do not change. BYCKR-S already routes rule
   1 through one function, so L1-8 changes only its source.
 - The temp folder stays where it is (`$TMPDIR/fylo-cache-v1`). It is not a
   root, so the drive rule does not apply to it (ADR 0032 section 1).
@@ -560,7 +560,7 @@ Q6: "Shard only when big". N8: "Automatic (Rec.)".
 Q8: "<drive>/<app>/<namespace>.vdbx (Rec.)".
 
 - A namespace is **either** a folder `<app>/<ns>/` **or** a file
-  `<app>/<ns>.vdbx`, never both; when both exist FYLO refuses the namespace
+  `<app>/<ns>.vdbx`, never both; when both exist BYCKR refuses the namespace
   with `ENAMESPACE`.
 - The app's `exec --loop` serves both kinds. A `.vdbx` keeps its own file
   lease, as today (ADR 0016 section 7), and gains the heartbeat and fencing
@@ -600,10 +600,10 @@ Q9: "Offline copy command (Rec.)".
 
 Q4: "Real disk images". Then the user changed where the images live, quoted
 exactly: "actually i've changed my mind, for testing lets create a virtual
-disk image that can be used for all FYLO testing instead of ATLAS as ATLAS is
+disk image that can be used for all BYCKR testing instead of ATLAS as ATLAS is
 used for production data", with the file on "HANGAR SSD (Rec.)". N17: "One
 image per system (Rec.)". This replaces the earlier answers N4 ("On the
-ATLAS drive"), N14 and N15 for test images. **Nothing FYLO tests lives on
+ATLAS drive"), N14 and N15 for test images. **Nothing BYCKR tests lives on
 ATLAS**; ATLAS is for production data.
 
 **It passes the drive rule.** HANGAR is a USB SSD that is not the boot disk,
@@ -613,9 +613,9 @@ so an image whose file is on HANGAR passes section 5 with no waiver (ADR
 **One file system, one system at a time.** An image that holds one file
 system is never attached to two systems at once (the Mac and windows-vm, or
 the Mac and Colima): each OS caches the file system in its own memory, and
-two writers corrupt it. FYLO's leases work on files, below that cache, so
+two writers corrupt it. BYCKR's leases work on files, below that cache, so
 they cannot prevent it. No file system is native to all three systems (only
-exFAT, which has no extended attributes or hard links, so FYLO's normal mode
+exFAT, which has no extended attributes or hard links, so BYCKR's normal mode
 would never be tested). So each system has **its own reusable test image,
 all on HANGAR**:
 
@@ -623,7 +623,7 @@ all on HANGAR**:
 | ------ | -------------- | ----------- | ----------- |
 | macOS lane (this Mac, jobq jobs, the nightly) | a sparsebundle on HANGAR, in a folder Platform confirms when slice L1-11 is near | the test helper, `hdiutil attach -nobrowse` at a fixed mount point, kept attached between jobs | APFS |
 | windows-vm | one reusable sparse raw image `/Volumes/HANGAR/fylo-test/windows-vm.raw` (made by Platform), the VM's second NVMe disk (serial `TEST-DISK`) | **only `testvm`** (Platform's change), at boot, under the `vm-windows` lock | NTFS |
-| Linux lane (Colima) | no image file: a named Docker volume (for example `fylo-test-volume`) mounted at `/data` in FYLO's test container. Colima's data disk is itself a file on HANGAR and is not the VM's boot disk, so it passes. No `--privileged` and no loop devices are needed. | Docker | ext4 |
+| Linux lane (Colima) | no image file: a named Docker volume (for example `fylo-test-volume`) mounted at `/data` in BYCKR's test container. Colima's data disk is itself a file on HANGAR and is not the VM's boot disk, so it passes. No `--privileged` and no loop devices are needed. | Docker | ext4 |
 | Laptops away from home, GitHub Linux and Windows runners | a small image the test helper makes on a disk that is not the boot disk (GitHub: `/mnt`, `D:`) | the test helper, per run | native |
 | GitHub macOS runners | one disk only | - | **open**; to be asked again when the CI slice (L1-11) is near |
 
@@ -660,7 +660,7 @@ The ADR 0032 opt-out stays available for tests of other projects (TACHYON's
 temporary folders) and for tests of the drive rule itself. Tests of the rule
 clear it, as ADR 0032 section 7 does.
 
-**The macOS image before L1 ships** (FYLO-T1, 2026-11-21). The Mac lane's
+**The macOS image before L1 ships** (BYCKR-T1, 2026-11-21). The Mac lane's
 image exists before this ADR is built, so tests stop using the system disk
 now:
 
@@ -668,7 +668,7 @@ now:
   `/Volumes/HANGAR/fylo-test/fylo-macos-test.sparsebundle` (8 GiB maximum)
   at `~/Developer/FyloTestImage`, under the lock named in rule 2.
   `run -- <command>` gives each job the folder
-  `<mount>/roots/<owner>-<pid>` as `FYLO_TEST_ROOT` and removes it at the
+  `<mount>/roots/<owner>-<pid>` as `YCKR_TEST_ROOT` and removes it at the
   end. Rust tests read it through `fylo_test_support::TestFolder::path()`,
   bun tests through `testFolder()` in `tests/helpers/root.js`; both use the
   OS temp folder when it is unset (GitHub CI, the VMs).
@@ -685,7 +685,7 @@ now:
   420 s and 559 s on the image against 318 s and 329 s in TMPDIR (two
   samples, 2 and 3 test threads); the bun interop suite 57 s against 47 s.
 - The opt-out is no longer needed to open test roots on the image: with
-  `FYLO_ALLOW_SYSTEM_DISK=0`, all 287 interop and 202 browser tests and 1,673
+  `YCKR_ALLOW_SYSTEM_DISK=0`, all 287 interop and 202 browser tests and 1,673
   of 1,682 Rust tests pass. The other 9 Rust tests check the opt-out itself
   (7 expect `placement: "systemDiskAllowed"` in the handshake, 2 expect the
   test process to have it on), so the repository keeps it on until those
@@ -693,13 +693,13 @@ now:
 
 ### 13. Versioning: how the break is marked
 
-FYLO uses CalVer (`YY.WW.DD`) and has no major number. As in ADR 0032
+BYCKR uses CalVer (`YY.WW.DD`) and has no major number. As in ADR 0032
 section 8, the break is marked by:
 
 - a `### Breaking Changes` section first in the CHANGELOG and the release
   notes of the layout release, with the migration note below;
 - new stable error codes: `EAPPNAME`, `ENAMESPACE`, `ENOTVOLUMEROOT`,
-  `ENOTFYLOROOT`, `EFSPROBE`, `EFILELINK`, `ELEGACYLAYOUT`; `EREMOTEROOT` is
+  `ENOTBYCKRROOT`, `EFSPROBE`, `EFILELINK`, `ELEGACYLAYOUT`; `EREMOTEROOT` is
   retired;
 - the **storage contract goes to `v2`** (`api/storage/v2/`, drafted with this
   ADR): `format.json`, the namespace lease record and the namespace catalog;
@@ -716,7 +716,7 @@ section 8, the break is marked by:
 and `placement`. A plain `exec --loop` handshake reports these without
 opening the app folder, so a host can check a root before use.
 
-**Release.** This ships in its own release after the next FYLO release (the
+**Release.** This ships in its own release after the next BYCKR release (the
 S5 release), never together with it. TACHYON and Mesail test against a
 `develop` build first (the release rule): their work starts when L1-5 is on
 `develop`.
@@ -736,16 +736,16 @@ Who must act before upgrading:
    parent can become namespaces of one app.
 3. **Scripts that delete root folders** (`rm -rf`): use `fylo namespace
    drop`, which refuses while the namespace is in use.
-4. **Tools that read FYLO's paths** (`.collections/<c>/docs/<shard>/...`):
+4. **Tools that read BYCKR's paths** (`.collections/<c>/docs/<shard>/...`):
    read `<app>/<ns>/<c>/<TTID>.json` or `<app>/<ns>/<c>/*/<TTID>.json`, or
-   ask FYLO.
+   ask BYCKR.
 5. **Backups that copy folders:** run `fylo checkpoint` first, or use `fylo
    pack`. The lease files are now inside the app folder; copy the app folder
    only while no process owns its namespaces.
 6. **Network roots** that ADR 0029 refused now open. Nothing to do; `fylo
    upgrade-root` probes the file system when it creates the app folder.
 7. **Tests:** temporary-folder roots keep working with the ADR 0032 opt-out
-   (`FYLO_ALLOW_SYSTEM_DISK=1`).
+   (`YCKR_ALLOW_SYSTEM_DISK=1`).
 
 Known users on 2026-11-21 (their work is slice L1-13, in their own sessions,
 after L1-5 is on `develop`):
@@ -783,9 +783,9 @@ yet, because its `Unreleased` section is the S5 release.
   videos, any bytes) are `<TTID>.<ext>` in the same collection folder;
   derived files are in a hidden `.fylo/` folder per collection. A
   collection gets shard folders by itself once it holds 10,000 entries.
-  New codes: `EAPPNAME`, `ENAMESPACE`, `ENOTVOLUMEROOT`, `ENOTFYLOROOT`,
+  New codes: `EAPPNAME`, `ENAMESPACE`, `ENOTVOLUMEROOT`, `ENOTBYCKRROOT`,
   `EFSPROBE`, `EFILELINK`, `ELEGACYLAYOUT`. Old roots open read-only; copy
-  them with `fylo upgrade-root`. Older FYLO binaries refuse the new layout.
+  them with `fylo upgrade-root`. Older BYCKR binaries refuse the new layout.
   See the migration note in ADR 0033.
 - **One lease per namespace, safe on any file system.** Two processes can
   own two namespaces of one app. The lease files are
@@ -794,7 +794,7 @@ yet, because its `Unreleased` section is the S5 release.
   after a crash the next owner waits up to 20 s. New operations
   `createNamespace`, `dropNamespace`, `listNamespaces`, and
   `fylo namespace create|drop|list`.
-- **Network file systems are admitted (ADR 0029 replaced).** FYLO no longer
+- **Network file systems are admitted (ADR 0029 replaced).** BYCKR no longer
   refuses a root by file-system type, except memory file systems. It tests
   the file system once when it creates an app folder and picks extended
   attributes or hidden sidecar files by itself; `EREMOTEROOT` is retired.
@@ -818,7 +818,7 @@ yet, because its `Unreleased` section is the S5 release.
   atomic renames or exclusive creates is refused with a clear reason instead
   of failing later.
 - Paths change once for a collection when it reaches 10,000 entries. Tools
-  must allow for both shapes or ask FYLO.
+  must allow for both shapes or ask BYCKR.
 - Tests need a real mounted image, which costs a few seconds per job and
   needs the rules of section 12. windows-vm waits for Platform's `testvm`
   change that adds its second disk from HANGAR.
@@ -887,5 +887,5 @@ Each slice proves its part, in its own gates:
 - Reviewed by the hub on 2026-11-21: details 1-5 accepted; detail 5 with the
   key/nonce rule of ADR 0034 section 4 (a key is never used twice with the
   same nonce). The details are section 4's claim file, section 7's schema
-  declaration of links and `EFILELINK`, and the new codes `ENOTFYLOROOT` and
+  declaration of links and `EFILELINK`, and the new codes `ENOTBYCKRROOT` and
   `EFSPROBE` (this ADR), and those listed in ADR 0034's review.

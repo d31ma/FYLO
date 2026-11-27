@@ -103,9 +103,9 @@ fn a_folder_byckr_did_not_make_is_refused_and_left_alone() {
     fs::create_dir(layout.app_folder()).unwrap();
     fs::write(layout.app_folder().join("photo.jpg"), b"bytes").unwrap();
     let error = prepare(&layout, "26.50.02").unwrap_err();
-    assert_eq!(error.code().as_str(), "ENOTFYLOROOT");
+    assert_eq!(error.code().as_str(), "ENOTBYCKRROOT");
     assert!(
-        error.message().contains("not a FYLO app folder"),
+        error.message().contains("not a BYCKR app folder"),
         "{}",
         error.message()
     );
@@ -118,7 +118,7 @@ fn an_old_layout_root_is_refused_and_left_alone() {
     let layout = drive.layout("chat");
     fs::create_dir_all(layout.app_folder().join(".collections/users/docs")).unwrap();
     let error = prepare(&layout, "26.50.02").unwrap_err();
-    assert_eq!(error.code().as_str(), "ENOTFYLOROOT");
+    assert_eq!(error.code().as_str(), "ENOTBYCKRROOT");
     assert!(
         error.message().contains("fylo upgrade-root"),
         "{}",
@@ -195,7 +195,7 @@ fn a_state_folder_that_is_a_file_is_refused() {
     fs::create_dir(layout.app_folder()).unwrap();
     fs::write(layout.app_state_folder(), b"").unwrap();
     let error = prepare(&layout, "26.50.02").unwrap_err();
-    assert_eq!(error.code().as_str(), "ENOTFYLOROOT");
+    assert_eq!(error.code().as_str(), "ENOTBYCKRROOT");
 }
 
 #[test]

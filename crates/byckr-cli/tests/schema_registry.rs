@@ -71,8 +71,8 @@ impl Fixture {
             .arg(self.root())
             .args(["--collection", "items", "--schema-dir"])
             .arg(self.schemas())
-            .env("FYLO_RUST_FAILPOINT", "after-schema-file")
-            .env("FYLO_RUST_FAILPOINT_ACTION", action)
+            .env("YCKR_RUST_FAILPOINT", "after-schema-file")
+            .env("YCKR_RUST_FAILPOINT_ACTION", action)
             .output()
             .unwrap()
     }

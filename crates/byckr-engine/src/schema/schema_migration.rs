@@ -60,7 +60,7 @@ impl SchemaMigration {
         let legacy = paths.legacy_upgrader(from, to);
         if legacy.is_file() {
             return format!(
-                "Collection '{}' has a JavaScript upgrader {from}->{to} at {}, which FYLO no longer runs; \
+                "Collection '{}' has a JavaScript upgrader {from}->{to} at {}, which BYCKR no longer runs; \
                  rewrite it as {} (see ADR 0018)",
                 paths.collection,
                 legacy.display(),

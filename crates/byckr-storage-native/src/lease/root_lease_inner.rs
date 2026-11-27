@@ -301,7 +301,7 @@ impl RootLeaseInner {
     fn ownership_lost() -> NativeStorageError {
         NativeStorageError::new(
             NativeStorageErrorCode::RootLeaseLost,
-            "exclusive ownership of this FYLO root was lost",
+            "exclusive ownership of this BYCKR root was lost",
         )
     }
 

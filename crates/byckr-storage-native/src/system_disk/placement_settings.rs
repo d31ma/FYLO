@@ -1,7 +1,7 @@
 /// What a host was told on its command line and in its configuration file
 /// about where a root may live (ADR 0032 section 3). The environment is read
 /// by [`crate::RootPlacement`] itself, so a library host that sets nothing
-/// still gets `FYLO_ALLOW_SYSTEM_DISK` and `FYLO_APP_ID`.
+/// still gets `YCKR_ALLOW_SYSTEM_DISK` and `YCKR_APP_ID`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PlacementSettings {
     /// `--allow-system-disk` was given.

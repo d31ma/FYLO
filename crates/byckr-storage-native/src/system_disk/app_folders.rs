@@ -3,7 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use super::app_id::AppId;
 
 /// The OS values an app's data folders are built from (ADR 0032 section
-/// 3.2). FYLO reads them from the OS, never from the root's path.
+/// 3.2). BYCKR reads them from the OS, never from the root's path.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct AppFolderInputs {
     /// The user's home folder (on iOS and in a macOS sandbox, the app's

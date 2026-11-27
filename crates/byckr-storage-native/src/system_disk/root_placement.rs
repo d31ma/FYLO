@@ -8,8 +8,8 @@ use super::placement_settings::PlacementSettings;
 ///
 /// The CLI resolves it once from its flags, the environment and its
 /// configuration file, and installs it. A library host that installs
-/// nothing gets the environment alone: `FYLO_ALLOW_SYSTEM_DISK` and
-/// `FYLO_APP_ID`.
+/// nothing gets the environment alone: `YCKR_ALLOW_SYSTEM_DISK` and
+/// `YCKR_APP_ID`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RootPlacement {
     /// The default: a local disk that is not the system disk.
@@ -22,9 +22,9 @@ pub enum RootPlacement {
 
 impl RootPlacement {
     /// The opt-out's environment variable.
-    pub const ALLOW_VARIABLE: &'static str = "FYLO_ALLOW_SYSTEM_DISK";
+    pub const ALLOW_VARIABLE: &'static str = "YCKR_ALLOW_SYSTEM_DISK";
     /// App mode's environment variable.
-    pub const APP_ID_VARIABLE: &'static str = "FYLO_APP_ID";
+    pub const APP_ID_VARIABLE: &'static str = "YCKR_APP_ID";
 
     /// Resolve `settings` and the variables `environment` returns.
     ///
@@ -35,7 +35,7 @@ impl RootPlacement {
     ///
     /// # Errors
     ///
-    /// Returns a message for a `FYLO_ALLOW_SYSTEM_DISK` value other than
+    /// Returns a message for a `YCKR_ALLOW_SYSTEM_DISK` value other than
     /// `1`, `true`, `0` or `false`, and for an invalid app id.
     pub fn resolve(
         settings: &PlacementSettings,
@@ -171,14 +171,14 @@ mod tests {
         assert_eq!(
             resolve(
                 &PlacementSettings::default(),
-                &[("FYLO_ALLOW_SYSTEM_DISK", "1")]
+                &[("YCKR_ALLOW_SYSTEM_DISK", "1")]
             ),
             RootPlacement::AllowSystemDisk(OptOutSource::Environment)
         );
         assert_eq!(
             resolve(
                 &PlacementSettings::default(),
-                &[("FYLO_ALLOW_SYSTEM_DISK", "true")]
+                &[("YCKR_ALLOW_SYSTEM_DISK", "true")]
             ),
             RootPlacement::AllowSystemDisk(OptOutSource::Environment)
         );
@@ -192,7 +192,7 @@ mod tests {
             ..PlacementSettings::default()
         };
         assert_eq!(
-            resolve(&all, &[("FYLO_ALLOW_SYSTEM_DISK", "1")]),
+            resolve(&all, &[("YCKR_ALLOW_SYSTEM_DISK", "1")]),
             RootPlacement::AllowSystemDisk(OptOutSource::Flag)
         );
     }
@@ -201,15 +201,15 @@ mod tests {
     fn off_values_leave_the_opt_out_off() {
         let none = PlacementSettings::default();
         assert_eq!(
-            resolve(&none, &[("FYLO_ALLOW_SYSTEM_DISK", "")]),
+            resolve(&none, &[("YCKR_ALLOW_SYSTEM_DISK", "")]),
             RootPlacement::DataDisk
         );
         assert_eq!(
-            resolve(&none, &[("FYLO_ALLOW_SYSTEM_DISK", "0")]),
+            resolve(&none, &[("YCKR_ALLOW_SYSTEM_DISK", "0")]),
             RootPlacement::DataDisk
         );
         assert_eq!(
-            resolve(&none, &[("FYLO_ALLOW_SYSTEM_DISK", "false")]),
+            resolve(&none, &[("YCKR_ALLOW_SYSTEM_DISK", "false")]),
             RootPlacement::DataDisk
         );
     }
@@ -218,10 +218,10 @@ mod tests {
     fn another_environment_value_is_an_error() {
         let error = RootPlacement::resolve(
             &PlacementSettings::default(),
-            with(&[("FYLO_ALLOW_SYSTEM_DISK", "yes")]),
+            with(&[("YCKR_ALLOW_SYSTEM_DISK", "yes")]),
         )
         .unwrap_err();
-        assert!(error.contains("FYLO_ALLOW_SYSTEM_DISK must be 1, true, 0 or false"));
+        assert!(error.contains("YCKR_ALLOW_SYSTEM_DISK must be 1, true, 0 or false"));
     }
 
     #[test]
@@ -232,7 +232,7 @@ mod tests {
             ..PlacementSettings::default()
         };
         assert_eq!(
-            resolve(&settings, &[("FYLO_APP_ID", "com.example.environment")]),
+            resolve(&settings, &[("YCKR_APP_ID", "com.example.environment")]),
             RootPlacement::AppOwned(AppId::parse("com.example.flag").unwrap())
         );
         let config = PlacementSettings {
@@ -240,7 +240,7 @@ mod tests {
             ..PlacementSettings::default()
         };
         assert_eq!(
-            resolve(&config, &[("FYLO_APP_ID", "com.example.environment")]),
+            resolve(&config, &[("YCKR_APP_ID", "com.example.environment")]),
             RootPlacement::AppOwned(AppId::parse("com.example.environment").unwrap())
         );
         assert_eq!(
@@ -266,7 +266,7 @@ mod tests {
     fn an_invalid_app_id_is_an_error() {
         let error = RootPlacement::resolve(
             &PlacementSettings::default(),
-            with(&[("FYLO_APP_ID", "../escape")]),
+            with(&[("YCKR_APP_ID", "../escape")]),
         )
         .unwrap_err();
         assert!(error.contains("app id"));

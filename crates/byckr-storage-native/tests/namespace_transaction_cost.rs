@@ -1,8 +1,8 @@
 //! Commit latency of one transaction of 25 writes spread over 7 collections
-//! against 25 writes in one collection (FYLO-TXN2), in a given folder.
+//! against 25 writes in one collection (BYCKR-TXN2), in a given folder.
 //!
 //! Ignored in ordinary runs. Run it with
-//! `FYLO_TXN2_MEASURE_DIR=<folder> cargo test -p fylo-storage-native --test namespace_transaction_cost -- --ignored --nocapture`.
+//! `YCKR_TXN2_MEASURE_DIR=<folder> cargo test -p fylo-storage-native --test namespace_transaction_cost -- --ignored --nocapture`.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -12,7 +12,7 @@ use byckr_storage_native::{
 };
 use serde_json::json;
 
-const MEASURE_DIR: &str = "FYLO_TXN2_MEASURE_DIR";
+const MEASURE_DIR: &str = "YCKR_TXN2_MEASURE_DIR";
 const ROUNDS: usize = 20;
 const WRITES: usize = 25;
 const COLLECTIONS: usize = 7;
@@ -114,7 +114,7 @@ fn report(label: &str, times: &[Duration]) {
 }
 
 #[test]
-#[ignore = "measures commit latency in FYLO_TXN2_MEASURE_DIR"]
+#[ignore = "measures commit latency in YCKR_TXN2_MEASURE_DIR"]
 fn twenty_five_writes_over_seven_collections_against_one() {
     let base = PathBuf::from(std::env::var(MEASURE_DIR).expect(MEASURE_DIR));
     let one = measure(&base, "one", 1);

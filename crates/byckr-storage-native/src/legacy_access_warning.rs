@@ -5,12 +5,12 @@ use std::collections::BTreeMap;
 use std::sync::Once;
 
 /// Tells the user, once per process, that a root holds records with POSTIX
-/// access descriptors, which FYLO reads but no longer enforces.
+/// access descriptors, which BYCKR reads but no longer enforces.
 pub(crate) struct LegacyAccessWarning;
 
 impl LegacyAccessWarning {
     const MESSAGE: &'static str = "fylo: warning: this root holds records with POSTIX access \
-        descriptors (uid, gid, mode), which FYLO no longer enforces; list them with \
+        descriptors (uid, gid, mode), which BYCKR no longer enforces; list them with \
         `fylo access report <root>` and move the root into a protected database with \
         `fylo pack --protect` (docs/migrating-to-protected-databases.md)";
 

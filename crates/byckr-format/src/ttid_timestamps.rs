@@ -57,7 +57,7 @@ impl TtidTimestamps {
 
     fn check_length(identifier: &str) -> Result<(), FormatError> {
         if !(Self::MINIMUM_LENGTH..=Self::MAXIMUM_LENGTH).contains(&identifier.len()) {
-            return Err(Self::invalid("identifier length is outside FYLO bounds"));
+            return Err(Self::invalid("identifier length is outside BYCKR bounds"));
         }
         Ok(())
     }

@@ -2,7 +2,7 @@
 
 - Status: **Accepted** (Samuel, 2026-10-29)
 - Date: **2026-10-29**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Builds on: ADR 0013 (record format and commit protocol), ADR 0015
   (append-only segments), ADR 0016 (single-file `.vdbx` databases), ADR 0008
   (the portable WebAssembly engine) and ADR 0014 (the hot set).
@@ -13,7 +13,7 @@
 
 ## Context
 
-FYLO validates documents with CHEX, a JSON schema whose every leaf is a regex.
+BYCKR validates documents with CHEX, a JSON schema whose every leaf is a regex.
 CHEX now runs in-process (`crates/fylo-chex`), and a collection can keep a
 history of schema versions with a JavaScript upgrader between each pair,
 executed by the embedded Boa runtime. Reading the code on `develop` on
@@ -462,7 +462,7 @@ Costs:
 - **Typed leaves in CHEX**, so `30` and `"30"` can be told apart, and numeric
   ranges. That changes the CHEX format, which is its own project, and deserves
   its own ADR.
-- **Cross-collection rules** (foreign keys, uniqueness). FYLO has no
+- **Cross-collection rules** (foreign keys, uniqueness). BYCKR has no
   multi-collection transactions yet (ADR 0016 section 1).
 
 ## Verification

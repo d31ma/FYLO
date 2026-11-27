@@ -24,7 +24,7 @@ pub enum FormatErrorCode {
     /// A validated value could not be encoded.
     #[serde(rename = "EFORMAT_ENCODE")]
     Encode,
-    /// A FYLO document identifier was invalid.
+    /// A BYCKR document identifier was invalid.
     #[serde(rename = "EINVALIDDOCID")]
     InvalidDocumentId,
 }

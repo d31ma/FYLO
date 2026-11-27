@@ -1,4 +1,4 @@
-//! Repository-specific FYLO development and qualification tasks.
+//! Repository-specific BYCKR development and qualification tasks.
 
 use std::env;
 use std::fs;
@@ -60,7 +60,7 @@ fn verify_workspace(root: &Path) -> Result<(), String> {
         }
     }
 
-    println!("FYLO workspace {version} is internally consistent");
+    println!("BYCKR workspace {version} is internally consistent");
     Ok(())
 }
 

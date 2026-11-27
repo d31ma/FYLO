@@ -72,7 +72,7 @@ machine-wide defaults were not replaced.
 
 Chromium 151.0.7922.34, Firefox 153.0, and WebKit 26.5 each passed all three browser
 scenarios. WebKit's earlier failures were isolated to ephemeral Playwright
-contexts: raw OPFS access failed before FYLO ran on both localhost and 127.0.0.1,
+contexts: raw OPFS access failed before BYCKR ran on both localhost and 127.0.0.1,
 but succeeded in fresh persistent contexts on both hosts. The E2E fixture now
 creates and cleans up a unique persistent WebKit profile per test. It does not
 change browser security settings or touch user profiles. Chromium/Firefox retain
@@ -120,7 +120,7 @@ timings are not comparable to the optimized benchmark below.
 The artifact is ignored at `benchmarks/tin-poc/results-soak-local-20260926.json`.
 Reproduction uses `scripts/run-rust-soak.mjs --profile smoke --duration-hours 0.034
 --restart-every 25 --checkpoint-every 25 --output <report.json>`, with
-`FYLO_RUST_BINARY` pointing to the verified binary and `FYLO_SKIP_RUST_BUILD=1`.
+`YCKR_RUST_BINARY` pointing to the verified binary and `YCKR_SKIP_RUST_BUILD=1`.
 This bounded smoke pass is not the 72-hour release profile or a large dataset
 workload, and orderly restarts are separate from the crash matrix above.
 
@@ -235,7 +235,7 @@ load test. Do not infer universal scaling from the earlier 500-document run.
 
 ## Long-run harness hardening
 
-Readiness review found shortcomings in the soak runner, separate from the FYLO
+Readiness review found shortcomings in the soak runner, separate from the BYCKR
 engine. Native handshake, request, shutdown, build, and resource-sampling waits
 are now bounded. Owned processes are stopped and reaped before fixture deletion;
 cleanup continues after individual failures. An observed RSS breach now stops
@@ -399,7 +399,7 @@ This harness copy differs from `benchmarks/tin-poc` in three ways:
 
 - document ids start at `4VRNF520000`
 - it is capped at 79,000 documents
-- it adds `FYLO_BENCH_KEEP_ROOT` and a `cold` mode
+- it adds `YCKR_BENCH_KEEP_ROOT` and a `cold` mode
 
 An earlier attempt on 2026-10-10 was discarded. Its quiet-machine check matched
 only build tools, so it missed the probe that skewed it.
@@ -430,7 +430,7 @@ Linux, Windows and WebAssembly keep the component walk, but they now get the
 cached spelling check instead of listing directories.
 
 **File calls per row.** Each read now makes 6 calls: open, fstat, flistxattr,
-one `lstat` for the attribute-sidecar fallback (a record with no FYLO xattrs
+one `lstat` for the attribute-sidecar fallback (a record with no BYCKR xattrs
 may carry them in a `.fylo-attrs` file), read, and close. The sidecar `lstat`
 stays because a sidecar can hold the access descriptor.
 
@@ -493,7 +493,7 @@ to the server. Removing those needs the engine next to its disk, or packed
 segment files, not fewer path checks.
 
 Raw results, traces, logs with load samples, and the run scripts are in
-`/Volumes/FORGE/Logs/FYLO/fylo-path-verify/`.
+`/Volumes/FORGE/Logs/BYCKR/fylo-path-verify/`.
 
 ## Write latency after the write-ahead log, 2026-10-28
 
@@ -502,7 +502,7 @@ Document writes now commit through the collection write-ahead log
 `fsync` per commit instead of 23 to 28. Same harness as the 2026-10-11
 baselines (`end-to-end.rs` SHA-256 `e65d46c0…`), release build, 30 samples per
 operation. Logs, load samples and raw JSON are in
-`/Volumes/FORGE/Logs/FYLO/fylo-wal/`.
+`/Volumes/FORGE/Logs/BYCKR/fylo-wal/`.
 
 **Mac internal APFS, 5,000 documents per collection, median of three runs
 (load 3.5 to 4.7):**
@@ -540,7 +540,7 @@ duplicate owners.
 
 ## Hot set, 2026-10-28 (measured in the since-removed fylo serve)
 
-`fylo serve` was removed on 2026-10-29: FYLO is embedded, and the hot set now
+`fylo serve` was removed on 2026-10-29: BYCKR is embedded, and the hot set now
 runs in sessions that hold the root's exclusive lease
 (`exec --loop --exclusive-root`), where reads run one at a time. The numbers
 below are kept as measured.
@@ -559,7 +559,7 @@ documents per collection in an APFS sparse image stored on ATLAS, and 500 per
 collection copied to the raw ATLAS SMB share. The one-minute load was 2.2 to 6
 during the in-process runs and 2.8 to 8 during the network runs. Every sample
 checked its row count. Raw results, load samples and the bench sources are in
-`/Volumes/FORGE/Logs/FYLO/fylo-hotset/`.
+`/Volumes/FORGE/Logs/BYCKR/fylo-hotset/`.
 
 **In process.** Time for `FrameSession::answer`: request parsing, dispatch,
 the read and the encoded response. 200 samples per run (30 on the raw share),
@@ -639,7 +639,7 @@ develop's file layout with the segment layout on the same fixtures, with
 full identifier and body oracles passing in every run.
 
 **Mac, local APFS.** Apple M4, macOS 27.2, release opt-level 3, with the
-2026-10-11 harness (`end-to-end.rs` gains only a `FYLO_BENCH_LAYOUT`
+2026-10-11 harness (`end-to-end.rs` gains only a `YCKR_BENCH_LAYOUT`
 switch). The 5k columns are the median of three interleaved runs, and the
 25k columns are one run each. Load was 3 to 5. The file layout on the new
 build matched develop to within noise.
@@ -686,14 +686,14 @@ copied in seconds.
 4,948 live documents, 52 deleted, and custom metadata on 100. It moved the
 fixture to segments in 0.67 s and back to files in 1.07 s. The identifier
 and body oracles held at each step, and all 5,000 files came back with
-identical bytes, modification times, modes and FYLO attributes.
+identical bytes, modification times, modes and BYCKR attributes.
 
 **Crash matrix.** 607 interrupted native mutations across 32 failpoints
 on macOS and 562 on Windows recovered to one valid state each. That
 includes every ordinary mutation on a segment collection, compaction, and
 migration in both directions.
 
-Logs, scripts and raw JSON are in `/Volumes/FORGE/Logs/FYLO/fylo-segments/`.
+Logs, scripts and raw JSON are in `/Volumes/FORGE/Logs/BYCKR/fylo-segments/`.
 
 ## Single-file `.vdbx` databases on ATLAS, 2026-10-29
 
@@ -802,7 +802,7 @@ On local APFS, for comparison, the same steps let all three writers write
 together through byte-range locks.
 
 Logs, scripts, the harness source and raw JSON are in
-`/Volumes/FORGE/Logs/FYLO/fxdb-atlas/`. The `spike1-unpatched`,
+`/Volumes/FORGE/Logs/BYCKR/fxdb-atlas/`. The `spike1-unpatched`,
 `spike1-patched-packfail` and `atlas-smb-*` folders hold the runs that hit
 the two defects.
 
@@ -826,7 +826,7 @@ platform's shared storage. Run on an arm64 WSL2 host with Docker 29.8:
   links only catches `Unsupported`. gcsfuse, the real client, returns `EPERM`,
   so every write fails on Cloud Storage. The Samba stand-in returns `EACCES`
   with the same result. Real Azure Files may answer with a different errno; if
-  it is `EOPNOTSUPP`, FYLO would take the exclusive-create fallback instead.
+  it is `EOPNOTSUPP`, BYCKR would take the exclusive-create fallback instead.
   That is not tested here. gcsfuse also needs `file-mode=600,dir-mode=755`,
   or the profile descriptor is refused as unsafe.
 - **No cross-instance locks.** Cloud Run mounts NFS in no-lock mode, and gcsfuse
@@ -847,7 +847,7 @@ platform's shared storage. Run on an arm64 WSL2 host with Docker 29.8:
   its NFS lane now alternates writers between two clients. That step failed
   with this error before the fix and passes after it.
 - **Lock file outside the mount, fixed.** The root lease lock sits beside the
-  root, not inside it. The Floci lane used to set `FYLO_ROOT=/mnt/state`, the
+  root, not inside it. The Floci lane used to set `YCKR_ROOT=/mnt/state`, the
   mount point itself, so the lock landed in the container's own `/mnt`.
   Invocations in separate containers then never contended on a shared lock,
   and on real Lambda `/mnt` is presumably read-only (inferred, not checked).

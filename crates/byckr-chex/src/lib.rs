@@ -1,7 +1,7 @@
-//! CHEX: regex-driven JSON validation, built into FYLO.
+//! CHEX: regex-driven JSON validation, built into BYCKR.
 //!
 //! Vendored from CHEX v26.32.02 (<https://github.com/d31ma/CHEX>, MIT, see
-//! `LICENSE-CHEX`). FYLO used to drive the `chex` binary as a subprocess; the
+//! `LICENSE-CHEX`). BYCKR used to drive the `chex` binary as a subprocess; the
 //! engine now calls this crate in-process. Only the validation core is kept:
 //! the CLI, machine loop, C ABI, and JNI bindings stay upstream.
 //!
@@ -126,7 +126,7 @@ fn js_number(number: &serde_json::Number) -> String {
         return format!("{}", value as i128);
     }
     // ponytail: diverges from JS exponent form for |x| >= 1e21 or < 1e-6.
-    // Vendor ryu-js (as FYLO does) if a schema ever needs to match those.
+    // Vendor ryu-js (as BYCKR does) if a schema ever needs to match those.
     format!("{value}")
 }
 
@@ -163,7 +163,7 @@ fn is_record_type(schema: &Map<String, Value>) -> bool {
     schema.len() == 1 && schema.keys().next().is_some_and(|key| key.starts_with('^'))
 }
 
-/// FYLO's field-encryption list, which sits beside the properties at the top
+/// BYCKR's field-encryption list, which sits beside the properties at the top
 /// of a schema. It describes how fields are stored, not a field of the
 /// document, so neither the definition check nor data validation treats it as
 /// a property.

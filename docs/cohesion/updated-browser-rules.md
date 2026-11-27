@@ -19,7 +19,7 @@ Keep generated/vendor files and all unrelated dirty work untouched.
 
 - Read the updated shared instructions and existing Graphify context.
 - Two workers own disjoint native cache/lease and configuration slices.
-- Other projects have heavy jobs on this host; heavy FYLO verification will
+- Other projects have heavy jobs on this host; heavy BYCKR verification will
   use the existing shared machine queue rather than overlap those jobs.
 - No commit, push, release, dependency install, or background soak is in scope.
 - Four event tests passed against the original service before moving lifecycle

@@ -1,6 +1,6 @@
 //! `enclave:` keys on this Mac's Secure Enclave (ADR 0021, phase 8). Each
 //! test keeps its keys' token blobs in its own throwaway keychain, named by
-//! `FYLO_KEYCHAIN` and deleted afterwards; the tests take turns, since the
+//! `YCKR_KEYCHAIN` and deleted afterwards; the tests take turns, since the
 //! variable is the process's.
 #![cfg(target_os = "macos")]
 #![allow(unsafe_code)]
@@ -33,7 +33,7 @@ impl Keychain {
         security(&["unlock-keychain", "-p", &password, path.to_str().unwrap()]);
         // SAFETY: the tests take turns under `TURN`, so no other thread of
         // this binary reads or writes the environment meanwhile.
-        unsafe { std::env::set_var("FYLO_KEYCHAIN", &path) };
+        unsafe { std::env::set_var("YCKR_KEYCHAIN", &path) };
         Keychain {
             directory,
             path,

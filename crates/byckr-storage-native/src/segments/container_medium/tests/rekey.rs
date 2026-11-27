@@ -17,11 +17,11 @@ use crate::{
     PutDocumentOptions, RootOpenOptions,
 };
 
-const ROLE: &str = "FYLO_VDBX_REKEY_CHILD_ROLE";
-const DATABASE: &str = "FYLO_VDBX_REKEY_CHILD_DATABASE";
-const OLD_KEY: &str = "FYLO_VDBX_REKEY_CHILD_OLD_KEY";
-const NEW_KEY: &str = "FYLO_VDBX_REKEY_CHILD_NEW_KEY";
-const EXCLUSIVE: &str = "FYLO_VDBX_REKEY_CHILD_EXCLUSIVE";
+const ROLE: &str = "YCKR_VDBX_REKEY_CHILD_ROLE";
+const DATABASE: &str = "YCKR_VDBX_REKEY_CHILD_DATABASE";
+const OLD_KEY: &str = "YCKR_VDBX_REKEY_CHILD_OLD_KEY";
+const NEW_KEY: &str = "YCKR_VDBX_REKEY_CHILD_NEW_KEY";
+const EXCLUSIVE: &str = "YCKR_VDBX_REKEY_CHILD_EXCLUSIVE";
 const CHILD_TEST: &str = "segments::container_medium::tests::rekey::a_rekey_child_process";
 const WAIT: Duration = Duration::from_mins(1);
 /// Text in every document, which must never appear in an encrypted file.
@@ -279,8 +279,8 @@ fn a_rekey_stopped_part_way_leaves_the_old_database_whole() {
             "rekey",
             &database,
             &[
-                ("FYLO_RUST_FAILPOINT", failpoint),
-                ("FYLO_RUST_FAILPOINT_ACTION", "abort"),
+                ("YCKR_RUST_FAILPOINT", failpoint),
+                ("YCKR_RUST_FAILPOINT_ACTION", "abort"),
             ],
         )
         .wait_with_output()
@@ -326,8 +326,8 @@ fn a_rekey_that_fails_part_way_removes_what_it_wrote() {
             "rekey-fails",
             &database,
             &[
-                ("FYLO_RUST_FAILPOINT", "after-pack-staging"),
-                ("FYLO_RUST_FAILPOINT_ACTION", action),
+                ("YCKR_RUST_FAILPOINT", "after-pack-staging"),
+                ("YCKR_RUST_FAILPOINT_ACTION", action),
             ],
         )
         .wait_with_output()

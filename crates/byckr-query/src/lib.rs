@@ -1,4 +1,4 @@
-//! Portable, deterministic FYLO prefix-index query primitives.
+//! Portable, deterministic BYCKR prefix-index query primitives.
 //!
 //! This crate has no filesystem, process, network, clock, random, or browser
 //! dependencies. Native and WebAssembly hosts provide bounded snapshot bytes
@@ -353,7 +353,7 @@ pub fn parse_queries(bytes: &[u8], limits: QueryLimits) -> Result<Vec<ScanQuery>
     Ok(queries)
 }
 
-/// A validated FYLO structured document query.
+/// A validated BYCKR structured document query.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StructuredQuery {
     operations: Vec<Map<String, Value>>,

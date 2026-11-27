@@ -121,7 +121,7 @@ impl<'a> RootVerification<'a> {
         let Err(error) = serde_json::from_slice::<serde_json::Value>(bytes) else {
             return;
         };
-        let message = format!("damaged FYLO document file {}: {error}", path.display());
+        let message = format!("damaged BYCKR document file {}: {error}", path.display());
         self.report
             .damaged
             .push(RootDamage::new(collection, path, Self::NOT_JSON, message));

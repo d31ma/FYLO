@@ -1,4 +1,4 @@
-# FYLO Support Tiers and Evidence Vocabulary
+# BYCKR Support Tiers and Evidence Vocabulary
 
 - Status: **Accepted**
 - Date: **2026-07-26**
@@ -7,7 +7,7 @@
 
 This vocabulary prevents build results, test results, preview artifacts, and
 production support from being described as the same thing. A claim applies to
-an exact FYLO version, artifact, operating system, architecture, filesystem,
+an exact BYCKR version, artifact, operating system, architecture, filesystem,
 browser/storage API, protocol, and documented deployment profile.
 
 Rust target availability, a successful cross-compile, or a passing unit suite
@@ -124,7 +124,7 @@ See [Native engine and release qualification](native-engine.md).
 
 Every published support row identifies:
 
-- FYLO version and artifact digest;
+- BYCKR version and artifact digest;
 - OS and architecture;
 - target triple;
 - filesystem or browser plus required storage APIs;
@@ -137,7 +137,7 @@ Every published support row identifies:
 Example:
 
 ```text
-FYLO <version>, native-tested, Windows x86_64 MSVC, Windows Server 2022/2025,
+BYCKR <version>, native-tested, Windows x86_64 MSVC, Windows Server 2022/2025,
 local NTFS, machine protocol v1, storage format v1, evidence <report digest>.
 Network shares and synchronized folders excluded.
 ```
@@ -166,7 +166,7 @@ silently skipped.
 
 ## Relationship to CalVer
 
-FYLO's CalVer identifies a release; it does not encode support level.
+BYCKR's CalVer identifies a release; it does not encode support level.
 Support-level and compatibility changes are stated in:
 
 - the release manifest;

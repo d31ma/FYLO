@@ -2,7 +2,7 @@
 
 - Status: **Accepted**
 - Date: **2026-07-26**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Amends: [ADR 0004](0004-unsafe-and-dependency-policy.md)
 
 ## Context

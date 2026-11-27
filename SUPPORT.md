@@ -1,9 +1,9 @@
-# FYLO Support
+# BYCKR Support
 
 ## Getting help
 
 Use GitHub Discussions or a focused GitHub issue for installation, API,
-compatibility, and operational questions. Include the FYLO version, operating
+compatibility, and operational questions. Include the BYCKR version, operating
 system, architecture, filesystem, runtime version, minimal reproduction, and
 the complete safe error code/message.
 

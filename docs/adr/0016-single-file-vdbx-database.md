@@ -4,17 +4,17 @@
   arrive and may only settle the codec and the lock qualification list)
 - Later decisions: [ADR 0033](0033-primary-layout-on-a-data-drive.md) (one `.vdbx` per namespace) and [ADR 0034](0034-large-objects-in-vdbx.md) (large objects, the follow-up named in section 1), both accepted, not yet built.
 - Date: **2026-10-29**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Builds on: ADR 0015 (append-only document segments), ADR 0013 (the record
   format and commit protocol), ADR 0014 (the hot set's log-end check) and
   ADR 0008 (the portable WebAssembly engine).
 - Amends: ADR 0008's browser storage, for databases held in a `.vdbx` file.
-- Design notes and options considered: "A single-file format for FYLO
+- Design notes and options considered: "A single-file format for BYCKR
   databases" (https://claude.ai/artifact/R83hiCJU8CFmXNi2mS4LDM).
 
 ## Context
 
-A FYLO root is a directory tree. Even with ADR 0015's segments, a collection is
+A BYCKR root is a directory tree. Even with ADR 0015's segments, a collection is
 a folder of segment files, a slot file, two location files, a prefix index and
 lock files, and a root holds one such folder per collection plus a catalog and
 a transaction journal. Samuel asked for a database to be **one file** with its
@@ -46,7 +46,7 @@ handle.
 
 ## Decision
 
-A FYLO database can be a single **`.vdbx` file**: a header followed by
+A BYCKR database can be a single **`.vdbx` file**: a header followed by
 fixed-size **extents**, each holding one of the files an ADR 0015 collection
 keeps today. Records inside are ADR 0015 records, compressed one at a time,
 and optionally encrypted. The same Rust code reads and writes it natively,
@@ -304,10 +304,10 @@ drifts toward the front of the file. Space is returned to the disk two ways:
 
 ### 7. Locking and processes
 
-- **Embedded, like SQLite** (Samuel, 2026-10-29). There is no FYLO server
+- **Embedded, like SQLite** (Samuel, 2026-10-29). There is no BYCKR server
   and no `fylo serve`: every process that uses a database opens the file
   itself, as it would a `.db` or `.sqlite` file. A server that reads a
-  `.vdbx` file is just another such process, and FYLO runs one only in tests.
+  `.vdbx` file is just another such process, and BYCKR runs one only in tests.
 - **Several local processes** coordinate with OS byte-range locks on a
   reserved range far beyond any data offset (2⁶² and up): one lock byte for
   the database lease, one for extent allocation, and one per collection
@@ -320,12 +320,12 @@ drifts toward the front of the file. Space is returned to the disk two ways:
 - Byte-range locks are enabled on a filesystem only after the multi-process
   load harness passes on it. The qualification list starts with APFS and NTFS
   locally, the ATLAS SMB share, and the local NFS 4.1 server.
-- **Any other filesystem still works** (Samuel, 2026-10-29: FYLO must not
+- **Any other filesystem still works** (Samuel, 2026-10-29: BYCKR must not
   depend on EFS or any one filesystem). Where locks are unqualified, or the
   filesystem refuses them (`ENOLCK`, `EOPNOTSUPP`), one process at a time
   writes the database. It holds a numbered lease file beside it,
   `<name>.vdbx.lease.<generation>`, made with exclusive create
-  (`O_CREAT | O_EXCL`, `CREATE_NEW`), which every filesystem FYLO targets
+  (`O_CREAT | O_EXCL`, `CREATE_NEW`), which every filesystem BYCKR targets
   honours; the highest generation owns the database. The owner rewrites its
   lease on a heartbeat. A contender that sees the lease unchanged for the
   takeover time (30 s by default, timed on its own clock, so hosts need not
@@ -408,7 +408,7 @@ drifts toward the front of the file. Space is returned to the disk two ways:
   - **Polling, not blocking.** Every level is taken with the non-waiting
     request (`F_OFD_SETLK`, `F_SETLK`, `LockFileEx` with
     `LOCKFILE_FAIL_IMMEDIATELY`), retried with a backoff of up to 1 ms.
-    FYLO relies on no OS queue. One deadline covers every level, so the
+    BYCKR relies on no OS queue. One deadline covers every level, so the
     busy timeout still bounds the whole wait, and `EBUSY` answers a wait
     that runs out at any level.
   - **What the order guarantees** (corrected 2026-11-14 after the Windows
@@ -456,14 +456,14 @@ drifts toward the front of the file. Space is returned to the disk two ways:
     descriptor closes, and `LockFileEx` locks on Windows when the handle
     closes (Windows may take a moment). A killed waiter holding `T1` is
     tested.
-  - **Older processes.** An older FYLO waits for `b` alone and never
+  - **Older processes.** An older BYCKR waits for `b` alone and never
     touches a turn byte. The right to write still comes only from `b`
     itself, unchanged, so old and new writers mixed on one database never
     damage it or deadlock: an older process never waits on a turn byte,
     and a newer one waits on a turn byte only behind newer processes. Mixed
     writers are only as fair as before turns: an older writer can take `b`
     in front of a newer one that waits, and the reverse. Fairness needs
-    every process writing the database to be a FYLO with turns. Nothing
+    every process writing the database to be a BYCKR with turns. Nothing
     detects an older writer, so the release notes tell users to upgrade
     every process that writes a shared `.vdbx`. Tested with a child that
     waits the old way beside two that take turns, and with the
@@ -687,7 +687,7 @@ byte-range lock the macOS client offers is its own `fsctl`, which is exclusive
 only, held per handle, mandatory (other handles cannot read the locked bytes)
 and released when the process closes any other read-write handle on the file;
 each operation costs a round trip, 8 to 25 ms median while the ATLAS
-benchmarks ran. FYLO does not use it. `F_PUNCHHOLE` also fails with `ENOTSUP`
+benchmarks ran. BYCKR does not use it. `F_PUNCHHOLE` also fails with `ENOTSUP`
 and frees nothing (on local APFS it freed exactly the punched 8 MiB), so a
 `.vdbx` on the share returns space only by tail truncation (`fylo compact
 --shrink`). Still open: locks between two client machines on the share, and
@@ -718,7 +718,7 @@ Costs:
 - a flush covers all collections, so a heavy import can lengthen another
   collection's commit. Imports write and flush their extents in chunks
   before their commit records to keep that small;
-- byte-range locks are new to FYLO and need their own qualification per
+- byte-range locks are new to BYCKR and need their own qualification per
   filesystem.
 
 ## Alternatives considered
@@ -726,7 +726,7 @@ Costs:
 - **A page-based file with B-trees, like SQLite or LMDB.** Compressed pages
   need their own offset map, every commit writes the log and later the page,
   and it replaces ADR 0013 and ADR 0015 with a new engine.
-- **SQLite as the container.** A C dependency and a format FYLO does not own,
+- **SQLite as the container.** A C dependency and a format BYCKR does not own,
   and SQLite's documentation warns against its locking on network
   filesystems, which is ATLAS and EFS.
 - **A band bundle, like a macOS sparse bundle.** The safest on network storage

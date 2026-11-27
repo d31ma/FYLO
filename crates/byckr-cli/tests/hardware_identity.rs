@@ -1,6 +1,6 @@
 //! Hardware identities through the CLI (ADR 0021, phase 8): `enclave:` keys
 //! in this Mac's Secure Enclave. Each test keeps the keys' token blobs in
-//! its own throwaway keychain (`FYLO_KEYCHAIN`), deleted afterwards.
+//! its own throwaway keychain (`YCKR_KEYCHAIN`), deleted afterwards.
 #![cfg(target_os = "macos")]
 
 use std::fs;
@@ -49,9 +49,9 @@ impl Fixture {
         Command::new(BINARY)
             .current_dir(&self.directory)
             .args(arguments)
-            .env("FYLO_KEYCHAIN", &self.keychain)
-            .env_remove("FYLO_IDENTITY")
-            .env_remove("FYLO_TRUST_ANCHOR")
+            .env("YCKR_KEYCHAIN", &self.keychain)
+            .env_remove("YCKR_IDENTITY")
+            .env_remove("YCKR_TRUST_ANCHOR")
             .output()
             .unwrap()
     }

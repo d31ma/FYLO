@@ -78,22 +78,22 @@ pub const QUERY_CURSOR_TTL_MS: u64 = 15 * 60 * 1000;
 pub const MAX_QUERY_SNAPSHOT_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_MACHINE_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
-/// The FYLO version this build reports: `FYLO_BUILD_VERSION` when the
+/// The BYCKR version this build reports: `YCKR_BUILD_VERSION` when the
 /// build script set it (a development build is `<last release>-develop.<short
 /// commit>`), otherwise the `VERSION` file.
-pub const RUNTIME_VERSION: &str = match option_env!("FYLO_BUILD_VERSION") {
+pub const RUNTIME_VERSION: &str = match option_env!("YCKR_BUILD_VERSION") {
     Some(version) => version,
     None => include_str!("../../../VERSION").trim_ascii(),
 };
-const BUILD_COMMIT: &str = match option_env!("FYLO_BUILD_COMMIT") {
+const BUILD_COMMIT: &str = match option_env!("YCKR_BUILD_COMMIT") {
     Some(commit) => commit,
     None => "unknown",
 };
-const BUILD_KIND: &str = match option_env!("FYLO_BUILD_KIND") {
+const BUILD_KIND: &str = match option_env!("YCKR_BUILD_KIND") {
     Some(kind) => kind,
     None => "development-compiled",
 };
-const BUILD_TARGET: Option<&str> = option_env!("FYLO_BUILD_TARGET");
+const BUILD_TARGET: Option<&str> = option_env!("YCKR_BUILD_TARGET");
 /// The CHEX release whose validator `fylo-chex` vendors.
 const CHEX_VERSION: &str = "26.32.02";
 const DOCUMENT_BUCKET_OPERATIONS: &[&str] = &[
@@ -455,7 +455,7 @@ impl Session {
             match default_root.as_ref() {
                 None => Some(MachineError::new(
                     "EBADREQUEST",
-                    "--exclusive-root requires a default FYLO root",
+                    "--exclusive-root requires a default BYCKR root",
                 )),
                 Some(root) => match supplied_lease.map_or_else(
                     || RootLease::acquire_with_profile(root, profile),
@@ -1246,7 +1246,7 @@ impl Session {
             .map(PathBuf::from)
             .or_else(|| self.default_root.clone())
             .ok_or_else(|| {
-                MachineError::new("EBADREQUEST", "machine request requires a FYLO root")
+                MachineError::new("EBADREQUEST", "machine request requires a BYCKR root")
             })?;
         let root = if self.filesystem_profile == FilesystemProfile::EfsSidecarV1 {
             let canonical = ReadScope::canonicalize(&root).map_err(|_| {
@@ -1352,7 +1352,7 @@ impl Session {
         MachineError::new(
             "ENOIDENTITY",
             "the .vdbx database does not exist, and a new one is protected: name its admin \
-             identity (fylo.identity, FYLO_IDENTITY or --identity), or create it with \
+             identity (fylo.identity, YCKR_IDENTITY or --identity), or create it with \
              fylo create --unprotected",
         )
     }
@@ -1617,7 +1617,7 @@ impl Session {
     /// `indexedDocs` comes from the index and the collection's listing, so
     /// the call reads no document; `"verify": true` counts it with the full
     /// index check instead, which reads every document and fails on one it
-    /// cannot read, parse or decrypt (FYLO-CR1).
+    /// cannot read, parse or decrypt (BYCKR-CR1).
     fn inspect_collection(&self, request: &Value) -> Result<Value, MachineError> {
         let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
@@ -3383,26 +3383,26 @@ fn active_worktree(repository_root: &std::path::Path) -> Result<PathBuf, Machine
         Err(error) => {
             return Err(MachineError::new(
                 "ECORRUPTMETADATA",
-                format!("cannot inspect FYLO HEAD: {error}"),
+                format!("cannot inspect BYCKR HEAD: {error}"),
             ));
         }
     };
     if head_metadata.file_type().is_symlink() || !head_metadata.is_file() {
         return Err(MachineError::new(
             "ECORRUPTMETADATA",
-            "FYLO repository HEAD is not a regular file",
+            "BYCKR repository HEAD is not a regular file",
         ));
     }
     let head = byckr_vfs::read_to_string(&head_path).map_err(|error| {
         MachineError::new(
             "ECORRUPTMETADATA",
-            format!("cannot read FYLO HEAD: {error}"),
+            format!("cannot read BYCKR HEAD: {error}"),
         )
     })?;
     let branch = head
         .trim()
         .strip_prefix("ref: refs/heads/")
-        .ok_or_else(|| MachineError::new("ECORRUPTMETADATA", "FYLO repository HEAD is corrupt"))?;
+        .ok_or_else(|| MachineError::new("ECORRUPTMETADATA", "BYCKR repository HEAD is corrupt"))?;
     if branch == "main" {
         return Ok(repository_root.to_path_buf());
     }
@@ -3415,7 +3415,7 @@ fn active_worktree(repository_root: &std::path::Path) -> Result<PathBuf, Machine
     {
         return Err(MachineError::new(
             "ECORRUPTMETADATA",
-            "FYLO repository HEAD names an unsafe branch",
+            "BYCKR repository HEAD names an unsafe branch",
         ));
     }
     let reference = repository_root
@@ -3426,13 +3426,13 @@ fn active_worktree(repository_root: &std::path::Path) -> Result<PathBuf, Machine
     let reference_metadata = byckr_vfs::symlink_metadata(&reference).map_err(|_| {
         MachineError::new(
             "ECORRUPTMETADATA",
-            format!("active FYLO branch is missing its ref: {branch}"),
+            format!("active BYCKR branch is missing its ref: {branch}"),
         )
     })?;
     if reference_metadata.file_type().is_symlink() || !reference_metadata.is_file() {
         return Err(MachineError::new(
             "ECORRUPTMETADATA",
-            format!("active FYLO branch has an unsafe ref: {branch}"),
+            format!("active BYCKR branch has an unsafe ref: {branch}"),
         ));
     }
     let target = repository_root
@@ -3442,19 +3442,19 @@ fn active_worktree(repository_root: &std::path::Path) -> Result<PathBuf, Machine
     let target_metadata = byckr_vfs::symlink_metadata(&target).map_err(|_| {
         MachineError::new(
             "ECORRUPTMETADATA",
-            format!("active FYLO branch is missing its worktree: {branch}"),
+            format!("active BYCKR branch is missing its worktree: {branch}"),
         )
     })?;
     let canonical_repository = byckr_vfs::canonicalize(repository_root).map_err(|error| {
         MachineError::new(
             "ECORRUPTMETADATA",
-            format!("cannot resolve FYLO root: {error}"),
+            format!("cannot resolve BYCKR root: {error}"),
         )
     })?;
     let canonical_target = byckr_vfs::canonicalize(&target).map_err(|error| {
         MachineError::new(
             "ECORRUPTMETADATA",
-            format!("cannot resolve active FYLO worktree: {error}"),
+            format!("cannot resolve active BYCKR worktree: {error}"),
         )
     })?;
     if target_metadata.file_type().is_symlink()
@@ -3463,7 +3463,7 @@ fn active_worktree(repository_root: &std::path::Path) -> Result<PathBuf, Machine
     {
         return Err(MachineError::new(
             "ECORRUPTMETADATA",
-            format!("active FYLO branch has an unsafe worktree: {branch}"),
+            format!("active BYCKR branch has an unsafe worktree: {branch}"),
         ));
     }
     Ok(canonical_target)
@@ -3596,7 +3596,7 @@ fn string_array(value: &Value, name: &str) -> Result<Vec<String>, MachineError> 
 /// `wasm32-unknown-unknown`: std requires a drive-style prefix outside unix and
 /// WASI, and a host filesystem has none. `has_root` is the question actually
 /// being asked — that the path does not depend on a working directory, which
-/// no FYLO host has.
+/// no BYCKR host has.
 fn is_rooted(path: &std::path::Path) -> bool {
     if cfg!(any(unix, target_os = "wasi")) {
         path.is_absolute()
@@ -3609,7 +3609,7 @@ fn is_rooted(path: &std::path::Path) -> bool {
 
 /// Write raw-file content to a caller-named absolute path.
 ///
-/// The path is the caller's, not FYLO's, so this refuses to follow a link or
+/// The path is the caller's, not BYCKR's, so this refuses to follow a link or
 /// replace anything that already exists: an operator naming an existing path by
 /// mistake gets an error rather than a clobbered file.
 fn write_machine_file(path: &str, bytes: &[u8]) -> Result<String, MachineError> {

@@ -1,4 +1,4 @@
-# Access control by application identity ("security groups" for FYLO)
+# Access control by application identity ("security groups" for BYCKR)
 
 - Status: **Design study, for the user's decision.** Nothing is implemented.
 - Date: 2026-11-07
@@ -33,11 +33,11 @@ granted writer signed.
 The rules are not a check inside the library that a process could skip.
 Each rule is backed by a key the process either holds or does not hold.
 
-**Why not a policy check alone:** FYLO runs inside the application's process,
-or as a CLI, with no server in between. Any check written in FYLO's code can be
+**Why not a policy check alone:** BYCKR runs inside the application's process,
+or as a CLI, with no server in between. Any check written in BYCKR's code can be
 bypassed by a process that reads the database files directly or links its own
 copy of the library. AWS security groups work because an enforcement point
-outside the instance sees every packet. FYLO has only two enforcement points
+outside the instance sees every packet. BYCKR has only two enforcement points
 outside the calling process: the operating system (file permissions, secret
 stores, mandatory access control) and cryptography. The design uses both.
 
@@ -47,7 +47,7 @@ removed. Its replacement works per application and per collection, not per end
 user and per record. Per-end-user rules move into the application, which is
 where Yon already authenticates its users.
 
-## 2. What FYLO does today
+## 2. What BYCKR does today
 
 ### 2.1 Where "POSIX" (POSTIX) lives
 
@@ -67,8 +67,8 @@ where Yon already authenticates its users.
   open a record its mode denies. The root's own files are `0600`.
 - **By the engine only:** everything else. On segment collections (ADR 0015)
   and in `.vdbx` files (ADR 0016), records share files, so the descriptor is
-  enforced only by FYLO's code. ADR 0015 says so: "stores the descriptor and is
-  enforced by FYLO, but no `chown` or `chmod` happens". Any process that can
+  enforced only by BYCKR's code. ADR 0015 says so: "stores the descriptor and is
+  enforced by BYCKR, but no `chown` or `chmod` happens". Any process that can
   read the segment or `.vdbx` file reads every record.
 - **The identity is a claim, not a proof.** The UID comes from the caller: a
   `--uid` flag, or the `access` object of a machine frame. README: "The UID is
@@ -92,7 +92,7 @@ Code: `crates/fylo-engine/src/encryption.rs`,
 `crates/fylo-storage-native/src/write/commit_log/database_rekey.rs`.
 
 **One shared secret opens everything.** Anyone who has
-`FYLO_ENCRYPTION_KEY` can read and write every collection. Encryption today
+`YCKR_ENCRYPTION_KEY` can read and write every collection. Encryption today
 protects data at rest from people who do not have the key. It cannot tell one
 application from another.
 
@@ -127,9 +127,9 @@ application from another.
 The library runs as the caller. So for every rule the question is which party
 outside the caller enforces it.
 
-| Mechanism | Who enforces it | Per application? | Holds against a same-user process that skips FYLO? |
+| Mechanism | Who enforces it | Per application? | Holds against a same-user process that skips BYCKR? |
 | --- | --- | --- | --- |
-| A check in FYLO's code | The caller itself | Yes, but as a claim | **No.** It reads the files directly |
+| A check in BYCKR's code | The caller itself | Yes, but as a claim | **No.** It reads the files directly |
 | File owner and mode (today) | The kernel | No, per OS user | Yes against other users; **no** against the same user |
 | Encryption with keys the caller does not have | Mathematics | Yes | **Yes for reads,** as long as the key is out of its reach |
 | Signatures on writes | Mathematics, checked by every reader | Yes | Forged writes are **detected and refused**; deletion and rollback of the file are **not** prevented |
@@ -193,7 +193,7 @@ It is noted here as a possible server-hardening tier, not for version 1.
 An AppArmor or SELinux profile, or an AppContainer ACL, can let only one
 executable open the database file, and the kernel enforces it. It is the
 right complement to C on a server, but each host's administrator must
-install it, and it differs on every OS. FYLO would document it and ship
+install it, and it differs on every OS. BYCKR would document it and ship
 sample profiles; it is not part of the engine. Phase 8 added them:
 [`docs/hardening/`](hardening/README.md) has an AppArmor profile, an
 SELinux module and an AppContainer manifest, as samples.
@@ -202,7 +202,7 @@ SELinux module and an AppContainer manifest, as samples.
 
 ### 5.1 Concepts
 
-| AWS | FYLO |
+| AWS | BYCKR |
 | --- | --- |
 | Security group | The database's **policy** |
 | Source security group or principal ARN | An **identity**: a P-256 key pair; its identifier is `fid1:p256:<base32 of SHA-256 of the public key>` |
@@ -263,7 +263,7 @@ by an identity that holds `admin`:
 - **Conditions:** `notAfter` and `notBefore` are checked against the clock of
   whoever opens the database. That is advisory, because clocks can be changed.
   `expect` names the code-signing identity the identity's key is meant to live
-  in. FYLO checks it in-process and logs a mismatch, but the real check is
+  in. BYCKR checks it in-process and logs a mismatch, but the real check is
   the OS secret store refusing other applications the key (section 6).
   Conditions that only code can check are marked advisory in the
   documentation and in `fylo access list`.
@@ -360,12 +360,12 @@ commits. It records:
 - policy versions: who signed them and what changed;
 - every open: identity, process path, OS user, code-signing identity where
   known, and the actions granted;
-- operations that FYLO's own code refused, such as a write attempt without a
+- operations that BYCKR's own code refused, such as a write attempt without a
   grant;
 - `ESIGNATURE` findings.
 
 `fylo access audit app.vdbx` prints it. **It records only processes that run
-FYLO's code honestly.** A process that reads the file without FYLO leaves no
+BYCKR's code honestly.** A process that reads the file without BYCKR leaves no
 trace in it: it gets ciphertext, and it cannot write an entry. An
 application's own audit of its end users stays in the application.
 
@@ -386,9 +386,9 @@ One identity per open database, per process. The identity is named by a
 | Entry point | How it names the identity |
 | --- | --- |
 | `fylo` crate (Yon) | `OpenOptions::identity(Identity::from_reference("keychain:com.delma.yon")?)` and `OpenOptions::trust_anchor("fid1:...")` |
-| `fylo link` (Turso SDKs) | Turso's `Database::open` takes only a path, so the hook reads `fylo.identity` and `fylo.trustAnchor` from the `application.json` beside the database, or `FYLO_IDENTITY` and `FYLO_TRUST_ANCHOR` from the environment. A URI parameter (`?fylo_identity=`) is possible only if the pinned `turso_core` parses URIs on that path; to be checked |
+| `fylo link` (Turso SDKs) | Turso's `Database::open` takes only a path, so the hook reads `fylo.identity` and `fylo.trustAnchor` from the `application.json` beside the database, or `YCKR_IDENTITY` and `YCKR_TRUST_ANCHOR` from the environment. A URI parameter (`?fylo_identity=`) is possible only if the pinned `turso_core` parses URIs on that path; to be checked |
 | `fylo exec --loop` | `--identity <ref>` at spawn. The handshake reports the identity and its grants. The per-request `access` field is removed (machine protocol v2) |
-| CLI | `--identity <ref>`, `FYLO_IDENTITY`, or `fylo.identity` in `application.json` |
+| CLI | `--identity <ref>`, `YCKR_IDENTITY`, or `fylo.identity` in `application.json` |
 | Browser and Wasm | `webcrypto:<name>`. In the browser the origin is the real boundary: OPFS is already private to the origin, and the identity matters when a `.vdbx` file moves between origins or apps |
 | Explorer | Opens a protected database with an identity the user imports or picks; otherwise shows it as locked (ADR 0016's locked mode) |
 
@@ -546,7 +546,7 @@ records per commit, as it does already.
 - **Q1. Per application only?** This design answers "which application may
   read and write" and drops per-record, per-end-user POSTIX. Yon and other
   applications keep end-user rules themselves. Is that what you want, or must
-  FYLO keep a per-record rule as well?
+  BYCKR keep a per-record rule as well?
 - **Q2. Protected by default?** Should a new `.vdbx` be protected (encrypted,
   with a policy) unless created with `--unprotected`? That reverses ADR 0016's
   "encryption is opt-in and off by default". Should directory roots stay

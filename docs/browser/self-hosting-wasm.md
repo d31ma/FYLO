@@ -1,4 +1,4 @@
-# Self-hosting the FYLO Browser Wasm Kernel
+# Self-hosting the BYCKR Browser Wasm Kernel
 
 The browser shim keeps JavaScript as a compatible fallback. Enabling Wasm
 accelerates warm immutable prefix-index scans; it does not change documents,
@@ -32,7 +32,7 @@ connect-src 'self';
 ```
 
 Test the exact policy on every supported browser. Some older browsers use
-`'unsafe-eval'` instead of the narrower `'wasm-unsafe-eval'`; FYLO does not
+`'unsafe-eval'` instead of the narrower `'wasm-unsafe-eval'`; BYCKR does not
 recommend broadening policy silently. Cross-origin assets additionally require
 correct CORS headers and should be integrity-pinned by the deployment.
 
@@ -98,4 +98,4 @@ memory-pressure, and fetch fallback. The fixture first opens the OPFS root; a
 browser that exposes the API but rejects that operation records
 `EOPFS_UNAVAILABLE` and is not counted as qualified. A browser is promoted only
 when the retained job for the exact commit passes; the existence of
-WebAssembly or OPFS APIs alone is not a FYLO support claim.
+WebAssembly or OPFS APIs alone is not a BYCKR support claim.

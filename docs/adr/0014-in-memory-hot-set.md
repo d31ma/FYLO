@@ -2,10 +2,10 @@
 
 - Status: **Accepted**
 - Date: **2026-10-28**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Amends: `docs/QUERY_INDEX_REUSE.md` (a process holding the root's
   exclusive lease may now keep document bodies in memory)
-- Revised: **2026-10-29**. FYLO is an embedded library, like SQLite: an
+- Revised: **2026-10-29**. BYCKR is an embedded library, like SQLite: an
   application opens its database files in its own process and there is no
   `fylo serve` (ADR 0012 is withdrawn). The hot set was built for that server
   and now lives in embedded sessions that hold the root's exclusive lease.
@@ -37,7 +37,7 @@ A persistent embedded session that holds the root's exclusive lease keeps a
 collection headers in memory, under a byte budget. That is
 `exec --loop --exclusive-root` and the Rust `FrameSession`, which an
 application drives from its own transport. The lease forbids every other
-FYLO writer for the session's life, so every write passes through the session
+BYCKR writer for the session's life, so every write passes through the session
 and it can clear the hot set around each one.
 
 - **Scope.** The hot set lives in `fylo-engine` (`HotSet`), and a read-only
@@ -97,7 +97,7 @@ Benefits:
 Costs and limits:
 
 - **Out-of-band edits are not seen.** While an exclusive session owns a root,
-  the lease already forbids other FYLO writers; an edit made to the root's files by
+  the lease already forbids other BYCKR writers; an edit made to the root's files by
   some other tool is now invisible to warm reads until the next write frame or
   the next miss that sees the generation move. That was always unsupported,
   and it is now also unobserved.

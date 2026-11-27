@@ -1,4 +1,4 @@
-//! What FYLO does after a storage crash that lost or reordered writes
+//! What BYCKR does after a storage crash that lost or reordered writes
 //! (L1 spec 20.2 and 20.3): a damaged file is refused with its path, root
 //! verification lists every damaged file, and a copy of a root taken at any
 //! instant of a write load recovers to a clean root with every reported
@@ -235,8 +235,8 @@ mod snapshots {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    const CHILD: &str = "FYLO_CRASH_RECOVERY_CHILD";
-    const LOG: &str = "FYLO_CRASH_RECOVERY_LOG";
+    const CHILD: &str = "YCKR_CRASH_RECOVERY_CHILD";
+    const LOG: &str = "YCKR_CRASH_RECOVERY_LOG";
     const SNAPSHOTS: usize = 6;
     const LOAD_WAIT: Duration = Duration::from_mins(1);
 

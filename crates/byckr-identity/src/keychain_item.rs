@@ -13,7 +13,7 @@ use crate::identity_error::IdentityError;
 /// user's consent.
 ///
 /// The item lives in the default keychain, or in the keychain file
-/// `FYLO_KEYCHAIN` names (CI and tests use a throwaway one).
+/// `YCKR_KEYCHAIN` names (CI and tests use a throwaway one).
 pub(crate) struct KeychainItem {
     label: String,
     account: &'static str,
@@ -21,7 +21,7 @@ pub(crate) struct KeychainItem {
 }
 
 impl KeychainItem {
-    const KEYCHAIN_VARIABLE: &'static str = "FYLO_KEYCHAIN";
+    const KEYCHAIN_VARIABLE: &'static str = "YCKR_KEYCHAIN";
     const ITEM_NOT_FOUND: i32 = -25300;
     const DUPLICATE_ITEM: i32 = -25299;
 
@@ -86,7 +86,7 @@ impl KeychainItem {
 
     fn already_exists(&self) -> IdentityError {
         IdentityError::AlreadyExists(format!(
-            "{} already has a key; FYLO never replaces a key",
+            "{} already has a key; BYCKR never replaces a key",
             self.reference
         ))
     }

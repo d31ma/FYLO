@@ -1,4 +1,4 @@
-# Using Turso SDKs with FYLO
+# Using Turso SDKs with BYCKR
 
 > **History, kept as written.** This is the design study behind
 > [ADR 0019](adr/0019-fylo-through-tursos-engine.md) and
@@ -12,16 +12,16 @@
 > **Superseded (2026-11-21).** [ADR 0035](adr/0035-fylos-own-sdk-in-the-store-shape.md)
 > replaced this design: Turso's engine, the `fylo` crate's `sql` feature,
 > `fylo link` and the Turso SDK builds (`bindings/turso`) are removed
-> (FYLO-SDK1). Nothing in this note describes current FYLO.
+> (BYCKR-SDK1). Nothing in this note describes current BYCKR.
 
 - Status: **design note**, not a decision.
-- Written 2026-11-01 against FYLO `origin/develop` `24f43a6` and TACHYON
+- Written 2026-11-01 against BYCKR `origin/develop` `24f43a6` and TACHYON
   `origin/develop` `9ea846513`. This is revision 6, from the same day. It
-  adds FYLO WebAssembly for TACHYON's Tac client (§7.4, revision 5) and
+  adds BYCKR WebAssembly for TACHYON's Tac client (§7.4, revision 5) and
   language coverage for the Tac, Yon and Turso SDK languages (§7.5).
-- The question: how a **new FYLO release** lets developers use Turso's official
-  SDKs instead of FYLO's own language clients, and how that fits TACHYON,
-  FYLO's main embedding framework.
+- The question: how a **new BYCKR release** lets developers use Turso's official
+  SDKs instead of BYCKR's own language clients, and how that fits TACHYON,
+  BYCKR's main embedding framework.
 - Scope: research and recommendation only. Nothing is implemented. The
   experiments in §12 ran in a scratch folder on this Mac.
 
@@ -30,14 +30,14 @@
 1. **No server or listener of any kind.**
    - That rules out TCP, Unix sockets and named pipes.
    - Allowed: a spawned child on anonymous pipes, and files.
-2. **Writes are synchronous.** An app's write either commits in FYLO's documents
-   or fails with FYLO's error before the call returns.
+2. **Writes are synchronous.** An app's write either commits in BYCKR's documents
+   or fails with BYCKR's error before the call returns.
 3. **When a rule blocks, look for a workaround or hack, and label it.** Each
    one is marked **Supported**, **Semi-supported** or **Hack**, with its
    fragility and upkeep.
 4. **A new release with no backward compatibility.** Earlier releases' clients
    and protocols don't constrain the design.
-5. **Language scope** (widened 2026-11-01). FYLO is supported for three sets of
+5. **Language scope** (widened 2026-11-01). BYCKR is supported for three sets of
    languages:
    - **Tac framework languages:** JavaScript, TypeScript, Dart, Rust, C#, F#,
      Go, Swift, Kotlin, Java, Ruby, Lua, Python and C++
@@ -50,38 +50,38 @@
    to drop Ruby, PHP and Dart. §7.5 maps every language to its route.
 6. **Approved** (2026-11-01, "yes … with your recommendations"):
    - the exact Turso version pin
-   - FYLO inside TACHYON's Yon process through the crate
+   - BYCKR inside TACHYON's Yon process through the crate
    - no public `fylo exec --loop` or WASI contract
-   - native FYLO on Tac's app targets
+   - native BYCKR on Tac's app targets
    - parking for Tac's synchronous Wasm languages
    - starting phase 1 (a separate session is running it)
 7. **Check TACHYON before any implementation starts.** §7 covers it.
 
 ## 1. Summary
 
-**Recommendation, adjusted for TACHYON:** FYLO's engine plus a SQL layer built
+**Recommendation, adjusted for TACHYON:** BYCKR's engine plus a SQL layer built
 on Turso's engine (`turso_core`), shipped as **one Rust crate**.
 
 **Layer 1: the `fylo` crate** (supported API; TACHYON and every Rust app).
 
-- It opens a FYLO root in the host's own process.
+- It opens a BYCKR root in the host's own process.
 - It offers two APIs on that root:
   - **Typed calls** for documents, queue and admin.
   - **A Turso SQL connection** on which collections are tables.
 - No binary, no child process, no listener.
 - Cargo pins the Turso version.
-- TACHYON's Yon server switches its FYLO datasource from the `fylo exec --loop`
+- TACHYON's Yon server switches its BYCKR datasource from the `fylo exec --loop`
   subprocess to this crate. It is the only consumer whose deployment had a
   real choice, and it isn't a Turso SDK user (§7).
 
-**Layer 2: `fylo link`** (FYLO's engine inside Turso's SDKs).
+**Layer 2: `fylo link`** (BYCKR's engine inside Turso's SDKs).
 
 - It covers apps written in the other Turso languages (JS/TS, Python, Go, Java,
   .NET).
-- FYLO ships builds of each Turso binding's native library, compiled with
+- BYCKR ships builds of each Turso binding's native library, compiled with
   layer 1 inside.
 - `fylo link` points the app's installed Turso SDK at that build.
-- The app then opens its FYLO root as its database:
+- The app then opens its BYCKR root as its database:
 
   ```js
   connect('./data')
@@ -90,43 +90,43 @@ on Turso's engine (`turso_core`), shipped as **one Rust crate**.
 - Writes are synchronous and in-process.
 
 Both layers share one engine and one SQL mapping (§4). The same `turso_core`
-patch registers FYLO in both.
+patch registers BYCKR in both.
 
 **Main tradeoffs:**
 
-1. **Exact Turso pin.** Each FYLO release pins one Turso version:
+1. **Exact Turso pin.** Each BYCKR release pins one Turso version:
    - layer 1: through Cargo
    - layer 2: through about 18 binding builds per release, and apps install the
-     exact SDK version FYLO names
+     exact SDK version BYCKR names
 2. **The JS and Python placements of `fylo link` are hacks.** A symlink inside
    `node_modules` restored by `postinstall`, and a `.pth` import hook. Go and
    Java are semi-supported; .NET and Rust are supported.
-3. **TACHYON gives up process isolation.** FYLO runs inside Yon instead of in a
+3. **TACHYON gives up process isolation.** BYCKR runs inside Yon instead of in a
    killable subprocess, so a cancelled call can't be killed, only abandoned.
    Its build also gains `turso_core`.
 4. **Browser and mobile have no Turso route.** Turso's Wasm and React Native
-   packages can't load FYLO. FYLO's own browser engine stays as the one
+   packages can't load BYCKR. BYCKR's own browser engine stays as the one
    browser client (JS is a Turso language), and Tac uses it (below). The Swift
    and Kotlin WebView hosts are recommended for removal (§8, §10).
 
-**Tac's client side (§7.4) gets FYLO the way sqlite-wasm works.** A built-in
+**Tac's client side (§7.4) gets BYCKR the way sqlite-wasm works.** A built-in
 `"fylo"` Store adapter, beside Tac's `"indexeddb"` one, takes the same commands
-as Yon's FYLO datasource.
+as Yon's BYCKR datasource.
 
-- **On the web** it runs FYLO's existing `fylo-browser.wasm` in a dedicated
-  Worker, over one `.vdbx` file in OPFS. That is FYLO's equivalent of
+- **On the web** it runs BYCKR's existing `fylo-browser.wasm` in a dedicated
+  Worker, over one `.vdbx` file in OPFS. That is BYCKR's equivalent of
   sqlite-wasm's `opfs-sahpool` VFS: one synchronous access handle, a Web Lock
   for a single owner, and no cross-origin isolation.
-- **In TACHYON's native apps** it runs native FYLO through the `fylo` crate,
+- **In TACHYON's native apps** it runs native BYCKR through the `fylo` crate,
   linked into the app host. macOS and iOS serve pages from `tachyon-app://`,
   which is not a secure context, so OPFS isn't available there.
 - **No SQL engine is needed in the browser** for Tac, because Tac stores send
-  structured commands, never SQL. FYLO plus `turso_core` in the browser stays an
+  structured commands, never SQL. BYCKR plus `turso_core` in the browser stays an
   optional later phase.
 
 **Language coverage (§7.5).**
 
-- **Inside TACHYON apps,** every Tac and Yon language reaches FYLO through
+- **Inside TACHYON apps,** every Tac and Yon language reaches BYCKR through
   TACHYON:
   - Yon: the resource channel
   - Tac: the `"fylo"` Store adapter
@@ -138,7 +138,7 @@ as Yon's FYLO datasource.
 - **Standalone, with no TACHYON,** a language uses one of three routes:
   - **Turso SDK plus `fylo link`:** JS/TS, Python, Go, Java, .NET.
   - **The `fylo` crate:** Rust.
-  - **FYLO's build of Turso's C library** (the same `turso_sdk_kit` file that
+  - **BYCKR's build of Turso's C library** (the same `turso_sdk_kit` file that
     `fylo link` ships for Go), which C, C++ and Swift import from its header,
     with no binding code.
 - **Free riders:** the other JVM languages (Kotlin, Groovy) ride Java's SDK,
@@ -155,10 +155,10 @@ as Yon's FYLO datasource.
 - the shim and mobile-bridge interop tests
 - the Flutter (Dart) client
 - the `fylo-clients.tar.gz` release asset
-- FYLO's own SQL dialect, replaced by Turso's
+- BYCKR's own SQL dialect, replaced by Turso's
 - the machine protocol's public, versioned client contract (§9)
 
-## 2. FYLO today
+## 2. BYCKR today
 
 What `origin/develop` ships:
 
@@ -166,7 +166,7 @@ What `origin/develop` ships:
   protocol.
   - Native languages spawn `fylo exec --loop` and speak NDJSON machine
     protocol v1: about 50 ops, stable `error.code`s and a `handshake`.
-  - [ADR 0007](adr/0007-filesystem-only-native-storage.md): FYLO uses the
+  - [ADR 0007](adr/0007-filesystem-only-native-storage.md): BYCKR uses the
     filesystem only.
   - [ADR 0012](adr/0012-opt-in-network-server.md), a network server, was
     withdrawn on 2026-10-29.
@@ -181,7 +181,7 @@ What `origin/develop` ships:
   - Swift and Kotlin WebView hosts
   - Flutter
   - the mobile bridge
-- **SQL.** FYLO's own small dialect (`executeSQL`, `fylo sql`). No bound
+- **SQL.** BYCKR's own small dialect (`executeSQL`, `fylo sql`). No bound
   parameters, no aggregates.
 - **Data model.**
   - JSON documents may not contain arrays of objects.
@@ -192,12 +192,12 @@ What `origin/develop` ships:
 - **Transactions.** Atomic per collection
   ([ADR 0013](adr/0013-collection-write-ahead-log.md)). Cross-collection
   transactions come only with `.vdbx` ([ADR 0016](adr/0016-single-file-vdbx-database.md) §6).
-- **Root paths.** The root path must be canonical, and **FYLO refuses a root
+- **Root paths.** The root path must be canonical, and **BYCKR refuses a root
   reached through a symlink**, as documented in TACHYON's `MANAGED_STORAGE.md`.
 
 ## 3. What the Turso SDKs offer (checked 2026-11-01 in published packages)
 
-| Language | SDK (Turso engine) | How its native code loads | Way to put FYLO in |
+| Language | SDK (Turso engine) | How its native code loads | Way to put BYCKR in |
 |---|---|---|---|
 | JS/TS | `@tursodatabase/database` 0.8.3 (also `/sync`) | napi-rs loader: `./turso.<triple>.node` next to `index.js` first, then `@tursodatabase/database-<triple>`. `NAPI_RS_NATIVE_LIBRARY_PATH` is broken in 0.8.3 (napi-rs PR #2907 fixes it upstream). | **Hack:** symlink next to `index.js` |
 | Python | `pyturso` 0.8.3 | `from ._turso import …` (abi3 `.so`) | **Hack:** a `.pth` import hook |
@@ -205,7 +205,7 @@ What `origin/develop` ships:
 | Java / Kotlin (JVM) | `tech.turso:turso` 0.8.3 (JDBC) | `System.loadLibrary("_turso_java")` first | **Semi-supported:** a symlink in `~/Library/Java/Extensions` (macOS default) or on `-Djava.library.path` |
 | .NET / C# | `Turso.Data.Sqlite.Provider` 0.8.3 | `[DllImport("turso_sdk_kit")]`, plus `EnableExtensions()` and `LoadExtension()` | **Supported:** `LoadExtension` |
 | Rust | `turso` 0.8.3 / `turso_core` | static crate | **Supported:** depend on the `fylo` crate (§6.1) |
-| Browser | `@tursodatabase/database-wasm` | static Wasm; extension loading compiled out | none; FYLO's own browser engine stays |
+| Browser | `@tursodatabase/database-wasm` | static Wasm; extension loading compiled out | none; BYCKR's own browser engine stays |
 | React Native | `@tursodatabase/sync-react-native` | native module | not studied; only as a hack |
 
 Facts that matter:
@@ -219,20 +219,20 @@ Facts that matter:
   - `register_builtin_catalog`, at `core/dialect/sqlite.rs:145`, which its own
     comment calls "the same path external callers use"
 
-  So FYLO's patch to `turso_core` can stay small.
+  So BYCKR's patch to `turso_core` can stay small.
 - **libSQL.** The libSQL SDKs (`@libsql/client` and others) are Turso's older
   family. Every language above already has a Turso-engine SDK, so the new
   scope needs no libSQL route.
 
-## 4. The shared core: FYLO collections as SQL tables
+## 4. The shared core: BYCKR collections as SQL tables
 
 Both layers use it. It lives in the `fylo` crate, behind its `sql` feature, as a
 `turso_core` virtual-table module.
 
 ### Opening a root
 
-- The database path is a FYLO root (a directory or a `.vdbx` file).
-- FYLO's build of the engine opens an **in-memory** SQL catalog and registers
+- The database path is a BYCKR root (a directory or a `.vdbx` file).
+- BYCKR's build of the engine opens an **in-memory** SQL catalog and registers
   one table per collection. No SQL engine file is ever written.
 - The stock engine fails closed on a directory: SQLite does (tested, §12);
   Turso is unverified. It also fails on a `.vdbx` file, whose magic number
@@ -250,14 +250,14 @@ Both layers use it. It lives in the `fylo` crate, behind its `sql` feature, as a
 
 ### Pushdown
 
-| Query | FYLO index used |
+| Query | BYCKR index used |
 |---|---|
 | `=` and `IN` | `eq` |
 | ranges | `n` / `nr` |
 | `LIKE 'x%'` | `f` |
 | `LIKE '%x'` | `r` |
 | `LIKE '%x%'` | `g3` |
-| `doc MATCH '<FYLO query JSON>'` | `findDocs` |
+| `doc MATCH '<BYCKR query JSON>'` | `findDocs` |
 | `ORDER BY id` | consumed by the index |
 
 ### Writes and errors
@@ -267,7 +267,7 @@ Both layers use it. It lives in the `fylo` crate, behind its `sql` feature, as a
   checks.
 - **Bound parameters are real.** Turso binds `?`, `?NNN`, `:name` and `$name`.
   That removes TACHYON's SEC-3 literal-escaping workaround (§7).
-- **Errors** are the SDK's own SQL error, with FYLO's code as the message
+- **Errors** are the SDK's own SQL error, with BYCKR's code as the message
   prefix (`EARRAYOFOBJECTS: …`).
 
 ### Transactions
@@ -275,7 +275,7 @@ Both layers use it. It lives in the `fylo` crate, behind its `sql` feature, as a
 - Writes in `BEGIN … COMMIT` are buffered per collection, and cursors read the
   transaction's own writes.
 - `COMMIT` is one ADR 0013 group commit.
-- A second collection in the same transaction fails with `EFYLO_TXN_SCOPE`
+- A second collection in the same transaction fails with `EYCKR_TXN_SCOPE`
   until `.vdbx` §6 lands.
 
 ### Non-CRUD
@@ -291,7 +291,7 @@ Both layers use it. It lives in the `fylo` crate, behind its `sql` feature, as a
 ### Concurrency
 
 - The engine runs in-process.
-- Several processes on one root use FYLO's root locks.
+- Several processes on one root use BYCKR's root locks.
 - An exclusive owner gets the hot set
   ([ADR 0014](adr/0014-in-memory-hot-set.md)).
 
@@ -305,10 +305,10 @@ Both layers use it. It lives in the `fylo` crate, behind its `sql` feature, as a
 | Read-only SQLite mirror | optional | reads only; useful for reporting |
 | Stdio Hrana (child process plus an SDK transport hook) | **dropped by the new scope** | It reached `@libsql/client`, .NET serverless and Rust `libsql`. Every Turso language now has an in-process route, so an extra out-of-process protocol isn't needed. |
 | SQLite C extension for libSQL / `better-sqlite3` | dropped | libSQL isn't needed (§3) |
-| Custom VFS / FUSE / FSKit / preload interposition | **rejected** | Pages become the truth, or it's too fragile. A plain file write never passes through FYLO. |
-| Symlinked or FIFO database, WAL or journal | **rejected** | SQLite refuses `-wal`/`-journal` symlinks and FIFOs (tested). FYLO also refuses symlinked roots. |
+| Custom VFS / FUSE / FSKit / preload interposition | **rejected** | Pages become the truth, or it's too fragile. A plain file write never passes through BYCKR. |
+| Symlinked or FIFO database, WAL or journal | **rejected** | SQLite refuses `-wal`/`-journal` symlinks and FIFOs (tested). BYCKR also refuses symlinked roots. |
 | Mailbox RPC through a shared database file | **rejected** | needs app-side polling and doesn't use the SDK's API |
-| Generated shims | **dropped by the new scope** | Turso SDKs replace FYLO's own clients |
+| Generated shims | **dropped by the new scope** | Turso SDKs replace BYCKR's own clients |
 
 ## 6. The recommendation in detail
 
@@ -325,7 +325,7 @@ let docs = root.collection("products")?.find(&query)?;
 let tx   = root.queue("orders").claim("billing", 10, lease)?;
 
 #[cfg(feature = "sql")]
-let conn = root.sql()?;                               // turso_core connection with FYLO tables
+let conn = root.sql()?;                               // turso_core connection with BYCKR tables
 conn.execute("UPDATE products SET doc = json_set(doc,'$.price',?) WHERE id = ?", (9.5, id))?;
 ```
 
@@ -338,7 +338,7 @@ conn.execute("UPDATE products SET doc = json_set(doc,'$.price',?) WHERE id = ?",
   - Mobile: iOS and Android work natively through `fylo-vfs`'s `std::fs`
     path.
   - Browser: `wasm32-unknown-unknown` works through `HostVfs`, but that is
-    FYLO's own browser engine, not a Turso SDK.
+    BYCKR's own browser engine, not a Turso SDK.
 - **Labels.** Supported. No hack.
 - **Rules.**
   - No listener and no child process.
@@ -347,10 +347,10 @@ conn.execute("UPDATE products SET doc = json_set(doc,'$.price',?) WHERE id = ?",
 
 ### 6.2 Layer 2: `fylo link` for the other Turso languages
 
-**FYLO's release pipeline:**
+**BYCKR's release pipeline:**
 
 1. Patch `turso_core` at the pinned tag: a `fylo` feature that calls the `fylo`
-   crate's registration when the opened path is a FYLO root.
+   crate's registration when the opened path is a BYCKR root.
 2. Build each binding's native library with that feature (about 18 artifacts):
 
    | Binding | Builds |
@@ -374,7 +374,7 @@ conn.execute("UPDATE products SET doc = json_set(doc,'$.price',?) WHERE id = ?",
 | SDK | Placement | Label | What undoes it | Upkeep |
 |---|---|---|---|---|
 | JS | symlink `node_modules/@tursodatabase/database/turso.<triple>.node`. The loader tries it before the platform package; Node and Bun load through it (tested). | **Hack** | `npm ci` and `bun install` remove it (tested). The app's `"postinstall": "fylo link"` restores it (tested). `--ignore-scripts` and Yarn PnP defeat it. | Re-check the loader on each Turso bump. Switch to `NAPI_RS_NATIVE_LIBRARY_PATH` once Turso ships the fixed loader. |
-| Python | a `fylo_turso.pth` import hook mapping `turso._turso` to FYLO's build | **Hack** | survives a pyturso reinstall; removing the `.pth` undoes it | low |
+| Python | a `fylo_turso.pth` import hook mapping `turso._turso` to BYCKR's build | **Hack** | survives a pyturso reinstall; removing the `.pth` undoes it | low |
 | Go | the app calls `tursogo.InitLibrary(... "system")` once; `fylo link` symlinks `libturso_sync_sdk_kit` onto the library path or into the working directory | **Semi-supported** | – | low |
 | Java / Kotlin (JVM) | symlink `lib_turso_java` in `~/Library/Java/Extensions` (on macOS's default `java.library.path`; tested). On Linux use `-Djava.library.path=` or `LD_LIBRARY_PATH`; on Windows, `PATH`. | **Semi-supported** | – | Newer JDKs warn about native access. |
 | .NET / C# | `conn.EnableExtensions(); conn.LoadExtension(path)`, with the path printed by `fylo link` | **Supported** | – | low; the `turso_ext` interface follows the engine version |
@@ -413,7 +413,7 @@ the handler preludes, and `docs/SUPPORT_TIERS.md`.
 - Bounds: 16 admitted operations, 5 s operations, 10 s startup, 30 s scroll,
   4 SQL transactions.
 
-**FYLO is a first-class driver** (`fylo:///absolute/root`, ADR 0032).
+**BYCKR is a first-class driver** (`fylo:///absolute/root`, ADR 0032).
 
 - **Process.** `FyloStore` finds `fylo` on `PATH` (`ty doctor` checks it, as
   "fylo datasource"). It holds **one long-lived `fylo exec --loop`
@@ -423,12 +423,12 @@ the handler preludes, and `docs/SUPPORT_TIERS.md`.
   `queuePublish`, `queueClaim`, `queueAck`, `queueNack` and `executeSQL`.
 - **Workarounds TACHYON carries:**
   - ordering and paging inside the server (10,000-match bound)
-  - its own scroll snapshots, because FYLO 26.33 reruns queries per page
+  - its own scroll snapshots, because BYCKR 26.33 reruns queries per page
   - a patch queue, so a patch and the `getDoc` of its result don't interleave
   - SEC-3 literal escaping of `$1` parameters, because protocol v1 has no
     bound parameters
 - **Restrictions.**
-  - **No transactions** on FYLO ("The FYLO datasource has no transactions").
+  - **No transactions** on BYCKR ("The BYCKR datasource has no transactions").
   - A cancelled call **kills and restarts the subprocess**, so a late answer is
     never misread.
   - The root path is canonicalised, and symlinked roots are refused.
@@ -444,23 +444,23 @@ the handler preludes, and `docs/SUPPORT_TIERS.md`.
 - **TACHYON loads no Turso or libSQL SDK anywhere.** The lockfile's only
   "libsql" match is `libsqlite3-sys` under `sqlx-sqlite`.
 
-**The client side (Tac) doesn't use FYLO.**
+**The client side (Tac) doesn't use BYCKR.**
 
 - Tac runs in the browser, WKWebView, WebView2, WebKitGTK, and iOS and Android
   WebViews, including Wasm service languages.
 - Its stores use the built-in `"indexeddb"` adapter or a Setup-provided one.
-  FYLO is server-only.
+  BYCKR is server-only.
 
 ### 7.2 Does the recommendation fit?
 
 | Question | Answer |
 |---|---|
-| Does TACHYON load Turso or libSQL SDKs in-process? | **No.** It's a Rust server with `sqlx`, `tiberius` and a FYLO subprocess, so `fylo link` (layer 2) has nothing to link. |
+| Does TACHYON load Turso or libSQL SDKs in-process? | **No.** It's a Rust server with `sqlx`, `tiberius` and a BYCKR subprocess, so `fylo link` (layer 2) has nothing to link. |
 | Can it run `fylo link`, or does it need a Rust crate API? | **A crate API: layer 1.** `fylo link` is for apps using Turso's language SDKs. TACHYON should depend on the `fylo` crate and drop the subprocess. That is why the recommendation now leads with the crate. |
-| Can it live with the exact pin? | **Yes.** TACHYON already pins FYLO, and its CI lanes install a pinned FYLO. Through Cargo, the Turso pin comes with the `fylo` crate version, and `Cargo.lock` enforces it. The cost is that `turso_core` and its dependencies join TACHYON's graph and `cargo deny` review. A `storage-fylo` feature can keep them out of builds that don't use FYLO. |
-| Browser, Wasm and mobile targets? | **Unaffected by the server change.** Tac's browser, WebView and mobile targets don't use FYLO today; their stores are IndexedDB or custom adapters, and Yon runs on the host. Adding FYLO to Tac (FYLO-Wasm on the web, the native crate in app hosts) is designed in §7.4. |
-| Do TACHYON's Ruby, PHP, Dart, F#, C++ handlers lose FYLO when FYLO drops those languages? | **No.** They reach FYLO through Yon's resource channel, and Yon is Rust. FYLO's language scope and TACHYON's language scope are independent. |
-| Does the new scope break TACHYON? | **Yes, if FYLO drops NDJSON protocol v1 before TACHYON moves to the crate.** Both repos must move together (§7.3). |
+| Can it live with the exact pin? | **Yes.** TACHYON already pins BYCKR, and its CI lanes install a pinned BYCKR. Through Cargo, the Turso pin comes with the `fylo` crate version, and `Cargo.lock` enforces it. The cost is that `turso_core` and its dependencies join TACHYON's graph and `cargo deny` review. A `storage-fylo` feature can keep them out of builds that don't use BYCKR. |
+| Browser, Wasm and mobile targets? | **Unaffected by the server change.** Tac's browser, WebView and mobile targets don't use BYCKR today; their stores are IndexedDB or custom adapters, and Yon runs on the host. Adding BYCKR to Tac (BYCKR-Wasm on the web, the native crate in app hosts) is designed in §7.4. |
+| Do TACHYON's Ruby, PHP, Dart, F#, C++ handlers lose BYCKR when BYCKR drops those languages? | **No.** They reach BYCKR through Yon's resource channel, and Yon is Rust. BYCKR's language scope and TACHYON's language scope are independent. |
+| Does the new scope break TACHYON? | **Yes, if BYCKR drops NDJSON protocol v1 before TACHYON moves to the crate.** Both repos must move together (§7.3). |
 
 ### 7.3 What TACHYON would need to change
 
@@ -472,7 +472,7 @@ the handler preludes, and `docs/SUPPORT_TIERS.md`.
    - Blocking engine calls run in `spawn_blocking`.
    - The resource-channel commands, and every language's `DataSource` API,
      stay as they are.
-2. **Cancellation.** "A cancelled FYLO call restarts the subprocess" no longer
+2. **Cancellation.** "A cancelled BYCKR call restarts the subprocess" no longer
    works, because an in-process call can't be killed.
    - A timed-out call is abandoned: its result is dropped when it finishes, and
      the admission permit is held until then.
@@ -481,18 +481,18 @@ the handler preludes, and `docs/SUPPORT_TIERS.md`.
    - ADR 0032 needs an amendment for this.
 3. **Raw SQL.** Move to Turso's dialect with bound parameters. That retires
    `SqlStatement`'s literal escaping (the SEC-3 amendment) and allows
-   aggregates, `ORDER BY` and `LIMIT`. FYLO raw SQL could then sit closer to
+   aggregates, `ORDER BY` and `LIMIT`. BYCKR raw SQL could then sit closer to
    the other SQL drivers, though TACHYON's dialect layer stays per driver.
 
 **Behaviour:**
 
 4. **Ordering, paging and scroll.** `ORDER BY id`, and indexed ordering pushed
-   into FYLO, can replace the 10,000-match server-side ordering. ADR 0032
-   already says the scroll snapshot "can move back into FYLO without a change
+   into BYCKR, can replace the 10,000-match server-side ordering. ADR 0032
+   already says the scroll snapshot "can move back into BYCKR without a change
    to the API".
 5. **Transactions.** Single-collection transactions become possible. Today
-   TACHYON refuses them. It's optional, under `EFYLO_TXN_SCOPE` rules.
-6. **Patch.** The patch queue can go if FYLO's patch returns the stored
+   TACHYON refuses them. It's optional, under `EYCKR_TXN_SCOPE` rules.
+6. **Patch.** The patch queue can go if BYCKR's patch returns the stored
    document atomically.
 
 **Tooling and dependencies:**
@@ -501,16 +501,16 @@ the handler preludes, and `docs/SUPPORT_TIERS.md`.
    the `fylo` binary on `PATH`. Keep it only if TACHYON still calls the CLI for
    admin.
 8. **Dependency policy.**
-   - `turso_core` (pre-1.0, MIT) and FYLO's crates enter `Cargo.lock`, behind
+   - `turso_core` (pre-1.0, MIT) and BYCKR's crates enter `Cargo.lock`, behind
      a `storage-fylo` feature.
    - The Linux and Windows CI lanes stop installing a pinned `fylo` binary for
      the storage tests and compile the crate instead.
    - Expect a longer build.
-9. **Process.** FYLO's root lease, and optionally its hot set, are held by the
+9. **Process.** BYCKR's root lease, and optionally its hot set, are held by the
    Yon process. That is one owner per root, exactly as today's single
    subprocess.
 
-### 7.4 Tac's client side: FYLO WebAssembly, the way sqlite-wasm works
+### 7.4 Tac's client side: BYCKR WebAssembly, the way sqlite-wasm works
 
 TACHYON was read only, at `origin/develop` `9ea846513`. The sources are:
 
@@ -524,7 +524,7 @@ The web research was checked on 2026-11-01; the sources are listed in §13.
 
 #### The model: sqlite-wasm, and Turso's Wasm package
 
-| | sqlite-wasm `opfs` | sqlite-wasm `opfs-sahpool` | Turso `@tursodatabase/database-wasm` 0.8.3 | FYLO today |
+| | sqlite-wasm `opfs` | sqlite-wasm `opfs-sahpool` | Turso `@tursodatabase/database-wasm` 0.8.3 | BYCKR today |
 |---|---|---|---|---|
 | Target | Emscripten | Emscripten | `wasm32-wasip1-threads` (napi-rs and emnapi) | `fylo-browser.wasm`, `wasm32-unknown-unknown`, 17 imports, no glue code |
 | Storage | async OPFS made synchronous by a proxy Worker using `SharedArrayBuffer` and `Atomics` | a pool of synchronous access handles opened up front, in one Worker | a Rust `IO` impl (`bindings/javascript/src/browser.rs`); a Worker holds two synchronous access handles (the database file and its `-wal`) and writes into shared memory | **Folder root:** two Workers and a `SharedArrayBuffer` (sqlite's `opfs` design). **One `.vdbx` file:** one synchronous access handle in one Worker (`fylo-single-file-worker.mjs`, ADR 0016 §10) |
@@ -535,44 +535,44 @@ The web research was checked on 2026-11-01; the sources are listed in §13.
 **What carries over:**
 
 - The **sahpool shape**: synchronous handles, one Worker, no
-  `SharedArrayBuffer`. FYLO's `.vdbx` worker already is that shape.
+  `SharedArrayBuffer`. BYCKR's `.vdbx` worker already is that shape.
 - The **pause and unpause handover** between tabs.
 - **Web-Lock-based ownership.**
 
 **What doesn't carry over:**
 
 - Turso's package needs cross-origin isolation and is 11.6 MB.
-- It can't load FYLO either: dynamic loading is compiled out on Wasm.
+- It can't load BYCKR either: dynamic loading is compiled out on Wasm.
 
-**Safari hardening already on FYLO `develop`:**
+**Safari hardening already on BYCKR `develop`:**
 
 - `e4a6aba`: wake the engine Worker before a session ends, so Safari frees the
   root.
 - `87abb10`: bound the OPFS bridge's wait, because Safari can lose the wakeup.
 - `266b3ed`: one stack frame per document level, for Safari Workers.
 - `5c64027`: a closed session gives back its handles and its root.
-- WebKit still can't start a module Worker over OPFS in FYLO's test harness,
+- WebKit still can't start a module Worker over OPFS in BYCKR's test harness,
   so it is skipped there.
 
-#### Can layer 1 (FYLO plus the `turso_core` SQL layer) compile for the browser?
+#### Can layer 1 (BYCKR plus the `turso_core` SQL layer) compile for the browser?
 
 **Probably, with work. Tac doesn't need it.**
 
 - **Turso's CI** type-checks `turso` for `wasm32-unknown-unknown`
   (`.github/workflows/rust.yml:212-225`). Nothing is linked or run there.
 - **Storage isn't the problem.** §4's design gives `turso_core` an empty
-  in-memory catalog and keeps all data in FYLO's tables. So `turso_core` needs
-  no OPFS IO: FYLO supplies a memory-backed `Arc<dyn IO>`
-  (`Database::open(io, …)`, `core/database.rs:1216`) whose `Clock` reads FYLO's
+  in-memory catalog and keeps all data in BYCKR's tables. So `turso_core` needs
+  no OPFS IO: BYCKR supplies a memory-backed `Arc<dyn IO>`
+  (`Database::open(io, …)`, `core/database.rs:1216`) whose `Clock` reads BYCKR's
   own clock import. That also covers `IO::sleep`.
 - **Blockers on `wasm32-unknown-unknown`, with the workaround for each:**
 
   | Blocker | Workaround |
   |---|---|
-  | `std::time::Instant` and `SystemTime::now` panic. They are called inside `MemoryIO` and `DefaultClock` (`io/clock.rs`), and directly by `date('now')` (`functions/datetime.rs:199`), `Utc::now` (`time/internal.rs:115`) and `PRAGMA` (`translate/pragma.rs:386`). | FYLO's own `IO`/`Clock`, plus three small edits in FYLO's existing `turso_core` patch that route those calls through the IO clock |
-  | getrandom's `wasm_js` backend, and uuid's `js` feature, need wasm-bindgen glue. FYLO's module allows none. | getrandom 0.3's **custom backend**, fed by FYLO's existing entropy import |
+  | `std::time::Instant` and `SystemTime::now` panic. They are called inside `MemoryIO` and `DefaultClock` (`io/clock.rs`), and directly by `date('now')` (`functions/datetime.rs:199`), `Utc::now` (`time/internal.rs:115`) and `PRAGMA` (`translate/pragma.rs:386`). | BYCKR's own `IO`/`Clock`, plus three small edits in BYCKR's existing `turso_core` patch that route those calls through the IO clock |
+  | getrandom's `wasm_js` backend, and uuid's `js` feature, need wasm-bindgen glue. BYCKR's module allows none. | getrandom 0.3's **custom backend**, fed by BYCKR's existing entropy import |
   | **Writable** virtual tables need `register_static_extension` with `turso_ext`. `register_internal_vtab` is read-only (`core/vtab.rs:597-623`). | the static `turso_ext` route; its function-pointer interface works inside one module |
-  | **Size.** `turso_core` would push the module far past FYLO's 800 KiB budget. Turso's whole browser module is 11.6 MB. | a **separate, lazily loaded `fylo-sql-browser.wasm`**, used only by apps that want SQL in the browser |
+  | **Size.** `turso_core` would push the module far past BYCKR's 800 KiB budget. Turso's whole browser module is 11.6 MB. | a **separate, lazily loaded `fylo-sql-browser.wasm`**, used only by apps that want SQL in the browser |
 
 - **If `turso_core` won't link or run on `wasm32-unknown-unknown`:**
   - Build the SQL module for `wasm32-wasip1`, with no threads, unlike Turso's
@@ -628,19 +628,19 @@ Java (TeaVM), Kotlin, Swift, C#, Ruby, Rust, Dart, C++ and others.
 **No cross-origin isolation.** TACHYON sends no COOP or COEP headers anywhere
 (searched on `origin/develop`).
 
-#### Where FYLO would run, per Tac target
+#### Where BYCKR would run, per Tac target
 
-| Target | Secure context? | OPFS synchronous handles | FYLO for Tac |
+| Target | Secure context? | OPFS synchronous handles | BYCKR for Tac |
 |---|---|---|---|
 | Web, over HTTPS | yes | Chrome 102 (all synchronous from 108), Firefox 111, Safari 16.4. Off in Lockdown Mode. | **`fylo-browser.wasm` over one `.vdbx` file in OPFS**, in a dedicated Worker |
-| macOS and iOS WKWebView, `tachyon-app://bundle` | **no**, per TACHYON ADR 0065. WKWebView has no public API to mark a custom scheme secure. | **unavailable**: WebKit's OPFS interfaces are `[SecureContext]` | **Native FYLO in the app host**: link the `fylo` crate into the host's Rust companion, which TACHYON already does for Rust services. Reach it through the native bridge (ADR 0089). Store the root in the app's container. |
+| macOS and iOS WKWebView, `tachyon-app://bundle` | **no**, per TACHYON ADR 0065. WKWebView has no public API to mark a custom scheme secure. | **unavailable**: WebKit's OPFS interfaces are `[SecureContext]` | **Native BYCKR in the app host**: link the `fylo` crate into the host's Rust companion, which TACHYON already does for Rust services. Reach it through the native bridge (ADR 0089). Store the root in the app's container. |
 | Android WebView, `https://appassets.tachyon.local` | yes (intercepted HTTPS) | WebView 109+ | Wasm works, but **native is recommended**: one implementation for every app target, durable app storage, outside WebView eviction |
 | Windows WebView2, `https://tachyon.local` | yes | follows Edge | Wasm works; **native recommended** for the same reasons |
 | Linux WebKitGTK, `tachyon://app` | only if registered as secure (`webkit_security_manager_register_uri_scheme_as_secure`) | **off by default until WebKitGTK 2.56**, not yet released | **native** |
 
 The rule that comes out of this:
 
-- **Web pages** use FYLO-Wasm over `.vdbx`.
+- **Web pages** use BYCKR-Wasm over `.vdbx`.
 - **TACHYON's native apps** use the native crate. That is the same engine and
   the same command mapping as Yon, which keeps it to one code path per kind of
   target.
@@ -652,7 +652,7 @@ The rule that comes out of this:
 - It implements the same command set as Yon's `FyloStore`, so a Store moves
   between Yon and Tac, or from `"indexeddb"` to `"fylo"`, unchanged:
 
-  | Command | FYLO operation |
+  | Command | BYCKR operation |
   |---|---|
   | `save` without an id | `putData` |
   | `save` with an id | `patchDoc` |
@@ -661,10 +661,10 @@ The rule that comes out of this:
   | `count` and `exists` | counting matches |
   | ordering on fields other than `id` | done inside the adapter, bounded as in Yon |
 
-- **Ids.** Entities on `"fylo"` use **FYLO-assigned TTIDs**, as in Yon. Tac's
+- **Ids.** Entities on `"fylo"` use **BYCKR-assigned TTIDs**, as in Yon. Tac's
   IndexedDB adapter accepts application-chosen strings and integers, so moving
   a Store from `"indexeddb"` to `"fylo"` changes that rule.
-- **Transactions** follow Yon: refused until FYLO's single-collection
+- **Transactions** follow Yon: refused until BYCKR's single-collection
   transactions (§4) exist in the browser build.
 - **Synchronous Wasm languages.** Route `"fylo"` calls through ADR 0090's
   parking (the fiber, JSPI or task waits while the Worker or native bridge
@@ -689,7 +689,7 @@ The rule that comes out of this:
   unless it is a Home Screen web app.
 - Quota is up to 60% of the disk in browsers, and 15% for apps that embed
   WebKit.
-- Native targets avoid all of this, which is another reason to run native FYLO
+- Native targets avoid all of this, which is another reason to run native BYCKR
   there.
 
 **Bundle size.**
@@ -699,7 +699,7 @@ The rule that comes out of this:
   IndexedDB adds nothing.
 - The optional SQL module would come on top, size to be measured.
 
-**Cross-origin isolation.** None is needed for `.vdbx` mode. FYLO's folder-root
+**Cross-origin isolation.** None is needed for `.vdbx` mode. BYCKR's folder-root
 browser mode, and Turso's Wasm package, both need COOP/COEP that Tac doesn't
 send, so neither fits Tac as it stands.
 
@@ -710,7 +710,7 @@ send, so neither fits Tac as it stands.
   (ADR 0016 §1).
 - That's enough for Tac entity stores.
 
-**Syncing with Yon's server-side FYLO later.** This is noted, not designed.
+**Syncing with Yon's server-side BYCKR later.** This is noted, not designed.
 
 - Today a browser root reaches a server only by export: a `.vdbx` snapshot
   `Blob` ("Moving a browser root to a server needs an export", artifact
@@ -725,8 +725,8 @@ send, so neither fits Tac as it stands.
 1. Add `"fylo"` as a built-in entity adapter: in `runtime.js`
    `builtinAdapter`, and in a new `tac-fylo-storage.js` beside
    `tac-storage.js`.
-2. **Web:** bundle FYLO's browser assets (`fylo-browser.wasm`, the `.vdbx`
-   Worker, `host-vfs.mjs`) into `dist/web`, pinned to the same FYLO version as
+2. **Web:** bundle BYCKR's browser assets (`fylo-browser.wasm`, the `.vdbx`
+   Worker, `host-vfs.mjs`) into `dist/web`, pinned to the same BYCKR version as
    the server crate and loaded lazily.
 3. **Native hosts** (macOS, iOS, Android, Windows, Linux):
    - link the `fylo` crate into the Rust companion
@@ -763,13 +763,13 @@ cover.
 
 | Route | What it is | Kind |
 |---|---|---|
-| **Yon** | The language's TACHYON `DataSource` / Store reaches Yon's FYLO datasource through the resource channel. Yon runs FYLO through the crate, in-process (§7.3). | supported (TACHYON API) |
+| **Yon** | The language's TACHYON `DataSource` / Store reaches Yon's BYCKR datasource through the resource channel. Yon runs BYCKR through the crate, in-process (§7.3). | supported (TACHYON API) |
 | **Tac-W** | Tac's built-in `"fylo"` adapter, on the web: `.vdbx` in OPFS, in a Worker (§7.4) | supported once built |
 | **Tac-N** | Tac's built-in `"fylo"` adapter, in native apps: the crate in the app host, reached over the native bridge (§7.4) | supported once built |
 | **SDK** | the Turso SDK plus `fylo link` (§6.2) | see §6.2 for each placement's label |
 | **Crate** | the `fylo` Rust crate (§6.1) | supported |
-| **C** | FYLO's build of Turso's C library (`turso_sdk_kit` with FYLO compiled in, the same file `fylo link` ships for Go). Its header is Turso's C API, and SQL over §4's tables reaches documents and the queue. | supported (C ABI); version pinned |
-| **FFI** | a thin binding over **C**, in the language's own FFI | FYLO-maintained, generated where a generator exists |
+| **C** | BYCKR's build of Turso's C library (`turso_sdk_kit` with BYCKR compiled in, the same file `fylo link` ships for Go). Its header is Turso's C API, and SQL over §4's tables reaches documents and the queue. | supported (C ABI); version pinned |
+| **FFI** | a thin binding over **C**, in the language's own FFI | BYCKR-maintained, generated where a generator exists |
 
 **Coverage per language:**
 
@@ -783,7 +783,7 @@ cover.
 | Java | yes | yes | yes (WasmGC) | Yon. **Tac gap:** built-in Store not offered to Java services | **SDK** (JDBC, `java.library.path`) |
 | C# | yes (.NET) | yes | yes (Wasm; native on Windows) | Yon; Tac-W / Tac-N | **SDK** (.NET `LoadExtension`, supported) |
 | F# | rides .NET | yes | yes (Wasm) | Yon. **Tac gap:** built-in Store not offered to F# services | **SDK via .NET** (same provider; no new code) |
-| Kotlin | rides Java | yes | yes (WasmGC; native on Android) | Yon; Tac-W / Tac-N | **SDK via Java** on the JVM. **Android** needs a FYLO-built JNI library packaged as an AAR, because Turso's jar ships no Android libraries: a packaging cost, no new API. |
+| Kotlin | rides Java | yes | yes (WasmGC; native on Android) | Yon; Tac-W / Tac-N | **SDK via Java** on the JVM. **Android** needs a BYCKR-built JNI library packaged as an AAR, because Turso's jar ships no Android libraries: a packaging cost, no new API. |
 | Groovy | rides Java | yes | no | Yon | **SDK via Java** |
 | Swift | no Turso-engine SDK (`libsql-swift` is libSQL, stale) | no | yes (Wasm; native on macOS and iOS) | Tac-W / Tac-N (the macOS and iOS hosts are Swift) | **C**: import the header through a module map, ship an `.xcframework`; no binding code |
 | C++ | C (Turso's C binding) | yes | yes (Emscripten, limits) | Yon (Stores through a Setup). **Tac gap:** built-in Store not offered to C++ services | **C**: include the header |
@@ -796,7 +796,7 @@ cover.
 #### Gaps and their routes
 
 **TACHYON-side gaps (supported inside TACHYON apps).** These are TACHYON
-changes; FYLO has nothing to add.
+changes; BYCKR has nothing to add.
 
 1. **Tac's built-in Store doesn't reach Java, F#, Python, Lua or C++
    services**, or natively run services.
@@ -808,7 +808,7 @@ changes; FYLO has nothing to add.
    - Native Rust services link the crate. Native Swift, Kotlin and C# services
      ask the host, as Tac-N does.
 2. **Yon's Lua handlers have no resources** (ADR 0085).
-   - Workaround inside TACHYON today: a Lua handler reaches FYLO through a
+   - Workaround inside TACHYON today: a Lua handler reaches BYCKR through a
      `@Gateway` or `relay(...)` to another Yon language.
    - Proper fix: give Lua the resource channel, which is TACHYON's call.
 
@@ -819,7 +819,7 @@ ride:
 |---|---|---|---|
 | Swift | **C**: module map plus `.xcframework` | packaging only | low; tracks the C API at the pinned Turso version |
 | C / C++ | **C**: header plus library | none | low |
-| Kotlin (Android) | **SDK via Java**, with a FYLO-built Android JNI library in an AAR | packaging only; the Android build is added to the matrix | low |
+| Kotlin (Android) | **SDK via Java**, with a BYCKR-built Android JNI library in an AAR | packaging only; the Android build is added to the matrix | low |
 | Dart | **FFI**, generated by `ffigen` | a generator config plus a thin layer; regenerated per Turso pin | low to medium |
 | Ruby | **FFI** (`ffi` gem) | a small hand-written binding | medium, since it's hand-written and tracks the C API |
 | PHP | **FFI** (`FFI::cdef`) | a small hand-written binding; needs PHP's FFI turned on | medium |
@@ -828,28 +828,28 @@ ride:
 Every route here keeps the rules:
 
 - **In-process,** so no listener.
-- **Writes are synchronous,** since each statement is a FYLO commit.
+- **Writes are synchronous,** since each statement is a BYCKR commit.
 - **Documents stay the truth.**
 
 No route brings back an NDJSON shim. The FFI bindings bind Turso's generic SQL
-C API, not FYLO's roughly 50 operations: SQL reaches documents and the queue
+C API, not BYCKR's roughly 50 operations: SQL reaches documents and the queue
 through §4's tables and functions.
 
 **A workaround if Turso's C API churns before 1.0:**
 
-- Expose a **FYLO-owned `libfylo` C ABI** from the crate:
+- Expose a **BYCKR-owned `libfylo` C ABI** from the crate:
   - a small, stable surface: open root, execute SQL, plus typed document and
     queue calls
-  - versioned by FYLO
+  - versioned by BYCKR
 - Point C, C++, Swift and the FFI bindings at it instead.
-- That moves one contract into FYLO's hands. Start with Turso's C API, which
-  adds no FYLO contract, and switch only if pin bumps keep breaking the
+- That moves one contract into BYCKR's hands. Start with Turso's C API, which
+  adds no BYCKR contract, and switch only if pin bumps keep breaking the
   bindings.
 
 #### Which "supported" to aim for
 
 - **Aim (a): supported inside TACHYON apps, for every Tac and Yon language.**
-  - It is nearly free on FYLO's side: one Yon driver (phase 1, running now),
+  - It is nearly free on BYCKR's side: one Yon driver (phase 1, running now),
     one Tac adapter (phase 3b), and TACHYON's own per-language APIs, which
     already exist.
   - The remaining work is TACHYON's two gaps above.
@@ -858,11 +858,11 @@ through §4's tables and functions.
   - the JVM and .NET riders (Kotlin, Groovy, F#)
   - C, C++ and Swift over the C library
 - **Don't commit to standalone Ruby, PHP, Dart or Lua in this release.** Their
-  FFI bindings are small, but they are per-language code FYLO would own, which
+  FFI bindings are small, but they are per-language code BYCKR would own, which
   is what the user set out to stop. Generated Dart is the cheapest to add later
   if asked.
 
-## 8. What the new release removes and changes in FYLO
+## 8. What the new release removes and changes in BYCKR
 
 **Deleted:**
 
@@ -873,7 +873,7 @@ through §4's tables and functions.
 | `clients/flutter` (a WebView host of the JS engine) | Dart stays in scope through TACHYON. A standalone Flutter route would be FFI over the C library (§7.5), not a WebView. |
 | `tests/interop/shim-interop.test.js` | no shims; replaced by a Turso-SDK conformance suite |
 | the `fylo-clients.tar.gz` release asset and its install docs | no clients |
-| FYLO's own SQL dialect (`fylo-query/src/sql.rs` planner and the `executeSQL` subset) | Replaced by Turso SQL over the §4 tables; `fylo sql` runs on `turso_core`. **Deferred to the release after next:** TACHYON 26.36.01's raw SQL calls `executeSQL` (see "Release order" below). |
+| BYCKR's own SQL dialect (`fylo-query/src/sql.rs` planner and the `executeSQL` subset) | Replaced by Turso SQL over the §4 tables; `fylo sql` runs on `turso_core`. **Deferred to the release after next:** TACHYON 26.36.01's raw SQL calls `executeSQL` (see "Release order" below). |
 | the **public** NDJSON client contract (`api/machine/v1` as a versioned interface for third-party clients) | No external client but TACHYON speaks it. **Frozen in the next release and removed in the one after** (see "Release order"). |
 
 **Kept, possibly reshaped:**
@@ -882,11 +882,11 @@ through §4's tables and functions.
 |---|---|
 | `fylo` CLI (admin, version control, schema, pack, verify) | kept |
 | `fylo exec --loop` (the CLI's public NDJSON loop) and the WASI artifact's interchange contract | **Kept, frozen and deprecated, for one release; then removed.** TACHYON 26.36.01 and its current release candidate run `fylo exec --loop` with machine protocol v1 (ADR 0032). Removal follows once a TACHYON release on the crate has shipped (see "Release order"). |
-| The batch interface inside the module (`fylo_exec`) and the Worker's message protocol | **Kept, private:** shipped only together with FYLO's own browser loader, and checked by `fylo_abi_version`. Not a public contract. |
+| The batch interface inside the module (`fylo_exec`) and the Worker's message protocol | **Kept, private:** shipped only together with BYCKR's own browser loader, and checked by `fylo_abi_version`. Not a public contract. |
 | `fylo-browser.wasm`, the `.vdbx` Worker (`fylo-single-file-worker.mjs`, `single-file-vfs.mjs`, `host-vfs.mjs`), and the `clients/browser` loader | **Kept and promoted:** a `.vdbx` file in OPFS becomes the default browser storage, and Tac's `"fylo"` adapter builds on it (§7.4). JS is a Turso language, and the browser has no Turso route. |
 | The folder-root browser mode (two Workers and a `SharedArrayBuffer`) and the older JS engine (`FyloBrowser` over OPFS or File System Access) | **The user decides (§10).** Explorer's folder picking uses them, and they need cross-origin isolation. Neither is needed by Tac. |
 | `clients/swift`, `clients/kotlin`, `clients/mobile` (WebView hosts of the JS engine) | **Replaced, not just removed** (reopened 2026-11-01). Swift and Kotlin stay supported: inside TACHYON through Tac-N (the native hosts link the crate), and standalone through the C library (Swift: module map plus `.xcframework`) and the Java route with an Android AAR (Kotlin) (§7.5). The WebView hosts and the mobile bridge go, because they run the weaker JS engine. |
-| **New:** FYLO's build of Turso's C library, shipped for C, C++ and Swift, plus Swift and Android packaging | The same `turso_sdk_kit` file `fylo link` already builds for Go, published with its header, an `.xcframework`, and an Android AAR. |
+| **New:** BYCKR's build of Turso's C library, shipped for C, C++ and Swift, plus Swift and Android packaging | The same `turso_sdk_kit` file `fylo link` already builds for Go, published with its header, an `.xcframework`, and an Android AAR. |
 
 **New:**
 
@@ -895,52 +895,52 @@ through §4's tables and functions.
 - the binding artifacts per release
 - `api/sql/v1` (the table mapping, functions, errors and transaction scope)
 - a conformance suite running each stock Turso SDK, at the pinned version,
-  against FYLO's build
+  against BYCKR's build
 
 ### Release order with TACHYON
 
 This section follows constraints from TACHYON's Release Coordinator,
 2026-11-01.
 
-**The constraint.** FYLO's next release must not break TACHYON 26.36.01, or
+**The constraint.** BYCKR's next release must not break TACHYON 26.36.01, or
 TACHYON's current release candidate.
 
 - Both start `fylo` from `PATH` and drive `fylo exec --loop` over machine
   protocol v1 (TACHYON ADR 0032, `crates/tachyon-core/src/storage/fylo.rs`).
-- Their raw SQL goes through `executeSQL`, in FYLO's own dialect.
+- Their raw SQL goes through `executeSQL`, in BYCKR's own dialect.
 - A user who upgrades `fylo` on `PATH` would break an installed TACHYON if v1
   disappeared.
 
 **Option A: compatibility window (recommended).**
 
-- **FYLO's next release** ships all of the new interfaces: the crate,
+- **BYCKR's next release** ships all of the new interfaces: the crate,
   `fylo link`, the C library and the browser `.vdbx` default.
 - **It also keeps, frozen and deprecated:**
   - `fylo exec --loop`
   - machine protocol v1, with the operations ADR 0032 uses
-  - `executeSQL` with FYLO's dialect
+  - `executeSQL` with BYCKR's dialect
 
   The handshake keeps reporting `protocolVersion: 1`. Nothing new is added to
   v1, and the deprecation is documented.
 - **TACHYON's next release** moves Yon to the crate, adds Tac's `"fylo"`
   adapter, and closes its two gaps (§7.5).
-- **The FYLO release after that** removes v1, `fylo exec --loop` and FYLO's
+- **The BYCKR release after that** removes v1, `fylo exec --loop` and BYCKR's
   SQL dialect. Only once TACHYON's crate-based release is out.
 - **Why A:**
   - The two release trains don't wait for each other.
   - TACHYON 26.36.01 and the current release candidate keep working against
-    any FYLO from now until the removal.
+    any BYCKR from now until the removal.
   - The cost is one more release of code that already exists and is tested
     (`fylo-machine`, the `exec` CLI, `fylo-query/src/sql.rs`), frozen.
 
 **Option B: ship together.**
 
-- FYLO's next release and TACHYON's crate-based release ship together, after
+- BYCKR's next release and TACHYON's crate-based release ship together, after
   TACHYON's current release candidate.
 - v1 is removed at once.
 - It is simpler in code, but it couples the two schedules. An older TACHYON
   still breaks if someone upgrades `fylo` alone, unless TACHYON's installers pin
-  FYLO and doctor refuses a mismatch.
+  BYCKR and doctor refuses a mismatch.
 
 **This softens rule 4 ("no backward compatibility").** That is for TACHYON's
 sake: one protocol and one SQL dialect survive one extra release. It is flagged
@@ -951,14 +951,14 @@ as a question in §10.
 **Phase 0: decide.**
 
 - The user answers §10.
-- Draft FYLO ADR 0019, "FYLO through Turso's engine", as Proposed.
+- Draft BYCKR ADR 0019, "BYCKR through Turso's engine", as Proposed.
 - Draft the TACHYON ADR 0032 amendment.
 
-**Phase 1: layer 1 spike, in FYLO and TACHYON together.**
+**Phase 1: layer 1 spike, in BYCKR and TACHYON together.**
 
 1. `fylo` crate facade (`Root`, documents, queue) without SQL.
 2. In a TACHYON worktree, switch `FyloStore` to it behind a feature.
-3. Run TACHYON's FYLO tests (`storage/tests/fylo_*`,
+3. Run TACHYON's BYCKR tests (`storage/tests/fylo_*`,
    `tachyon-cli/tests/it/fylo_datasource.rs`) unchanged.
 4. Measure latency against the subprocess, and check cancellation behaviour.
 
@@ -989,13 +989,13 @@ phase 3).
 3. Native: link the crate into the macOS and iOS hosts first, since they have
    no OPFS, through the host bridge. Then Android, Windows and Linux.
 4. ADR 0090 parking for synchronous Wasm languages.
-5. Optional, later: `fylo-sql-browser.wasm` (FYLO plus `turso_core`, loaded
+5. Optional, later: `fylo-sql-browser.wasm` (BYCKR plus `turso_core`, loaded
    lazily), spiked for whether it links on `wasm32-unknown-unknown`, its size,
    and the clock patches.
 
 **Phase 3c: language coverage** (after phase 3; §7.5).
 
-1. Publish the C library (`turso_sdk_kit` with FYLO compiled in) with its
+1. Publish the C library (`turso_sdk_kit` with BYCKR compiled in) with its
    header. Smoke-test it from C, C++ and Swift (module map and
    `.xcframework`).
 2. Kotlin on Android: build the JNI library for Android targets, and package
@@ -1011,7 +1011,7 @@ phase 3).
 
 **Phase 4: release.** This follows Option A in §8 "Release order".
 
-1. **FYLO's next release:**
+1. **BYCKR's next release:**
    - Delete the §8 items that TACHYON doesn't use: the nine NDJSON shims, the
      shim interop tests, the WebView hosts, and the `fylo-clients.tar.gz`
      asset.
@@ -1021,7 +1021,7 @@ phase 3).
      and deprecated.**
    - Rewrite the README Quick Start around Turso SDKs plus `fylo link`, and
      the crate.
-   - Before release, run TACHYON 26.36.01's FYLO storage tests
+   - Before release, run TACHYON 26.36.01's BYCKR storage tests
      (`storage::tests::fylo_*`, `tachyon-cli/tests/it/fylo_datasource.rs`)
      against the new `fylo` binary. That proves nothing broke.
 2. **TACHYON's next release** (all of these target it):
@@ -1031,12 +1031,12 @@ phase 3).
    - Tac's built-in Store extended to Java, F#, Python, Lua, C++ and natively
      run services
    - Lua datasource access (§7.5)
-3. **The FYLO release after TACHYON's ships:**
-   - remove machine protocol v1, `fylo exec --loop`, `executeSQL` and FYLO's
+3. **The BYCKR release after TACHYON's ships:**
+   - remove machine protocol v1, `fylo exec --loop`, `executeSQL` and BYCKR's
      SQL dialect (`fylo-query/src/sql.rs`)
    - retire `api/machine/v1`
 
-Under Option B, steps 1 and 3 merge into one FYLO release that ships with step 2,
+Under Option B, steps 1 and 3 merge into one BYCKR release that ships with step 2,
 after TACHYON's current release candidate.
 
 ## 10. Open questions for the user
@@ -1051,10 +1051,10 @@ after TACHYON's current release candidate.
 - **language scope:** Tac, Yon and Turso SDK languages (rule 5)
 - **approved on 2026-11-01:**
   - the exact Turso pin
-  - TACHYON running FYLO in-process through the crate
+  - TACHYON running BYCKR in-process through the crate
   - no public `fylo exec --loop` or WASI contract (its removal now waits one
     release; see question 3)
-  - native FYLO on Tac's app targets
+  - native BYCKR on Tac's app targets
   - parking for synchronous Wasm languages
 
 **Reopened by the wider scope, and answered here:**
@@ -1085,11 +1085,11 @@ after TACHYON's current release candidate.
    Confirm?
 3. **Release order with TACHYON** (§8 "Release order"). This softens the "no
    backward compatibility" rule. Choose one:
-   - **(A, recommended)** FYLO's next release keeps `fylo exec --loop`,
+   - **(A, recommended)** BYCKR's next release keeps `fylo exec --loop`,
      machine protocol v1 and `executeSQL` frozen and deprecated, so TACHYON
      26.36.01 and its current release candidate keep working. Remove them in
-     the FYLO release after TACHYON's crate-based release ships.
-   - **(B)** Ship FYLO's next release together with TACHYON's crate-based
+     the BYCKR release after TACHYON's crate-based release ships.
+   - **(B)** Ship BYCKR's next release together with TACHYON's crate-based
      release, after the current release candidate, and drop v1 at once.
 
 Minor, with defaults the plan follows unless the user says otherwise:
@@ -1102,7 +1102,7 @@ Minor, with defaults the plan follows unless the user says otherwise:
 
 ## 11. Contracts and ADRs that change
 
-**FYLO:**
+**BYCKR:**
 - **New ADR 0019:**
   - the crate as the native API
   - `fylo link`
@@ -1113,7 +1113,7 @@ Minor, with defaults the plan follows unless the user says otherwise:
 - **ADR 0004:** amended for `turso_core` and for shipping third-party binding
   builds.
 - **New `api/sql/v1`.**
-- **`api/errors/v1.json`:** gains `EFYLO_TXN_SCOPE`.
+- **`api/errors/v1.json`:** gains `EYCKR_TXN_SCOPE`.
 - **Retired:** `api/machine/v1` as a public contract. It is frozen and
   deprecated in the next release and removed in the release after TACHYON's
   crate-based release (§8 "Release order"). ADR 0019 records the window.
@@ -1124,14 +1124,14 @@ Minor, with defaults the plan follows unless the user says otherwise:
 - **ADR 0032 already has a SEC-3 amendment (2026-10-31).** It came from
   TACHYON FU-04 (fix `c55481537`, tests up to `fc50ffb43`, both on
   `origin/develop`). It says:
-  - FYLO raw SQL renders each parameter as **one self-contained literal**.
+  - BYCKR raw SQL renders each parameter as **one self-contained literal**.
   - It refuses quoted placeholders such as `'$1'`, plus `;`, NUL and indexes
     out of range.
-  - It refuses negative and exponent numbers, because FYLO drops a leading `-`
+  - It refuses negative and exponent numbers, because BYCKR drops a leading `-`
     and reads `1e2` as `1` (`TY2160`).
-  - It records that bound parameters need a FYLO protocol change:
+  - It records that bound parameters need a BYCKR protocol change:
     `executeSQL` in machine protocol v1 takes only `sql` and `access`.
-- **This plan is that FYLO change.** Through the crate's `root.sql()` on
+- **This plan is that BYCKR change.** Through the crate's `root.sql()` on
   `turso_core`:
   - Values are bound as data (`?`, `?NNN`, `:name`, `$name`).
   - The literal rendering, and the refusal of negative or exponent numbers,
@@ -1142,14 +1142,14 @@ Minor, with defaults the plan follows unless the user says otherwise:
   - cancellation that abandons a call instead of killing a subprocess
   - bound parameters, replacing the SEC-3 rendering
   - optional single-collection transactions
-  - which FYLO release is the minimum (the one with the crate)
+  - which BYCKR release is the minimum (the one with the crate)
 - **`docs/MANAGED_STORAGE.md`:** update to match.
-- **Doctor:** update the `known_toolchains` FYLO entry.
+- **Doctor:** update the `known_toolchains` BYCKR entry.
 - **CI:** the storage lanes compile the crate instead of installing a binary.
 
 ## 12. Experiments run on this Mac (2026-11-01)
 
-These ran in `/private/tmp/claude-501/-Volumes-HAVEN-Developer-DELMA-FYLO/e3e41c1a-613b-44c9-ae24-6671fc084723/scratchpad/symlink-tests`.
+These ran in `/private/tmp/claude-501/-Volumes-HAVEN-Developer-DELMA-BYCKR/e3e41c1a-613b-44c9-ae24-6671fc084723/scratchpad/symlink-tests`.
 No Turso or libSQL package was installed or run. TACHYON was only read.
 
 | # | Test | Result |
@@ -1193,7 +1193,7 @@ Read from source, not run:
 **Licenses**
 - https://github.com/tursodatabase/turso/blob/main/LICENSE.md
 
-**FYLO** (`24f43a6`)
+**BYCKR** (`24f43a6`)
 - `README.md`, `clients/README.md`
 - ADRs 0004, 0007, 0008, 0012, 0013, 0014, 0016, 0017
 - `crates/fylo-query/src/sql.rs`
@@ -1246,7 +1246,7 @@ Read from source, not run:
   - https://commits.webkit.org/318405@main
   - https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2customschemeregistration
   - https://alastair.is/getting-wkwebview-to-treat-a-wkurlschemehandler-as-secure/
-- FYLO:
+- BYCKR:
   - `docs/releases/artifact-matrix.md`
   - `src/browser/fylo-single-file-worker.mjs`, `vdbx-client.mjs`
   - commits `e4a6aba`, `87abb10`, `266b3ed`, `5c64027`
@@ -1261,7 +1261,7 @@ Read from source, not run:
 - whether `turso_core` links and runs on `wasm32-unknown-unknown`: CI only
   type-checks it, and `parking_lot`, uuid `now_v7` and the aegis prebuilt
   libraries are open
-- the size of a FYLO plus `turso_core` Wasm module
+- the size of a BYCKR plus `turso_core` Wasm module
 - that a second tab fails with Turso's Wasm package
 - that no public WKWebView API marks a custom scheme secure, and how the 7-day
   eviction applies to WKWebView apps
@@ -1271,7 +1271,7 @@ Read from source, not run:
 - whether the stock Turso engine fails closed on a directory
 - `RETURNING` on Turso virtual tables
 - rowid uniqueness of the creation segment
-- how FYLO errors appear in each SDK's error type
+- how BYCKR errors appear in each SDK's error type
 - pnpm, and Bun with registry dependencies, keeping the link
 - the Python `.pth` hook end to end
 - .NET `LoadExtension` end to end

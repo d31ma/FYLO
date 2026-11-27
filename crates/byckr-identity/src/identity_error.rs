@@ -10,7 +10,7 @@ pub enum IdentityError {
     InvalidIdentifier(String),
     /// The key reference names no key.
     NotFound(String),
-    /// A key is already stored there; FYLO never replaces a key.
+    /// A key is already stored there; BYCKR never replaces a key.
     AlreadyExists(String),
     /// A key file another user owns, or that other users can read or write.
     ExposedKeyFile(String),

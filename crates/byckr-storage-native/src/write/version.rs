@@ -1,4 +1,4 @@
-//! Content-addressed auto-commit writing for versioned FYLO roots.
+//! Content-addressed auto-commit writing for versioned BYCKR roots.
 //!
 //! This mirrors the JavaScript `VersionRepository.commitIfDirty` full-scan
 //! path: snapshot the working tree into blobs, build the four-level tree
@@ -259,7 +259,7 @@ impl NativeWriteRoot {
         if reference.name != branch {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                "FYLO branch ref name does not match HEAD",
+                "BYCKR branch ref name does not match HEAD",
             ));
         }
         let entries = self.snapshot_working_tree(&repository, true)?;
@@ -369,7 +369,7 @@ impl NativeWriteRoot {
         if !fs::metadata(repository.join("HEAD")).is_ok_and(|metadata| metadata.is_file()) {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::NotFound,
-                "FYLO root has no version repository",
+                "BYCKR root has no version repository",
             ));
         }
         let (from_label, left) = self.resolve_tree(&repository, from)?;
@@ -1572,7 +1572,7 @@ fn safe_materialization_target(
     {
         return Err(NativeStorageError::new(
             NativeStorageErrorCode::CorruptMetadata,
-            "corrupt FYLO materialization transaction target",
+            "corrupt BYCKR materialization transaction target",
         ));
     }
     Ok(relative)
@@ -1584,7 +1584,7 @@ fn validate_materialization_manifest(
     if manifest.version != 1 {
         return Err(NativeStorageError::new(
             NativeStorageErrorCode::CorruptMetadata,
-            "unsupported FYLO materialization transaction version",
+            "unsupported BYCKR materialization transaction version",
         ));
     }
     if manifest.target_root != "." {
@@ -1596,7 +1596,7 @@ fn validate_materialization_manifest(
         if !targets.insert(relative) {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                "duplicate FYLO materialization transaction target",
+                "duplicate BYCKR materialization transaction target",
             ));
         }
     }
@@ -1606,7 +1606,7 @@ fn validate_materialization_manifest(
         if reference.prior.name != reference.target.name {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                "FYLO materialization ref transition changes branch identity",
+                "BYCKR materialization ref transition changes branch identity",
             ));
         }
     }
@@ -2656,7 +2656,7 @@ fn read_head_branch(repository: &Path) -> Result<String, NativeStorageError> {
         .ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                "FYLO repository HEAD is corrupt",
+                "BYCKR repository HEAD is corrupt",
             )
         })?
         .to_owned();
@@ -2673,7 +2673,7 @@ pub(crate) fn iso8601_millis(milliseconds: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
-/// Howard Hinnant's `civil_from_days`, restricted to the post-epoch range FYLO
+/// Howard Hinnant's `civil_from_days`, restricted to the post-epoch range BYCKR
 /// timestamps occupy.
 fn civil_from_days(days: u64) -> (u64, u64, u64) {
     let shifted = days + 719_468;

@@ -647,7 +647,7 @@ fn require_byte_range_locks() {
         .expect("probe TMPDIR");
     assert!(
         filesystem.byte_range_locks_qualified(),
-        "this test needs byte-range locks, which FYLO does not trust on TMPDIR's {} filesystem; \
+        "this test needs byte-range locks, which BYCKR does not trust on TMPDIR's {} filesystem; \
          point TMPDIR at a directory on ext4, tmpfs, APFS or NTFS (CONTRIBUTING.md)",
         filesystem.name
     );

@@ -8,7 +8,7 @@ use crate::keychain_item::KeychainItem;
 /// Secure Enclave, which never leaves it. The enclave's token blob for the
 /// key is kept as a generic-password item in the keychain
 /// ([`KeychainItem`]), so the keychain's access list binds it to the
-/// application that created it, and `FYLO_KEYCHAIN` names a keychain file
+/// application that created it, and `YCKR_KEYCHAIN` names a keychain file
 /// as for `keychain:`. The blob is useless on any other Mac.
 pub(crate) struct EnclaveKeyStore {
     item: KeychainItem,

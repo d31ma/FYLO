@@ -3,7 +3,7 @@
 pub enum OptOutSource {
     /// `--allow-system-disk` on the command line.
     Flag,
-    /// `FYLO_ALLOW_SYSTEM_DISK=1` (or `true`) in the environment.
+    /// `YCKR_ALLOW_SYSTEM_DISK=1` (or `true`) in the environment.
     Environment,
     /// `fylo.allowSystemDisk: true` in `application.json`.
     Config,
@@ -15,7 +15,7 @@ impl OptOutSource {
     pub const fn describe(self) -> &'static str {
         match self {
             Self::Flag => "--allow-system-disk",
-            Self::Environment => "FYLO_ALLOW_SYSTEM_DISK=1",
+            Self::Environment => "YCKR_ALLOW_SYSTEM_DISK=1",
             Self::Config => "fylo.allowSystemDisk",
         }
     }

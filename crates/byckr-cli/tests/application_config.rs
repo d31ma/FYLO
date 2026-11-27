@@ -44,9 +44,9 @@ impl Fixture {
         Command::new(Self::BINARY)
             .current_dir(&self.0)
             .args(arguments)
-            .env("FYLO_ROOT", self.0.join(Fixture::IGNORED_ROOT))
-            .env("FYLO_SHARD_WIDTH", "invalid")
-            .env("FYLO_CONFIG_TEST_SECRET", Fixture::INJECTED_SECRET)
+            .env("YCKR_ROOT", self.0.join(Fixture::IGNORED_ROOT))
+            .env("YCKR_SHARD_WIDTH", "invalid")
+            .env("YCKR_CONFIG_TEST_SECRET", Fixture::INJECTED_SECRET)
             .output()
             .unwrap()
     }
@@ -167,11 +167,11 @@ fn secret_references_are_explicit_fail_closed_and_do_not_leak() {
     let fixture = Fixture::new();
     fixture.write(
         Fixture::APPLICATION_FILE,
-        r#"{"fylo":{"root":"${FYLO_CONFIG_TEST_SECRET}"}}"#,
+        r#"{"fylo":{"root":"${YCKR_CONFIG_TEST_SECRET}"}}"#,
     );
     fixture.write(
         Fixture::SECRETS_FILE,
-        "FYLO_CONFIG_TEST_SECRET=file-secret\nFYLO_ROOT=not-settings\n",
+        "YCKR_CONFIG_TEST_SECRET=file-secret\nYCKR_ROOT=not-settings\n",
     );
     assert!(
         fixture
@@ -187,7 +187,7 @@ fn secret_references_are_explicit_fail_closed_and_do_not_leak() {
     assert!(!fixture.0.join(Fixture::FILE_SECRET).exists());
     fixture.write(
         Fixture::APPLICATION_FILE,
-        r#"{"fylo":{"root":"${FYLO_MISSING_CONFIG_TEST_SECRET}"}}"#,
+        r#"{"fylo":{"root":"${YCKR_MISSING_CONFIG_TEST_SECRET}"}}"#,
     );
     let output = fixture.run(&[
         Fixture::EXECUTE,
@@ -203,11 +203,11 @@ fn adjacent_dotenv_is_not_a_global_environment_loader() {
     let fixture = Fixture::new();
     fixture.write(
         Fixture::APPLICATION_FILE,
-        r#"{"fylo":{"root":"${FYLO_CONFIG_FILE_ONLY}"}}"#,
+        r#"{"fylo":{"root":"${YCKR_CONFIG_FILE_ONLY}"}}"#,
     );
     fixture.write(
         Fixture::SECRETS_FILE,
-        "# secret reference\nexport FYLO_CONFIG_FILE_ONLY='from-file'\nFYLO_SHARD_WIDTH=invalid\n",
+        "# secret reference\nexport YCKR_CONFIG_FILE_ONLY='from-file'\nYCKR_SHARD_WIDTH=invalid\n",
     );
     assert!(
         fixture

@@ -1,6 +1,6 @@
-# Contributing to FYLO
+# Contributing to BYCKR
 
-FYLO stores user data directly on disk. Correctness, compatibility,
+BYCKR stores user data directly on disk. Correctness, compatibility,
 recoverability, and bounded resource use take priority over feature volume.
 
 ## Prerequisites
@@ -74,7 +74,7 @@ report so anyone can rerun the same gates. The script's tests are
 
 ### Development builds of `develop`
 
-Products that use FYLO (TACHYON, Mesail) test against `develop` before a
+Products that use BYCKR (TACHYON, Mesail) test against `develop` before a
 release. `scripts/ci/publish-dev-build.mjs` builds the `fylo` executable for
 one `develop` commit on the maintainers' build Mac and publishes it:
 
@@ -82,12 +82,12 @@ one `develop` commit on the maintainers' build Mac and publishes it:
 bun scripts/ci/publish-dev-build.mjs <develop commit> --gate-log <file> [--contains <commit>]...
 ```
 
-Name the log of the FYLO gates that passed for the commit with `--gate-log`,
+Name the log of the BYCKR gates that passed for the commit with `--gate-log`,
 or pass `--ungated` to publish a commit whose gates have not run; exactly one
 is required. `--contains` records an earlier commit whose changes the build
 includes (it must be an ancestor of the commit).
 
-It writes one folder per commit, under `$FYLO_DEV_BUILDS_ROOT` (default
+It writes one folder per commit, under `$YCKR_DEV_BUILDS_ROOT` (default
 `~/Developer/AnvilTargets/fylo-builds`):
 
 ```text
@@ -120,20 +120,20 @@ It writes one folder per commit, under `$FYLO_DEV_BUILDS_ROOT` (default
   time (`.publish.lock` in the builds root).
 - The builds root is refused on the production volumes HAVEN and ATLAS.
 
-Logs go to `$LOG_ROOT/FYLO/publish-<time>-<short sha>/`. The script's tests are
+Logs go to `$LOG_ROOT/BYCKR/publish-<time>-<short sha>/`. The script's tests are
 `bun test tests/interop/publish-dev-build.test.js`.
 
 ### The system-disk opt-out in a checkout
 
-FYLO refuses a root on the system disk
+BYCKR refuses a root on the system disk
 ([ADR 0032](docs/adr/0032-primary-root-on-a-data-disk.md)), and the tests open
 their roots in the temp folder, on the system disk. So the repository turns
-the opt-out (`FYLO_ALLOW_SYSTEM_DISK=1`) on for its own commands:
+the opt-out (`YCKR_ALLOW_SYSTEM_DISK=1`) on for its own commands:
 `.cargo/config.toml` for every cargo command, `bunfig.toml` (through
 `tests/setup/allow-system-disk.js`) for every bun command,
 `playwright.config.mjs` for the browser tests, and the GitHub workflows for
 CI. This includes `cargo run` of the `fylo` server in a checkout, which then
-prints `FYLO warning: system-disk check disabled by FYLO_ALLOW_SYSTEM_DISK=1`
+prints `BYCKR warning: system-disk check disabled by YCKR_ALLOW_SYSTEM_DISK=1`
 on stderr. Run a real server from a built release binary, not from
 `cargo run` in a checkout. Tests of the rule itself start `fylo` with the
 variable removed (`crates/fylo-cli/tests/system_disk.rs`). In Bun, a value the
@@ -147,7 +147,7 @@ their dedicated qualification profiles.
 
 ### Test roots on the macOS test image
 
-On the maintainers' Mac, tests open their roots in FYLO's macOS test image,
+On the maintainers' Mac, tests open their roots in BYCKR's macOS test image,
 not on the system disk ([ADR 0033](docs/adr/0033-primary-layout-on-a-data-drive.md)
 section 12). Run a test command through the image helper, inside a
 `mac-heavy` or jobq job:
@@ -159,15 +159,15 @@ scripts/ci/test-image.sh run --owner <name> -- cargo nextest run --workspace --a
 - `run` attaches the image when it is not attached
   (`/Volumes/HANGAR/fylo-test/fylo-macos-test.sparsebundle`, at
   `~/Developer/FyloTestImage`; it is made once, 8 GiB maximum). It gives the
-  command its own folder `<mount>/roots/<owner>-<pid>` as `FYLO_TEST_ROOT`
+  command its own folder `<mount>/roots/<owner>-<pid>` as `YCKR_TEST_ROOT`
   and removes the folder when the command ends.
 - Rust tests take their folder from `fylo_test_support::TestFolder::path()`,
   bun tests from `testFolder()` in `tests/helpers/root.js`. Without
-  `FYLO_TEST_ROOT` (GitHub CI, the VMs, a laptop) both use the OS temp
+  `YCKR_TEST_ROOT` (GitHub CI, the VMs, a laptop) both use the OS temp
   folder. `TMPDIR` never changes. Files that are not roots, such as the
   container lease markers and the temp tier, stay in the OS temp folder.
 - There is no fallback. When the image cannot be used, the helper prints
-  `FYLO test image not attached: <reason>` and exits 1.
+  `BYCKR test image not attached: <reason>` and exits 1.
 - `scripts/ci/test-image.sh status` shows the image; `detach` works only when
   no job and no process uses it; `compact` (only on a detached image) gives
   freed space back to the HANGAR SSD.
@@ -176,10 +176,10 @@ scripts/ci/test-image.sh run --owner <name> -- cargo nextest run --workspace --a
 
 The tests keep their databases, and the lease's host markers, under the
 temporary directory (`TMPDIR`). The lease and recovery tests need byte-range
-locks there, which FYLO trusts only on the filesystems listed in
+locks there, which BYCKR trusts only on the filesystems listed in
 [the lock qualification](docs/operations/vdbx-byte-range-lock-qualification.md)
 (ext4, tmpfs, APFS and NTFS). A container's `/tmp` is usually overlayfs, where
-FYLO falls back to lease files, so those tests stop with "this test needs
+BYCKR falls back to lease files, so those tests stop with "this test needs
 byte-range locks". Point `TMPDIR` at a volume instead (a named Docker volume is
 usually ext4 on a Linux engine), and turn core dumps off, because the crash tests abort
 child processes on purpose and each abort would otherwise leave a `core` file
@@ -194,7 +194,7 @@ In a shell already inside the container, `ulimit -c 0` and
 
 ### Test disks
 
-FYLO's tests open their roots under `FYLO_TEST_ROOT` when it is set
+BYCKR's tests open their roots under `YCKR_TEST_ROOT` when it is set
 ([ADR 0033](docs/adr/0033-primary-layout-on-a-data-drive.md) section 12): a
 job folder on a test disk that is not the boot disk, so the drive rule is
 tested for real. Each system has its own disk, and a disk image is never
@@ -202,7 +202,7 @@ attached to two systems at once. Every script below makes the job folder
 `<disk>/roots/<owner>-<host>-<pid>`, checks it with a write probe and 1 GiB of
 free space, removes job folders older than 24 hours whose process is gone,
 and removes its own job folder on every exit path. When the disk cannot be
-used it stops with `FYLO test disk not ready: <reason>` and never falls back
+used it stops with `BYCKR test disk not ready: <reason>` and never falls back
 to another folder.
 
 | Where | Test disk | Script |
@@ -247,6 +247,6 @@ roots stay uncommitted. Retain qualifying evidence in CI/release artifacts.
 
 ## Licensing
 
-FYLO is MIT licensed. Unless stated otherwise, intentional contributions are
+BYCKR is MIT licensed. Unless stated otherwise, intentional contributions are
 submitted under the same license. The project does not currently require a
 separate CLA.

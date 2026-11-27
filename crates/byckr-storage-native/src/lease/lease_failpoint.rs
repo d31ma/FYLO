@@ -1,5 +1,5 @@
 /// Crash points of the lease protocol for the two-process crash matrix
-/// (`tests/lease_two_process.rs`): when `FYLO_RUST_FAILPOINT` names one of
+/// (`tests/lease_two_process.rs`): when `YCKR_RUST_FAILPOINT` names one of
 /// them, the process aborts there, as a power cut would stop it.
 ///
 /// They are kept apart from the write failpoints (`crate::FAILPOINTS`),
@@ -7,7 +7,7 @@
 pub(super) struct LeaseFailpoint;
 
 impl LeaseFailpoint {
-    const VARIABLE: &str = "FYLO_RUST_FAILPOINT";
+    const VARIABLE: &str = "YCKR_RUST_FAILPOINT";
     const NAMES: [&str; 3] = [
         "lease-after-claim",
         "lease-after-record",

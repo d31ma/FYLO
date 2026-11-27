@@ -346,7 +346,7 @@ mod macos {
             Command::new(BINARY)
                 .arg("identity")
                 .args(arguments)
-                .env("FYLO_KEYCHAIN", &self.path)
+                .env("YCKR_KEYCHAIN", &self.path)
                 .output()
                 .unwrap()
         }

@@ -2,7 +2,7 @@ use zeroize::Zeroizing;
 
 use crate::identity_error::IdentityError;
 
-/// The Android Keystore as FYLO's Android library offers it (ADR 0026,
+/// The Android Keystore as BYCKR's Android library offers it (ADR 0026,
 /// section 8). Its API is Java only, so the library installs this with
 /// [`crate::AndroidKeystoreHost::install`] and answers through JNI.
 ///

@@ -2,11 +2,11 @@
 
 - Status: **Accepted**
 - Date: **2026-07-26**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 
 ## Context
 
-FYLO already has released:
+BYCKR already has released:
 
 - persistent document, raw-file, metadata, index, transaction, encryption,
   versioning, and backup behavior;

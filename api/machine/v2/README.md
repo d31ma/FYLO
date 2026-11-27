@@ -1,7 +1,7 @@
-# FYLO Machine Protocol v2 (FROZEN)
+# BYCKR Machine Protocol v2 (FROZEN)
 
 **Frozen on 2026-11-21 by [ADR 0035](../../../docs/adr/0035-fylos-own-sdk-in-the-store-shape.md).
-Not built yet. It replaces [v1](../v1/README.md) in the next FYLO release:
+Not built yet. It replaces [v1](../v1/README.md) in the next BYCKR release:
 `fylo exec --loop` and `fylo exec --invocation` then speak v2 only.** TACHYON
 and Mesail code against this text. A change needs an amendment to ADR 0035 and
 a notice to their Build Coordinators.

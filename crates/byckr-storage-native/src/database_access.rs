@@ -1339,7 +1339,7 @@ impl DatabaseAccess {
                 "the database was created by {anchor}, not by the pinned trust anchor {pinned}"
             ))),
             AccessTrust::Unpinned => Err(DatabaseAccessError::Policy(format!(
-                "the database's trust anchor is {anchor}; pin it (--trust-anchor, fylo.trustAnchor or FYLO_TRUST_ANCHOR), or trust it on first use (--trust-on-first-use)"
+                "the database's trust anchor is {anchor}; pin it (--trust-anchor, fylo.trustAnchor or YCKR_TRUST_ANCHOR), or trust it on first use (--trust-on-first-use)"
             ))),
         }
     }

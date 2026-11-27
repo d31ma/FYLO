@@ -2,7 +2,7 @@
 
 ## Scope and decision
 
-This is a benchmark-first experiment, not a new FYLO storage format or a shipped
+This is a benchmark-first experiment, not a new BYCKR storage format or a shipped
 search API. The implementation and raw measurements live in the ignored
 `benchmarks/tin-poc/` directory, consistent with the repository's benchmark policy.
 No production engine, client, website, dependency manifest, or release workflow is
@@ -13,7 +13,7 @@ The motivation is PlanetScale's [TIN introduction](https://planetscale.com/blog/
 and [search-engine internals](https://planetscale.com/blog/anatomy-of-a-postgres-search-engine).
 We borrow the ideas of reusable index views, candidate selection, and inverted
 term postings, not PostgreSQL's physical tuple identifiers or TIN's performance
-claims. FYLO documents remain authoritative JSON and identifiers remain independent
+claims. BYCKR documents remain authoritative JSON and identifiers remain independent
 of physical disk positions. No service, S3 primary, or PostgreSQL dependency is added.
 
 ## Acceptance criteria
@@ -23,7 +23,7 @@ of physical disk positions. No service, S3 primary, or PostgreSQL dependency is 
 - Reject writing generations, generation changes during reads, corrupt refreshed
   snapshots, and corrupt generation state. Never reuse another collection's view.
 - Candidate planning must not omit matching documents. Verify every candidate with
-  FYLO's production `StructuredQuery::matches` predicate and compare with a full scan.
+  BYCKR's production `StructuredQuery::matches` predicate and compare with a full scan.
 - Account for missing string expansions, coercion, OR branches, and unsupported
   conjuncts. Preparation and warm query costs must be reported separately.
 - Compare BM25 ranked identifiers and scores with a simple scan implementation,
@@ -136,7 +136,7 @@ loading reads filesystem data. OS caches are not purged.
 
 Measured 2026-09-26 UTC on Apple M4, 16 GiB RAM, macOS 26.6.2, Rust 1.97.1,
 release `opt-level = 3`. These are single-host warm component measurements, not
-end-to-end FYLO latency, statistically independent trials, or PlanetScale-scale
+end-to-end BYCKR latency, statistically independent trials, or PlanetScale-scale
 evidence. Other desktop activity was not controlled.
 
 The 10,000-document run used 30 timed samples per operation. All times below are

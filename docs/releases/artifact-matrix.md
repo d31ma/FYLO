@@ -1,6 +1,6 @@
 # Artifact Matrix
 
-FYLO ships one engine as three artifacts. They share the source, the on-disk
+BYCKR ships one engine as three artifacts. They share the source, the on-disk
 format, and the NDJSON machine protocol; they differ only where a platform
 cannot supply something.
 
@@ -23,7 +23,7 @@ difference outside the declared list below.
 Phones cannot start a process, so ADR 0026 adds a fourth way to ship the
 native engine: `crates/fylo-ffi`, a C ABI over the `fylo` crate (`fylo.h`),
 built with the `mobile` profile (`panic = "unwind"`, so a C entry returns
-`FYLO_PANIC` instead of aborting the app).
+`YCKR_PANIC` instead of aborting the app).
 
 | | Android | iOS |
 | --- | --- | --- |
@@ -36,7 +36,7 @@ The release job pins the NDK, platform, build tools, JDK and Gradle;
 `sdkmanager` installs the current `emulator` and `platform-tools`, which it
 cannot pin.
 
-The iOS tests run only in the release job. The Mac that builds FYLO boots no
+The iOS tests run only in the release job. The Mac that builds BYCKR boots no
 iOS simulator (2026-11-12: a new device's first boot started about 270
 processes and overloaded it), so a failure that shows only on iOS appears
 first when a release pull request runs. The iOS run leaves out the tests that
@@ -60,7 +60,7 @@ inside a dedicated Worker.
 
 ## Where a record's attributes live
 
-FYLO hangs a record's logical `key`, checksum stamp, access descriptor, and
+BYCKR hangs a record's logical `key`, checksum stamp, access descriptor, and
 developer metadata off the file itself. Only unix has somewhere to put them.
 
 | Target | Location |
@@ -186,7 +186,7 @@ once its lease runs out (6 seconds).
 | Inode identity check on open | yes | **no** | **no** | Catches a symlink or rename swapped in between the path check and the read. WASI scopes the guest to preopened directories it cannot escape; a browser host has no inodes. |
 | Directory `fsync` | yes | best effort | best effort | Tolerated when the platform reports `Unsupported`. The preceding rename is still atomic. |
 | Process identity in lock records | real pid | `0` | `0` | No pids on WebAssembly. `lock_owner_alive` already treats an unverifiable owner as stale. |
-| Environment configuration | `FYLO_*` variables | `FYLO_*` variables, if the runtime passes them | **none** | A browser has no environment. Every knob is also a `RootConfig` value, and `serve_configured` takes it directly. |
+| Environment configuration | `YCKR_*` variables | `YCKR_*` variables, if the runtime passes them | **none** | A browser has no environment. Every knob is also a `RootConfig` value, and `serve_configured` takes it directly. |
 
 A supervisor should read these from the handshake rather than from this table:
 `exclusiveRoot`, `machineAccess`, `documentBuckets.putInputs`, and

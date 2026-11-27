@@ -1,6 +1,6 @@
 # CI qualification
 
-FYLO's main CI borrows TACHYON's qualification structure but keeps FYLO's
+BYCKR's main CI borrows TACHYON's qualification structure but keeps BYCKR's
 product-specific boundaries. The workflow is both event-driven and reusable
 through `workflow_call`, cancels superseded runs, pins every external action to
 a commit, and builds from the repository's exact Bun and Rust versions.

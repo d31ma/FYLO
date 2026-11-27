@@ -12,10 +12,10 @@ use crate::{
     FilesystemInfo, NativeRoot, NativeStorageErrorCode,
 };
 
-const ROLE: &str = "FYLO_VDBX_CHILD_ROLE";
-const ROOT: &str = "FYLO_VDBX_CHILD_ROOT";
-const COLLECTION: &str = "FYLO_VDBX_CHILD_COLLECTION";
-const EXPECT: &str = "FYLO_VDBX_CHILD_EXPECT";
+const ROLE: &str = "YCKR_VDBX_CHILD_ROLE";
+const ROOT: &str = "YCKR_VDBX_CHILD_ROOT";
+const COLLECTION: &str = "YCKR_VDBX_CHILD_COLLECTION";
+const EXPECT: &str = "YCKR_VDBX_CHILD_EXPECT";
 const CHILD_TEST: &str = "segments::container_medium::tests::processes::a_child_process";
 const WAIT: Duration = Duration::from_mins(1);
 

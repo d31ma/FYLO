@@ -15,7 +15,7 @@ impl RecordAddress {
     ///
     /// # Errors
     ///
-    /// Returns `EINVALIDDOCID` when `id` is not a FYLO record id (a TTID).
+    /// Returns `EINVALIDDOCID` when `id` is not a BYCKR record id (a TTID).
     pub fn new(
         namespace: NamespaceName,
         collection: CollectionName,

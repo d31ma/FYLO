@@ -1,9 +1,9 @@
-//! `android-keystore:` keys (ADR 0026, section 8): FYLO's [`AndroidKeystore`]
+//! `android-keystore:` keys (ADR 0026, section 8): BYCKR's [`AndroidKeystore`]
 //! answered by the Kotlin object `io.github.d31ma.fylo.FyloKeystore`, whose
 //! Keystore API is Java only.
 //!
 //! `FyloNative.install()` saves the Java VM and a global reference to the
-//! class, because a thread FYLO attaches later cannot find app classes by
+//! class, because a thread BYCKR attaches later cannot find app classes by
 //! name. Every call passes byte arrays and gets one back: a kind byte, then
 //! the payload (or a UTF-8 message for a refusal).
 

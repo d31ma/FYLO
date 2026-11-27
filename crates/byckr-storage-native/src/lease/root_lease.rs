@@ -71,8 +71,8 @@ impl RootLease {
     }
 
     /// Acquire a root owner with an explicit heartbeat and takeover time
-    /// instead of `FYLO_LEASE_HEARTBEAT_SECONDS` and
-    /// `FYLO_LEASE_TAKEOVER_SECONDS` (ADR 0033 section 4).
+    /// instead of `YCKR_LEASE_HEARTBEAT_SECONDS` and
+    /// `YCKR_LEASE_TAKEOVER_SECONDS` (ADR 0033 section 4).
     ///
     /// # Errors
     /// As [`RootLease::acquire_with_profile`]; a takeover from an owner that

@@ -4,7 +4,7 @@
   qualified for deployment: ADR 0011's "No deployment is authorized" still
   holds for this mode.
 - Date: **2026-11-12**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Extends: ADR 0011 (the `InvocationRuntime` it defines is now reachable
   from the `fylo` binary) and amends its teardown order (logs are
   checkpointed before the lease is released).

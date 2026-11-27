@@ -1,13 +1,13 @@
 # Windows storage release gate
 
-FYLO treats native Windows storage validation as a release requirement. The `windows-storage`
+BYCKR treats native Windows storage validation as a release requirement. The `windows-storage`
 job in both CI and Release runs on GitHub-hosted x64 Windows Server 2022 and Windows Server 2025
 runners. Both matrix entries must pass before a release can publish artifacts.
 
 The gate uses the Bun version in `.bun-version` and fails immediately unless Bun reports
 `win32/x64`. The Windows vendor installer downloads a fixed TACHYON asset and verifies it
-against a SHA-256 digest anchored in the FYLO repository before execution. TTID and CHEX are
-built into FYLO, so nothing is downloaded for them. It never
+against a SHA-256 digest anchored in the BYCKR repository before execution. TTID and CHEX are
+built into BYCKR, so nothing is downloaded for them. It never
 executes a remote installer or trusts a checksum fetched beside the binary. The gate verifies:
 
 - process-owned file-lock exclusion, crash release, and abandoned-lock reclamation;
@@ -24,7 +24,7 @@ both native Windows matrix entries succeed. The Release workflow gives the execu
 packages that artifact without rebuilding it on Linux. Windows Server 2025 independently builds
 and tests the same source and final executable path as an additional compatibility gate.
 
-The production contract covered by this gate is local x64 Windows on NTFS. FYLO uses a
+The production contract covered by this gate is local x64 Windows on NTFS. BYCKR uses a
 kernel-owned `LockFileEx` claim so process termination releases stale takeover ownership, then
 performs recovery through pinned directory handles and rejects junction/reparse-point traversal
 before rooted rename or deletion. POSIX UID/GID ownership enforcement remains a POSIX-only

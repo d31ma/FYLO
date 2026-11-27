@@ -91,7 +91,7 @@ impl LeaseTarget {
         canonical.parent().ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::UnsafePath,
-                "FYLO root has no parent directory",
+                "BYCKR root has no parent directory",
             )
         })
     }

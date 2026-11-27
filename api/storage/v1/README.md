@@ -1,6 +1,6 @@
-# FYLO Storage Contract v1
+# BYCKR Storage Contract v1
 
-FYLO v1 stores one compact JSON object per document. The local filesystem is
+BYCKR v1 stores one compact JSON object per document. The local filesystem is
 authoritative; indexes, caches, and query snapshots are derived.
 
 Canonical identifiers:
@@ -54,7 +54,7 @@ does not by itself change these formats.
 
 Native remains the default. `efs-sidecar-v1` is an explicit, unqualified source
 candidate, selected through additive profiled constructors or the CLI flag.
-Metadata representation is separate from FYLO's planned provider-independent
+Metadata representation is separate from BYCKR's planned provider-independent
 invocation lifetime, retry and concurrency contracts; it does not by itself
 make a backend serverless-safe.
 It never infers a backend from an xattr error. The

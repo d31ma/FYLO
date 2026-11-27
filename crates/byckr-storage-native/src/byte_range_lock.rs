@@ -38,7 +38,7 @@
 //! writer that puts documents one after another took its collection's
 //! writer byte back a few microseconds after letting it go, and a waiting
 //! writer polling every millisecond met its busy timeout (`EBUSY`) on a
-//! loaded machine. A process that never takes turns, such as an older FYLO,
+//! loaded machine. A process that never takes turns, such as an older BYCKR,
 //! can still pass a waiter but never breaks the locks, and a filesystem
 //! that refuses a turn byte leaves the wait as it was without turns.
 

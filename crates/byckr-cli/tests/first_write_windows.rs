@@ -31,7 +31,7 @@ impl LoopProcess {
         let mut child = Command::new(Self::BINARY)
             .args(["exec", "--loop", "--root"])
             .arg(&root)
-            .env("FYLO_ALLOW_SYSTEM_DISK", "1")
+            .env("YCKR_ALLOW_SYSTEM_DISK", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

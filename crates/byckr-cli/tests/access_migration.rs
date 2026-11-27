@@ -31,8 +31,8 @@ impl Fixture {
         Command::new(BINARY)
             .current_dir(&self.0)
             .args(arguments)
-            .env_remove("FYLO_IDENTITY")
-            .env_remove("FYLO_TRUST_ANCHOR")
+            .env_remove("YCKR_IDENTITY")
+            .env_remove("YCKR_TRUST_ANCHOR")
             .envs(environment.iter().copied())
             .output()
             .unwrap()
@@ -43,12 +43,12 @@ impl Fixture {
     fn run_keyed(&self, secret: &str, arguments: &[&str]) -> Output {
         fs::write(
             self.0.join("keyed.json"),
-            r#"{"fylo":{"encryption":{"key":"${FYLO_CLI_TEST_DATABASE_KEY}","file":true}}}"#,
+            r#"{"fylo":{"encryption":{"key":"${YCKR_CLI_TEST_DATABASE_KEY}","file":true}}}"#,
         )
         .unwrap();
         let mut all = arguments.to_vec();
         all.extend(["--config", "keyed.json"]);
-        self.run_with(&all, &[("FYLO_CLI_TEST_DATABASE_KEY", secret)])
+        self.run_with(&all, &[("YCKR_CLI_TEST_DATABASE_KEY", secret)])
     }
 
     /// A directory root `root` with the collection `users` and the
@@ -589,8 +589,8 @@ fn a_pack_protect_stopped_after_staging_leaves_the_source_whole() {
             "file:admin.pem",
             "--drop-record-access",
         ])
-        .env("FYLO_RUST_FAILPOINT", "after-pack-staging")
-        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .env("YCKR_RUST_FAILPOINT", "after-pack-staging")
+        .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
         .output()
         .unwrap();
     assert!(!stopped.status.success(), "{stopped:?}");

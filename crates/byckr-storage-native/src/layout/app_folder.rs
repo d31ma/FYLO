@@ -6,29 +6,29 @@ use byckr_vfs as fs;
 use super::{FormatMarker, GuardFiles, ProbeRecord, RootLayout};
 use crate::{NativeStorageError, NativeStorageErrorCode};
 
-/// Makes a new app folder, or opens one FYLO made (ADR 0033 sections 1 and
-/// 5.4). FYLO never writes into a folder it did not make: a folder that is
-/// not empty and has no `.fylo/format.json` is refused with `ENOTFYLOROOT`.
+/// Makes a new app folder, or opens one BYCKR made (ADR 0033 sections 1 and
+/// 5.4). BYCKR never writes into a folder it did not make: a folder that is
+/// not empty and has no `.fylo/format.json` is refused with `ENOTBYCKRROOT`.
 ///
 /// The steps are safe to repeat after a crash: the folder, its `.fylo`
 /// folder, `format.json`, the guard files and `.fylo/trash`, in that order.
 pub struct AppFolder;
 
 impl AppFolder {
-    /// Make the app folder of `layout`, or open it when FYLO already made it.
+    /// Make the app folder of `layout`, or open it when BYCKR already made it.
     /// The drive (the app folder's parent) must exist.
     ///
     /// For a new folder, `probe` tests the file system in `<app>/.fylo` (slice
     /// L1-4) and its result is recorded in `format.json` with `created_by`,
-    /// the FYLO version. An existing folder keeps its recorded marker, and
+    /// the BYCKR version. An existing folder keeps its recorded marker, and
     /// `probe` is not called.
     ///
     /// Returns the marker the folder holds.
     ///
     /// # Errors
     ///
-    /// Returns `ENOTFYLOROOT` for a folder FYLO did not make,
-    /// `ENATIVE_WRONG_TYPE` when a path FYLO needs is not of the expected
+    /// Returns `ENOTBYCKRROOT` for a folder BYCKR did not make,
+    /// `ENATIVE_WRONG_TYPE` when a path BYCKR needs is not of the expected
     /// type, `ENATIVE_METADATA` for a damaged `format.json` or a bad
     /// `created_by`, the probe's error when it fails, and `ENATIVE_IO` when a
     /// file cannot be made.
@@ -74,8 +74,8 @@ impl AppFolder {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::NotFyloRoot,
                 format!(
-                    "{} is not a FYLO app folder: it is not empty and has no .fylo/format.json. \
-                     FYLO does not write into a folder it did not make; use a new or empty \
+                    "{} is not a BYCKR app folder: it is not empty and has no .fylo/format.json. \
+                     BYCKR does not write into a folder it did not make; use a new or empty \
                      folder. An old-layout root is copied with `fylo upgrade-root`.",
                     layout.app_folder().display()
                 ),

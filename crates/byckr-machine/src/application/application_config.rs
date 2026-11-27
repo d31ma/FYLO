@@ -28,11 +28,11 @@ pub struct ApplicationConfig {
     /// `fylo.tempCache`, or `--temp-cache`, `--temp-cache-bytes` and
     /// `--temp-cache-dir`: the temp-disk read tier (ADR 0030 section 7).
     pub temp_cache: TempCacheSettings,
-    /// `fylo.identity`, or `FYLO_IDENTITY`: the key reference of the
+    /// `fylo.identity`, or `YCKR_IDENTITY`: the key reference of the
     /// application identity a protected `.vdbx` database opens with
     /// (ADR 0021).
     pub identity_reference: Option<String>,
-    /// `fylo.trustAnchor`, or `FYLO_TRUST_ANCHOR`: the identifier of the
+    /// `fylo.trustAnchor`, or `YCKR_TRUST_ANCHOR`: the identifier of the
     /// admin a protected database must have been created by.
     pub trust_anchor: Option<String>,
     /// Trust a protected database's creator, whoever it is, instead of a
@@ -54,8 +54,8 @@ pub struct ApplicationConfig {
 impl ApplicationConfig {
     const DEFAULT_FILE: &'static str = "application.json";
 
-    const IDENTITY_VARIABLE: &'static str = "FYLO_IDENTITY";
-    const TRUST_ANCHOR_VARIABLE: &'static str = "FYLO_TRUST_ANCHOR";
+    const IDENTITY_VARIABLE: &'static str = "YCKR_IDENTITY";
+    const TRUST_ANCHOR_VARIABLE: &'static str = "YCKR_TRUST_ANCHOR";
 
     /// `options` with this configuration's database key and identity, so
     /// an encrypted `.vdbx` root opens unlocked and a protected one opens
@@ -82,7 +82,7 @@ impl ApplicationConfig {
         Ok(())
     }
 
-    /// Take `FYLO_IDENTITY` and `FYLO_TRUST_ANCHOR` from the environment
+    /// Take `YCKR_IDENTITY` and `YCKR_TRUST_ANCHOR` from the environment
     /// over the configuration file's settings.
     pub fn apply_identity_environment(&mut self) {
         if let Ok(reference) = std::env::var(Self::IDENTITY_VARIABLE) {

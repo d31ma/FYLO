@@ -40,7 +40,7 @@ impl NameSubject {
 
     fn error(&self, name: &str, problem: NameProblem) -> NativeStorageError {
         let message = format!(
-            "the {} `{}` is not a valid FYLO {} name: {}. {}",
+            "the {} `{}` is not a valid BYCKR {} name: {}. {}",
             self.label,
             Self::shown(name),
             self.noun,
@@ -75,7 +75,7 @@ mod tests {
         assert_eq!(error.code().as_str(), "EAPPNAME");
         assert_eq!(
             error.message(),
-            "the root's folder name `Mail` is not a valid FYLO app name: character 'M' not \
+            "the root's folder name `Mail` is not a valid BYCKR app name: character 'M' not \
              allowed. Use 2-64 lowercase letters, digits or '-', starting and ending with a \
              letter or digit."
         );
@@ -88,7 +88,7 @@ mod tests {
         assert_eq!(error.code().as_str(), "ENAMESPACE");
         assert!(
             error.message().starts_with(
-                "the namespace name `con` is not a valid FYLO namespace name: reserved name."
+                "the namespace name `con` is not a valid BYCKR namespace name: reserved name."
             ),
             "{}",
             error.message()

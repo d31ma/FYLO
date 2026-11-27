@@ -732,8 +732,8 @@ fn records_before_a_bad_signature_read_and_writes_past_it_are_refused() {
 /// Per-commit and open costs of a protected database against a plain and a
 /// key-encrypted one (ADR 0021, phase 4), and with session keys (phase 8):
 /// a software identity's, and a hardware identity's when
-/// `FYLO_MEASURE_IDENTITY` names a new one for it to create (for example an
-/// `enclave:` reference, with `FYLO_KEYCHAIN` naming a throwaway keychain:
+/// `YCKR_MEASURE_IDENTITY` names a new one for it to create (for example an
+/// `enclave:` reference, with `YCKR_KEYCHAIN` naming a throwaway keychain:
 /// the keychain lets only the binary that made an item read it without
 /// asking). Run in release with `--run-ignored only --no-capture`; it
 /// prints, it asserts nothing about speed.
@@ -752,7 +752,7 @@ fn measure_protected_costs() {
     let verified = time_each(1000, || public.verify(&message, &signature).unwrap());
     println!("ecdsa p256 sign: {}", summary(&signed));
     println!("ecdsa p256 verify: {}", summary(&verified));
-    let hardware = std::env::var("FYLO_MEASURE_IDENTITY").ok();
+    let hardware = std::env::var("YCKR_MEASURE_IDENTITY").ok();
     let mut modes = vec!["plain", "encrypted", "protected", "protected-session"];
     modes.extend(hardware.as_ref().map(|_| "protected-hardware"));
     if let Some(reference) = &hardware {
@@ -810,7 +810,7 @@ fn cost_options(database: &Protected, mode: &str) -> RootOpenOptions {
 fn cost_admin(database: &Protected, mode: &str) -> Identity {
     match mode {
         "protected-hardware" => {
-            Identity::from_reference(&std::env::var("FYLO_MEASURE_IDENTITY").unwrap()).unwrap()
+            Identity::from_reference(&std::env::var("YCKR_MEASURE_IDENTITY").unwrap()).unwrap()
         }
         _ => Identity::open(database.admin.reference()).unwrap(),
     }

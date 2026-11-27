@@ -6,7 +6,7 @@ pub enum FyloStatus {
     Ok = 0,
     /// `byckr_get` found no such document; the output is empty.
     NotFound = 1,
-    /// FYLO refused or failed the call; the output holds `{"code", "message"}`.
+    /// BYCKR refused or failed the call; the output holds `{"code", "message"}`.
     Error = 2,
     /// A null pointer, text that is not UTF-8, or JSON of the wrong shape.
     InvalidArgument = 3,

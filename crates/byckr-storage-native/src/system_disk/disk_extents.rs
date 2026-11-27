@@ -4,8 +4,8 @@
 ///
 /// A complete list names the physical disks under the volume. A volume
 /// with more extents than the buffer holds (a spanned or striped dynamic
-/// volume) answers `ERROR_MORE_DATA` with a partial list: FYLO never
-/// compares a partial list, so FYLO cannot tell. Any other failure (a
+/// volume) answers `ERROR_MORE_DATA` with a partial list: BYCKR never
+/// compares a partial list, so BYCKR cannot tell. Any other failure (a
 /// volume with no disk extents) leaves the volume alone to decide.
 pub(crate) struct DiskExtents;
 
@@ -43,7 +43,7 @@ impl DiskExtents {
     }
 
     fn partial(room: usize) -> String {
-        format!("the volume spans more than the {room} disk extents FYLO reads")
+        format!("the volume spans more than the {room} disk extents BYCKR reads")
     }
 }
 

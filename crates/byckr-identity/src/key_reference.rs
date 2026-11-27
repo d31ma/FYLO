@@ -70,7 +70,7 @@ impl KeyReference {
             Self::Tpm(name) => Self::hardware_only(&format!("tpm:{name}")),
             Self::Creds(name) => Self::credential_store(name),
             Self::WebCrypto(name) => Box::new(UnsupportedKeyStore::new(format!(
-                "webcrypto:{name} keys live in a browser origin's IndexedDB; only FYLO's browser runtime opens them"
+                "webcrypto:{name} keys live in a browser origin's IndexedDB; only BYCKR's browser runtime opens them"
             ))),
             Self::AndroidKeystore(alias) => {
                 Self::hardware_only(&format!("android-keystore:{alias}"))

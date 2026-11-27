@@ -1,6 +1,6 @@
 //! `android-keystore:` against a software stand-in for the Keystore: the
 //! store makes and opens keys, and hands back what the Keystore signs and
-//! agrees in the forms FYLO uses (64-byte signatures, 32-byte secrets).
+//! agrees in the forms BYCKR uses (64-byte signatures, 32-byte secrets).
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;

@@ -21,9 +21,9 @@ use crate::{
     NativeWriteRoot, PutDocumentOptions,
 };
 
-const ROLE: &str = "FYLO_VDBX_STRANDED_CHILD_ROLE";
-const DATABASE: &str = "FYLO_VDBX_STRANDED_CHILD_DATABASE";
-const EXCLUSIVE: &str = "FYLO_VDBX_STRANDED_CHILD_EXCLUSIVE";
+const ROLE: &str = "YCKR_VDBX_STRANDED_CHILD_ROLE";
+const DATABASE: &str = "YCKR_VDBX_STRANDED_CHILD_DATABASE";
+const EXCLUSIVE: &str = "YCKR_VDBX_STRANDED_CHILD_EXCLUSIVE";
 const CHILD_TEST: &str =
     "segments::container_medium::tests::stranded_writes::a_stranded_write_child_process";
 const WAIT: Duration = Duration::from_mins(1);
@@ -117,8 +117,8 @@ fn passed(child: Child, role: &str) {
 /// stopped at the failpoint, leaving `items` published as `writing`.
 fn crash(database: &Database, exclusive: bool) {
     let mut environment = vec![
-        ("FYLO_RUST_FAILPOINT", "after-log-append"),
-        ("FYLO_RUST_FAILPOINT_ACTION", "abort"),
+        ("YCKR_RUST_FAILPOINT", "after-log-append"),
+        ("YCKR_RUST_FAILPOINT_ACTION", "abort"),
     ];
     if exclusive {
         environment.push((EXCLUSIVE, "1"));
@@ -345,8 +345,8 @@ fn a_checkpoint_that_fails_in_place_rolls_back_before_it_returns() {
             "compact",
             &database.path(),
             &[
-                ("FYLO_RUST_FAILPOINT", "after-checkpoint-flush"),
-                ("FYLO_RUST_FAILPOINT_ACTION", "enospc"),
+                ("YCKR_RUST_FAILPOINT", "after-checkpoint-flush"),
+                ("YCKR_RUST_FAILPOINT_ACTION", "enospc"),
             ],
         ),
         "compact",

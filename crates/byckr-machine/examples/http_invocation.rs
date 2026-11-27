@@ -4,9 +4,9 @@
 //! Qualification harness only, not a supported deployment, like
 //! `lambda_invocation`: it listens on `PORT` (Cloud Run) or
 //! `FUNCTIONS_CUSTOMHANDLER_PORT` (Azure Functions), runs each POST body as one
-//! FYLO core request against `FYLO_ROOT` with the `efs-sidecar-v1` profile, and
+//! BYCKR core request against `YCKR_ROOT` with the `efs-sidecar-v1` profile, and
 //! answers with the response and timing. Every request gets its own
-//! `FYLO_REQUEST_TIMEOUT_MS` budget and its own thread, since both platforms
+//! `YCKR_REQUEST_TIMEOUT_MS` budget and its own thread, since both platforms
 //! send concurrent requests to one instance.
 // ponytail: hand-rolled HTTP/1.1, one request per connection; use an HTTP
 // server crate if this ever becomes a supported adapter.
@@ -27,7 +27,7 @@ fn main() -> io::Result<()> {
         .or_else(|_| std::env::var("PORT"))
         .unwrap_or_else(|_| "8080".into());
     let timeout = Duration::from_millis(
-        std::env::var("FYLO_REQUEST_TIMEOUT_MS")
+        std::env::var("YCKR_REQUEST_TIMEOUT_MS")
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(30_000),
@@ -91,7 +91,7 @@ fn serve(stream: TcpStream, cold: Instant, timeout: Duration) -> io::Result<()> 
 }
 
 fn invoke(event: &[u8], deadline: Instant) -> io::Result<Value> {
-    let root = std::env::var("FYLO_ROOT").unwrap_or_else(|_| "/mnt/state/root".into());
+    let root = std::env::var("YCKR_ROOT").unwrap_or_else(|_| "/mnt/state/root".into());
     let options = InvocationOptions::new(
         RootOpenOptions::new(root).with_profile(FilesystemProfile::EfsSidecarV1),
         ApplicationConfig::default(),

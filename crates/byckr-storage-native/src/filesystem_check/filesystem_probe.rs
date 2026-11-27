@@ -9,7 +9,7 @@ use super::probe_files::ProbeFiles;
 use crate::layout::{MetadataStore, ProbeRecord};
 use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode};
 
-/// Tests what FYLO needs from the file system of an app folder (ADR 0033
+/// Tests what BYCKR needs from the file system of an app folder (ADR 0033
 /// section 6): exclusive create, rename over a file, extended attributes and
 /// hard links. [`Self::run`] runs once when the app folder is created, and
 /// its result is recorded in `format.json`. [`Self::verify`] runs at every
@@ -26,7 +26,7 @@ impl FilesystemProbe {
 
     /// Probe `directory` when its app folder is created, and choose where
     /// metadata lives: extended attributes when the file system keeps them
-    /// and holds FYLO's largest metadata value in one attribute, sidecar
+    /// and holds BYCKR's largest metadata value in one attribute, sidecar
     /// files otherwise (plain ext4 holds only about 4 KiB). `forced` is the `--filesystem-profile`
     /// override for tests: `efs-sidecar-v1` always chooses sidecar files, and
     /// `native` requires extended attributes with that room.
@@ -219,7 +219,7 @@ impl FilesystemProbe {
             (Err(error), _) => Err(error),
             (Ok(()), Some(bytes)) if bytes >= AttributeLimit::ROOM => Ok(()),
             (Ok(()), bytes) => Err(std::io::Error::other(format!(
-                "extended attributes hold only {} bytes in one value; FYLO needs {}",
+                "extended attributes hold only {} bytes in one value; BYCKR needs {}",
                 bytes.unwrap_or(0),
                 AttributeLimit::ROOM
             ))),
@@ -267,7 +267,7 @@ impl FilesystemProbe {
             return Ok(());
         }
         Err(std::io::Error::other(format!(
-            "extended attributes no longer hold FYLO's largest metadata value ({} bytes in one value)",
+            "extended attributes no longer hold BYCKR's largest metadata value ({} bytes in one value)",
             AttributeLimit::ROOM
         )))
     }

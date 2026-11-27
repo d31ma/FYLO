@@ -19,7 +19,7 @@ impl MachineIdentity {
     const HASH_PREFIX: &str = "fylo-machine-v1\n";
     const NAME_BYTES: usize = 16;
     #[cfg(feature = "test-support")]
-    const TEST_VARIABLE: &str = "FYLO_TEST_LEASE_MACHINE";
+    const TEST_VARIABLE: &str = "YCKR_TEST_LEASE_MACHINE";
 
     pub(super) fn current() -> Option<String> {
         static NAME: OnceLock<Option<String>> = OnceLock::new();

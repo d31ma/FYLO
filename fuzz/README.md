@@ -1,4 +1,4 @@
-# FYLO Rust Fuzzing
+# BYCKR Rust Fuzzing
 
 Install the pinned Rust nightly selected by release engineering and
 `cargo-fuzz`, then run:

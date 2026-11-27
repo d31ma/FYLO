@@ -22,8 +22,8 @@ use crate::{
 };
 
 const DICTIONARY: ContainerExtentKind = ContainerExtentKind::Dictionary;
-const ROLE: &str = "FYLO_VDBX_DICTIONARY_CHILD_ROLE";
-const ROOT: &str = "FYLO_VDBX_DICTIONARY_CHILD_ROOT";
+const ROLE: &str = "YCKR_VDBX_DICTIONARY_CHILD_ROLE";
+const ROOT: &str = "YCKR_VDBX_DICTIONARY_CHILD_ROOT";
 const CHILD_TEST: &str =
     "segments::container_medium::tests::dictionaries::a_dictionary_child_process";
 
@@ -543,8 +543,8 @@ fn stopped(role: &str, root: &Path, failpoint: &str) {
         .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
         .env(ROLE, role)
         .env(ROOT, root)
-        .env("FYLO_RUST_FAILPOINT", failpoint)
-        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .env("YCKR_RUST_FAILPOINT", failpoint)
+        .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

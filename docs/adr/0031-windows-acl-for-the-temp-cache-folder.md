@@ -3,7 +3,7 @@
 - Status: **Accepted** 2026-11-14: user approved option D ('yes, D'); hub
   review 2026-11-14 (atomic create with security attributes required)
 - Date: **2026-11-14**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Serves: ADR 0030 section 4.2 (the temp cache folder is private to the OS
   user). Adds one unsafe boundary under ADR 0004.
 
@@ -25,7 +25,7 @@ access entries). The standard library cannot read or set either. It has no
 API for an owner, a SID, an ACL or a security descriptor; `Permissions` on
 Windows is only the read-only attribute. A new folder inherits the DACL of
 its parent, and `%TEMP%`'s DACL grants SYSTEM and Administrators too. No
-crate already in FYLO's dependency graph offers a safe wrapper. A child
+crate already in BYCKR's dependency graph offers a safe wrapper. A child
 process (`icacls`, PowerShell `Get-Acl`) was rejected: slow (hundreds of
 milliseconds), dependent on external tools, and its text output is
 localized and fragile to parse.
@@ -67,8 +67,8 @@ operations, each through Win32 calls `windows-sys` declares:
    ADR 0030 sections 4.1 and 4.5. The standard library has no free-space
    API on any OS (Unix uses `rustix::fs::statvfs`, which is safe).
 
-FYLO never changes the owner or DACL of any folder: it sets a DACL only in
-the call that creates a folder. Folders and files FYLO creates below the
+BYCKR never changes the owner or DACL of any folder: it sets a DACL only in
+the call that creates a folder. Folders and files BYCKR creates below the
 cache folder (`PrivateFolder::create_folders` and `create_file`) get their
 protection only by inheritance from the protected cache folder; on Windows
 they are created with plain standard-library calls.

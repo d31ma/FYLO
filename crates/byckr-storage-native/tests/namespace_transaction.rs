@@ -10,7 +10,7 @@ use byckr_storage_native::{
 };
 use serde_json::{Map, Value, json};
 
-const CHILD: &str = "FYLO_TXN2_CHILD";
+const CHILD: &str = "YCKR_TXN2_CHILD";
 const NAMES: [&str; 3] = ["alpha", "beta", "gamma"];
 
 struct Fixture(PathBuf);
@@ -352,9 +352,9 @@ fn run_crash_child(root: &Path, failpoint: &str, skip: u64) {
     let status = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "crash_child", "--nocapture", "--test-threads=1"])
         .env(CHILD, root)
-        .env("FYLO_RUST_FAILPOINT", failpoint)
-        .env("FYLO_RUST_FAILPOINT_SKIP", skip.to_string())
-        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .env("YCKR_RUST_FAILPOINT", failpoint)
+        .env("YCKR_RUST_FAILPOINT_SKIP", skip.to_string())
+        .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
         .status()
         .unwrap();
     assert!(!status.success(), "the child did not stop at {failpoint}");
@@ -375,7 +375,7 @@ fn crash_child() {
     commit(&writer, &batches);
 }
 
-const POINTER_CHILD: &str = "FYLO_TXN2_POINTER";
+const POINTER_CHILD: &str = "YCKR_TXN2_POINTER";
 
 fn pointer_batches(number: usize) -> Vec<CollectionWrites> {
     let pointer = DocumentWrite::Put {
@@ -395,8 +395,8 @@ fn parts_are_applied_in_the_order_of_their_first_write() {
         .args(["--exact", "crash_child", "--nocapture", "--test-threads=1"])
         .env(CHILD, &fixture.0)
         .env(POINTER_CHILD, "1")
-        .env("FYLO_RUST_FAILPOINT", "after-namespace-apply-part")
-        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .env("YCKR_RUST_FAILPOINT", "after-namespace-apply-part")
+        .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
         .status()
         .unwrap();
     assert!(!status.success());

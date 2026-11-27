@@ -4,9 +4,9 @@
 - Date: **2026-10-28**
 - To be amended by [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md) (accepted, not yet built): a client's one-collection transaction (`storeTransaction`, `transactionBegin`/`Commit`) commits as one log record.
 - Amended by the namespace log for transactions over several collections
-  (Amendment 3, one commit over several collections, FYLO-TXN2, accepted
+  (Amendment 3, one commit over several collections, BYCKR-TXN2, accepted
   2026-11-21).
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Amends: the collection transaction journal described in `README.md`
   ("`.fylo-transactions`") for ordinary record mutations. The journal stays for
   the operations listed under "Out of scope".
@@ -21,7 +21,7 @@ marker, publishes a `stable` generation and removes the transaction directory.
 Each of those steps is made durable on its own, and the collection lock adds
 two more flushes.
 
-The 2026-10-28 syscall trace (report "FYLO on ATLAS: tests, speed and the
+The 2026-10-28 syscall trace (report "BYCKR on ATLAS: tests, speed and the
 latency gap") counted, per operation:
 
 | Operation | File calls | fsync | rename |
@@ -33,7 +33,7 @@ latency gap") counted, per operation:
 Flushing was 53 to 90% of write time in the APFS image on ATLAS, where one
 flush costs 0.86 ms. On the Mac's internal SSD a flush is cheaper, and the
 cost moves elsewhere. The 2026-10-28 rerun on develop fe2f1b7 (internal APFS,
-load 4 to 9, logs in `/Volumes/FORGE/Logs/FYLO/fylo-wal/bench-before-mac`)
+load 4 to 9, logs in `/Volumes/FORGE/Logs/BYCKR/fylo-wal/bench-before-mac`)
 measured a durable put at 6.0 to 6.6 ms p50 on a 5,000-document root, patch
 at 8.4 to 8.8 ms and delete at 7.7 to 8.0 ms. One traced put (7.1 ms) breaks
 down as:
@@ -61,7 +61,7 @@ the files are brought up to date afterwards without their own barriers,
 because a crash at any later point can be repaired by replaying the log.
 
 `sync_handle` sets today's durability floor. On Apple platforms it is
-`fsync`, not `F_FULLFSYNC`, so FYLO survives process death and kernel panics
+`fsync`, not `F_FULLFSYNC`, so BYCKR survives process death and kernel panics
 there but not power loss. Elsewhere it is `File::sync_all` (`fsync` on Linux,
 `FlushFileBuffers` on Windows), which does survive power loss on a disk that
 honours flushes.
@@ -120,7 +120,7 @@ Segment header, 32 bytes:
 
 | Offset | Size | Field                                         |
 | -----: | ---: | --------------------------------------------- |
-|      0 |    8 | magic `FYLOLOG\0`                             |
+|      0 |    8 | magic `BYCKRLOG\0`                             |
 |      8 |    2 | format version, `1`                           |
 |     10 |    2 | flags, `0` (non-zero is refused)              |
 |     12 |    8 | segment sequence number                       |
@@ -151,7 +151,7 @@ lists steps in apply order. Each step is a full post-image, never a delta, so
 replaying it twice gives the same result:
 
 - `write`: collection-relative path, blob index and length, SHA-256 of the
-  blob, file mode, owner and group when set, and the complete FYLO metadata
+  blob, file mode, owner and group when set, and the complete BYCKR metadata
   attribute set.
 - `move`: from and to paths (soft delete and restore), with the post-image
   attributes of the target.
@@ -243,7 +243,7 @@ the collection lock.
 - **Append or flush fails** (step 3), for example ENOSPC or EDQUOT: the
   segment is truncated back to its length before the append, the error is
   returned, and the log is closed for writes in this process until the
-  collection is reopened. FYLO never retries a failed flush on the same
+  collection is reopened. BYCKR never retries a failed flush on the same
   handle, because the kernel may already have dropped the dirty pages.
 - **Apply fails** (step 5): the record is durable but not acknowledged. The
   writer restores each touched file from its in-memory pre-image, rewrites the
@@ -516,15 +516,15 @@ keeps whole microseconds, so the .NET ticks are
 equalled WMI's value for 12 of 12 processes, including the System process
 and `lsass.exe`, so lock records written by older versions still match. A
 process that does not exist reads as gone, as before. When Windows refuses to
-open a process (for example, access denied), FYLO still asks WMI, so a live
+open a process (for example, access denied), BYCKR still asks WMI, so a live
 owner is never read as gone. The two unsafe calls are listed in
 `docs/security/unsafe-inventory.md` (ADR 0004).
 
 ## Amendment 2 (2026-11-21): one engine, two metadata stores
 
-Accepted 2026-11-21 (FYLO Build Coordinator). FYLO-PERF1.
+Accepted 2026-11-21 (BYCKR Build Coordinator). BYCKR-PERF1.
 
-**Context.** ADR 0033 decided that the write-ahead log is FYLO's one engine,
+**Context.** ADR 0033 decided that the write-ahead log is BYCKR's one engine,
 and that a record's metadata is stored where the file-system probe (L1-4)
 records it: in extended attributes, or in a `<payload>.fylo-attrs` sidecar
 file (ADR 0010's format). Section 1 above still kept the
@@ -568,7 +568,7 @@ the log exactly as it redoes document files.
   (`commit_document_writes`, the commit of a `storeTransaction`) works on a
   sidecar root and commits as one log record, as on an xattr root. A sidecar
   root therefore no longer needs to refuse a one-collection transaction with
-  `ETXNLAYOUT`; the machine layer's check (FYLO-SDK-3) changes from "native
+  `ETXNLAYOUT`; the machine layer's check (BYCKR-SDK-3) changes from "native
   profile only" to "a profile whose documents use the log" (native, and the
   sidecar store on Unix). A transaction over a raw-file collection, or on
   Windows with the sidecar store, is still refused.
@@ -592,9 +592,9 @@ wrote it. An NFS client flushes written data before it sets times, so the
 time the server keeps is the one the step names (checked on ANVIL from the
 server side for 100 B to 3 MB files).
 
-## Amendment 3 (2026-11-21): one commit over several collections (FYLO-TXN2)
+## Amendment 3 (2026-11-21): one commit over several collections (BYCKR-TXN2)
 
-- Status: **Accepted 2026-11-21 (FYLO Build Coordinator)**
+- Status: **Accepted 2026-11-21 (BYCKR Build Coordinator)**
 - Asked for by: the user ("Yes, several"), for TACHYON and Mesail: one
   commit per user action, such as a message and its outbox entry. Mesail's
   largest action (a chat send) writes 6 to 8 collections and about 25
@@ -762,7 +762,7 @@ lease record.
 
 An open and a read are not enough on macOS NFS: within the attribute cache
 time the client returns data up to 5 s old (1.6 s with `F_NOCACHE`), as
-FYLO-L1-3 measured. So the namespace log, its marks and every `state.json`
+BYCKR-L1-3 measured. So the namespace log, its marks and every `state.json`
 that settling and recovery read go through L1-3's fresh-read helper, the one
 the lease record uses. There is one helper; this slice adds no second copy.
 
@@ -847,7 +847,7 @@ finds its target missing.
   collection there are still two `state.json` renames, and each part's
   bytes are written twice (namespace record and collection copy).
 
-#### Possible follow-ups (FYLO-TXN3, after the release)
+#### Possible follow-ups (BYCKR-TXN3, after the release)
 
 - Collection copies that point at the namespace record instead of
   repeating its blobs, so a part's bytes are written once before the

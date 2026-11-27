@@ -1,9 +1,9 @@
 # Migrating to protected databases
 
-This release removes POSTIX, FYLO's per-record access control (a `uid`,
+This release removes POSTIX, BYCKR's per-record access control (a `uid`,
 `gid` and `mode` on each record, checked against a `uid` and `groups` the
 caller claimed). Access is now granted per **application identity** on a
-**protected `.vdbx` database**, and FYLO denies by default
+**protected `.vdbx` database**, and BYCKR denies by default
 ([ADR 0021](adr/0021-application-identities-and-signed-policies.md)).
 
 This guide moves an existing directory root, or a plain or shared-key
@@ -14,17 +14,17 @@ This guide moves an existing directory root, or a plain or shared-key
 | Before (POSTIX)                                       | Now (application identities)                                                    |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------- |
 | A caller claimed a `uid` and `groups` on each request | A process opens the database as one identity, a P-256 key it holds              |
-| `.as({ uid, gid, mode })` in clients and shims        | Removed; configure `fylo.identity` (or `FYLO_IDENTITY`) once                    |
+| `.as({ uid, gid, mode })` in clients and shims        | Removed; configure `fylo.identity` (or `YCKR_IDENTITY`) once                    |
 | `--uid` and `--groups` on the CLI                     | Removed; use `--identity <key reference>` and `--trust-anchor <fid1:...>`       |
 | The machine protocol's per-request `access` object    | Removed; a request that carries it fails with `EBADREQUEST`                     |
 | `capabilities.machineAccess` in the handshake         | Removed; the handshake reports `identity`, with the database's grants           |
 | A record with no descriptor was open to every caller  | Nothing opens a protected database without an identity (`ENOIDENTITY`)          |
-| Rules checked by FYLO's code, on macOS and Linux only | Rules backed by encryption and signatures, on every platform and in the browser |
+| Rules checked by BYCKR's code, on macOS and Linux only | Rules backed by encryption and signatures, on every platform and in the browser |
 | One shared `fylo.encryption.key` opened everything    | Each collection has its own key, wrapped only for the identities granted it     |
 | `--allow-engine-only-access` for `layout` and `pack`  | Removed; nothing is enforced per record any more                                |
 
 Rules about end users (which person may read which record) stay in your
-application. FYLO answers which application may read and write which
+application. BYCKR answers which application may read and write which
 collection.
 
 ## Old data keeps opening
@@ -164,7 +164,7 @@ admin's `fid1:` identifier:
 }
 ```
 
-or `FYLO_IDENTITY` and `FYLO_TRUST_ANCHOR` in the environment. The same
+or `YCKR_IDENTITY` and `YCKR_TRUST_ANCHOR` in the environment. The same
 settings serve the CLI (`--identity`, `--trust-anchor`), the machine
 protocol (`fylo exec --loop`, whose handshake reports the identity and its
 grants), and the `fylo` crate (`OpenOptions::with_identity`). In the browser, open the

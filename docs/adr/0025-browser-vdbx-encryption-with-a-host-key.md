@@ -2,7 +2,7 @@
 
 - Status: **Accepted** (built 2026-11-11)
 - Date: **2026-11-11**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Request: Mesail's F4 (CADUCEUS), part 2
 - Amends: ADR 0021 decision P5-1 and Q2 (an exception, the user's OK on
   2026-11-11), ADR 0016 section 10
@@ -15,7 +15,7 @@ WebView or a browser tab. That copy must be encrypted at rest, and the page
 cannot always turn on cross-origin isolation (COOP and COEP): WebView shells
 and pages that embed third-party content often cannot.
 
-What FYLO had:
+What BYCKR had:
 
 - Native `.vdbx` shared-key encryption (ADR 0016 section 9): a file key is
   derived with HKDF-SHA256 from a secret and a 32-byte salt in the

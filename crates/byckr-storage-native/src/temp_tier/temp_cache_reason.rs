@@ -11,7 +11,7 @@ pub enum TempCacheReason {
     /// The cache folder is a link, belongs to another user, or others may
     /// reach it.
     UnsafeFolder,
-    /// The cache folder is on a network filesystem, or one FYLO cannot name.
+    /// The cache folder is on a network filesystem, or one BYCKR cannot name.
     CacheFolderRemote,
     /// `auto` and the cache folder is on the root's own device.
     SameDevice,

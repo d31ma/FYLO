@@ -1,16 +1,16 @@
-# FYLO SQL v1 (FROZEN)
+# BYCKR SQL v1 (FROZEN)
 
 **Frozen on 2026-11-21 by [ADR 0035](../../../docs/adr/0035-fylos-own-sdk-in-the-store-shape.md).
-Not built yet; slice SDK-4 builds it, and it ships in the next FYLO release.**
-TACHYON's documentation points here for "the SQL subset of FYLO". A change
+Not built yet; slice SDK-4 builds it, and it ships in the next BYCKR release.**
+TACHYON's documentation points here for "the SQL subset of BYCKR". A change
 needs an amendment to ADR 0035 and a notice to TACHYON's Build Coordinator.
 
-FYLO's SQL is FYLO's own small dialect. It is a front door to the
+BYCKR's SQL is BYCKR's own small dialect. It is a front door to the
 [Store plan](../../store/v1/README.md): the same filters, order, pages, limits,
 results and error codes. It runs in `fylo sql`, the machine operation
 `executeSQL` ([`api/machine/v2`](../../machine/v2/README.md)), the JavaScript
 `sql` tag and `Database::sql` in the Rust crate. There is no other SQL engine
-in FYLO (Turso was removed by ADR 0035).
+in BYCKR (Turso was removed by ADR 0035).
 
 ## Calls
 
@@ -41,14 +41,14 @@ in FYLO (Turso was removed by ADR 0035).
 | `EXPLAIN <statement>` | | the plan, not executed |
 | `EXPLAIN ANALYZE <statement>` | | the plan, executed, with `elapsedMs` and `result` |
 
-Kept from FYLO's dialect as today (ADR 0035, Q2b): `JOIN` (`INNER`, `LEFT`,
+Kept from BYCKR's dialect as today (ADR 0035, Q2b): `JOIN` (`INNER`, `LEFT`,
 `RIGHT`, `OUTER`, `ON`), `GROUP BY`, `OR` and `LIKE`. They behave exactly as
-in FYLO 26.45.07; they are not part of the Store plan.
+in BYCKR 26.45.07; they are not part of the Store plan.
 
 - `<c>` is a collection, or `<namespace>.<collection>` (ADR 0033). Without a
   namespace, the request's `namespace`, else `public`.
 - `<f>` is a field name, or a dotted path into nested objects such as
-  `waiting.device42` (ADR 0035, Amendment 2; FYLO's SQL accepts this today).
+  `waiting.device42` (ADR 0035, Amendment 2; BYCKR's SQL accepts this today).
   A path walks objects only: a step that is missing, or that is not an
   object, makes the value missing. A dotted path may appear in `WHERE`, in
   the select list and in `ORDER BY`. `id` is the document id. (The Store's

@@ -2,7 +2,7 @@ use super::NameProblem;
 
 /// The one name rule for app, namespace and collection names (ADR 0033
 /// section 2): lowercase `a-z`, digits and `-`, 2 to 64 bytes, a letter or
-/// digit first and last, and no Windows device name or FYLO reserved word.
+/// digit first and last, and no Windows device name or BYCKR reserved word.
 pub struct NameRule;
 
 impl NameRule {

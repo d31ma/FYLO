@@ -10,7 +10,7 @@ pub enum NameProblem {
     CharacterNotAllowed(char),
     /// Starts or ends with `-`.
     BadFirstOrLastCharacter(char),
-    /// A Windows device name or a FYLO reserved word.
+    /// A Windows device name or a BYCKR reserved word.
     ReservedName,
 }
 

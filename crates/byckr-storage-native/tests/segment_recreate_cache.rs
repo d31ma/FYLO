@@ -15,8 +15,8 @@ use byckr_storage_native::{
 };
 use serde_json::json;
 
-const CHILD: &str = "FYLO_RECREATE_CACHE_CHILD";
-const ROOT: &str = "FYLO_RECREATE_CACHE_ROOT";
+const CHILD: &str = "YCKR_RECREATE_CACHE_CHILD";
+const ROOT: &str = "YCKR_RECREATE_CACHE_ROOT";
 const ITEMS: &str = "items";
 const RESULT: &str = "RESULT ";
 const CACHED: &str = "CACHED";

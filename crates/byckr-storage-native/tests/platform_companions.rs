@@ -1,7 +1,7 @@
 //! A root on a volume without extended attributes of its own — exFAT, FAT,
 //! many SMB and NFS shares — where macOS writes an `AppleDouble` companion,
 //! `._<name>`, beside every file and directory that carries one, and Finder a
-//! `.DS_Store` in every directory it shows. FYLO walks its own directories
+//! `.DS_Store` in every directory it shows. BYCKR walks its own directories
 //! there, so every operation has to read the companions as the platform's
 //! rather than as damage, and take a companion with its owner when it removes
 //! one.
@@ -19,7 +19,7 @@ use byckr_storage_native::{
 use serde_json::{Value, json};
 
 const ITEMS: &str = "items";
-const CHILD: &str = "FYLO_COMPANION_CHILD";
+const CHILD: &str = "YCKR_COMPANION_CHILD";
 
 /// The start of a real `AppleDouble` file: its magic, version and filler.
 const APPLE_DOUBLE: &[u8] =
@@ -422,10 +422,10 @@ fn run_crash_child(root: &Path, efs: bool, operation: &str, failpoint: &str) {
     let status = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "crash_child", "--nocapture", "--test-threads=1"])
         .env(CHILD, operation)
-        .env("FYLO_COMPANION_ROOT", root)
-        .env("FYLO_COMPANION_EFS", if efs { "1" } else { "0" })
-        .env("FYLO_RUST_FAILPOINT", failpoint)
-        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .env("YCKR_COMPANION_ROOT", root)
+        .env("YCKR_COMPANION_EFS", if efs { "1" } else { "0" })
+        .env("YCKR_RUST_FAILPOINT", failpoint)
+        .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
         .status()
         .unwrap();
     assert!(!status.success(), "{operation} did not stop at {failpoint}");
@@ -451,8 +451,8 @@ fn crash_child() {
     let Ok(operation) = std::env::var(CHILD) else {
         return;
     };
-    let root = PathBuf::from(std::env::var("FYLO_COMPANION_ROOT").unwrap());
-    let efs = std::env::var("FYLO_COMPANION_EFS").unwrap() == "1";
+    let root = PathBuf::from(std::env::var("YCKR_COMPANION_ROOT").unwrap());
+    let efs = std::env::var("YCKR_COMPANION_EFS").unwrap() == "1";
     let (writer, _lease) = profiled_writer(&root, efs);
     match operation.as_str() {
         "patch" => writer

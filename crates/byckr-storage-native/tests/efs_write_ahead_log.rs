@@ -18,7 +18,7 @@ use serde_json::{Map, Value, json};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-const CHILD_ROOT: &str = "FYLO_TEST_EFS_CRASH_ROOT";
+const CHILD_ROOT: &str = "YCKR_TEST_EFS_CRASH_ROOT";
 
 struct Fixture {
     parent: PathBuf,
@@ -301,8 +301,8 @@ fn a_crash_between_a_document_and_its_sidecar_recovers_both() {
             "--test-threads=1",
         ])
         .env(CHILD_ROOT, &fixture.root)
-        .env("FYLO_RUST_FAILPOINT", "after-log-apply-step")
-        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .env("YCKR_RUST_FAILPOINT", "after-log-apply-step")
+        .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
         .status()
         .unwrap();
     assert!(

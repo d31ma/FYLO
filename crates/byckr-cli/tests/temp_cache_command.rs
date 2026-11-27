@@ -39,7 +39,7 @@ impl Place {
         Command::new(Self::BINARY)
             .args(arguments)
             .current_dir(&self.0)
-            .env_remove("FYLO_ROOT")
+            .env_remove("YCKR_ROOT")
             .output()
             .unwrap()
     }

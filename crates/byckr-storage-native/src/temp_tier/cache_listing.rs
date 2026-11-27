@@ -8,7 +8,7 @@ use super::cache_file::CacheFile;
 /// a link: a listed link is a file, never a folder to enter.
 ///
 /// The layout is at most three folders deep (root, collection, id prefix,
-/// ADR 0030 section 4.3); anything deeper is not FYLO's and is not listed.
+/// ADR 0030 section 4.3); anything deeper is not BYCKR's and is not listed.
 #[derive(Debug, Default)]
 pub(crate) struct CacheListing {
     pub(crate) files: Vec<CacheFile>,

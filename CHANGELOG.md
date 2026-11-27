@@ -12,34 +12,34 @@
   (`getDoc`, `getLatest`, `putData`, `batchPutData`, `patchDoc`,
   `patchDocs`, `delDoc`, `delDocs`, `findDocs`) still work in this
   development line and are removed before the release (slice SDK-10).
-- **A root on the system disk is refused (ADR 0032).** FYLO keeps its data
+- **A root on the system disk is refused (ADR 0032).** BYCKR keeps its data
   on a local disk that is not the system disk: a disk under `/Volumes` on
   macOS, a mounted disk on Linux, a drive other than the Windows drive on
   Windows. A root on the system disk (also the OS temp folder, and on Linux
   `tmpfs`) is refused with the new code `ESYSTEMDISK` before anything is
   written, in every `fylo exec` mode, the other commands and the library.
-  FYLO compares disks, not paths: on macOS the APFS container, on Linux the
+  BYCKR compares disks, not paths: on macOS the APFS container, on Linux the
   device and its whole disk, on Windows the volume and its physical disk.
   A disk image counts as its disk, but an image whose file is on the system
-  disk is refused too (on macOS FYLO asks `/usr/bin/hdiutil`). To keep
+  disk is refused too (on macOS BYCKR asks `/usr/bin/hdiutil`). To keep
   using the system disk (tests, CI, a laptop), pass `--allow-system-disk`,
-  set `FYLO_ALLOW_SYSTEM_DISK=1` or set `fylo.allowSystemDisk` to `true`;
-  FYLO then prints one warning line on stderr saying the check is off. A
+  set `YCKR_ALLOW_SYSTEM_DISK=1` or set `fylo.allowSystemDisk` to `true`;
+  BYCKR then prints one warning line on stderr saying the check is off. A
   desktop app that keeps its data in its own data folder passes `--app-id
-  <id>` (`FYLO_APP_ID`, `fylo.appId`); iOS and Android apps need nothing.
+  <id>` (`YCKR_APP_ID`, `fylo.appId`); iOS and Android apps need nothing.
   Network roots stay refused (`EREMOTEROOT`, ADR 0029); the EFS profile
   works as before. See the migration note in ADR 0032.
-- **Turso is removed (ADR 0035, FYLO-SDK1).** The `fylo` crate's `sql`
+- **Turso is removed (ADR 0035, BYCKR-SDK1).** The `fylo` crate's `sql`
   feature is gone, with `Root::sql`, `Sql`, `SqlOptions`, `SqlRows`,
   `SqlValue`, `TURSO_PIN`, `install_turso_open_hook`, `is_fylo_root` and
   `LinkIdentity`. `fylo link` is gone, so Turso's SDKs (JS, Go, Python,
-  Java, .NET) can no longer open a FYLO root or `.vdbx` database, and the
+  Java, .NET) can no longer open a BYCKR root or `.vdbx` database, and the
   hand-built Turso SDK libraries (`bindings/turso`) are no longer made.
-  FYLO's own SQL (`fylo sql`, `executeSQL`, `db.sql`) is not affected: it
+  BYCKR's own SQL (`fylo sql`, `executeSQL`, `db.sql`) is not affected: it
   never used Turso. The vendored `turso_core` engine and 129 packages
   leave `Cargo.lock` (among them `chrono`, `aegis` and `libloading`), and
   `deny.toml` no longer ignores RUSTSEC-2026-0543. Apps that used `fylo
-  link` move to FYLO's own clients or the machine protocol.
+  link` move to BYCKR's own clients or the machine protocol.
 - **The handshake reports where the root is.** `storage.rootLock` gains
   `systemDisk` and `placement` (`dataDisk`, `systemDiskAllowed`,
   `appOwned`).
@@ -50,7 +50,7 @@
   missing fields. Until now `= NULL` matched like `IS NULL`. Use `IS NULL`
   and `IS NOT NULL` to test for `NULL`. The Store keeps `eq null` as
   `isNull` and `ne null` as `isNotNull`.
-- **Four language clients are removed.** FYLO's clients now follow
+- **Four language clients are removed.** BYCKR's clients now follow
   TACHYON's languages. These files are gone from `clients/` and from the
   `fylo-clients.tar.gz` release asset:
   - the Rust shim `clients/rust/fylo.rs`: Rust apps use the `fylo` crate;
@@ -72,7 +72,7 @@
   drive (`/Volumes/<disk>/<root>`, `/mnt/<disk>/<root>`, `D:\<root>`; a bind
   mount, a Docker volume and an NTFS folder mount point count). A root in a
   deeper folder is refused with the new code `ENOTVOLUMEROOT` before
-  anything is written; the message names the nearest mount point. FYLO
+  anything is written; the message names the nearest mount point. BYCKR
   checks the mount point first, then the disk (`ESYSTEMDISK`). The ADR 0032
   opt-out waives it, and app mode admits the app's own folder. The
   handshake gains `storage.volume`, the mount point. Network roots stay
@@ -96,7 +96,7 @@
   by default. The site CSP allows TACHYON's two inline runtime scripts by
   hash.
 
-- **`inspectCollection` reads no document (FYLO-CR1).** Its `indexedDocs`
+- **`inspectCollection` reads no document (BYCKR-CR1).** Its `indexedDocs`
   now comes from the collection's listing and its index, read once each, as
   the full index check counts it: the same number in every case, including a
   pending index log, a missing index snapshot and a collection in the middle
@@ -112,7 +112,7 @@
   twice per document by the full check), and the full check reads the index
   once instead of three times.
 
-- **Fewer network round trips per commit (FYLO-PERF1, ADR 0013
+- **Fewer network round trips per commit (BYCKR-PERF1, ADR 0013
   Amendment 2).** Document collections whose metadata lives in sidecar
   files (`efs-sidecar-v1`, the store a network share gets) now commit
   through the write-ahead log like every other document collection: one
@@ -153,7 +153,7 @@
   commit>`, for example `26.45.07-develop.1a2b3c4`, instead of the older
   `VERSION` file of `develop`. Release builds, and builds of a release
   branch whose `VERSION` is newer than every tag, still report `VERSION`.
-  `scripts/build-executable.mjs` sets this as `FYLO_BUILD_VERSION`; a plain
+  `scripts/build-executable.mjs` sets this as `YCKR_BUILD_VERSION`; a plain
   `cargo build` reports `VERSION`.
 
 - **A root on a network filesystem is refused (ADR 0029).** A root that
@@ -164,7 +164,7 @@
   library. The reason: a file lock there can bind only one machine, so two
   machines could each own the root and write it at once (seen on an NFSv3
   mount on 2026-11-12). Move the root to a disk attached to the machine that
-  runs FYLO. The explicit EFS profile (`--filesystem-profile
+  runs BYCKR. The explicit EFS profile (`--filesystem-profile
   efs-sidecar-v1`, ADR 0010) still works on EFS and NFS as before.
 - **The handshake reports the root's filesystem.** `storage.rootLock` gains
   `filesystem` (for example `apfs`, `ext4`, `nfs`) and `remote`.
@@ -188,7 +188,7 @@
 
 ### Added
 
-- **`collectionExists` and `listCollections` (FYLO-CR1).** Two read
+- **`collectionExists` and `listCollections` (BYCKR-CR1).** Two read
   operations that read only the catalog and the collection folders, never a
   document, index or transaction file. `{"op":"collectionExists",
   "collection":"posts"}` answers `{"collection":"posts","exists":true}` (or
@@ -212,8 +212,8 @@
   until L1-5 switches namespaces on.
 - **Heartbeat lease and storage-crash checks (ADR 0033 section 4, slice
   L1-3).** The root lease beats every 5 s and is taken over after 20 s
-  without a beat (`FYLO_LEASE_HEARTBEAT_SECONDS`,
-  `FYLO_LEASE_TAKEOVER_SECONDS`), at once when the owner was a process on
+  without a beat (`YCKR_LEASE_HEARTBEAT_SECONDS`,
+  `YCKR_LEASE_TAKEOVER_SECONDS`), at once when the owner was a process on
   this machine that ended. Every commit checks the lease first
   (`EROOTLEASELOST`). `fylo verify --root <root>` (machine `verifyRoot`)
   lists every damaged file and exits non-zero; see
@@ -306,16 +306,16 @@
   `EDEADLINE` and `EINVOCATION`. `InvocationRuntime` now checkpoints its
   write-ahead logs before it releases the root lease. Local use only; not
   qualified for deployment.
-- **FYLO's native engine on Android (ADR 0026).** A new crate, `fylo-ffi`,
+- **BYCKR's native engine on Android (ADR 0026).** A new crate, `fylo-ffi`,
   gives the `fylo` crate a small C ABI (`fylo.h`: open, close, collections,
   put, get, delete, find, `fylo_find_page`, identities), with handles that
-  are numbers, buffers FYLO owns until `fylo_bytes_free`, and panics answered
-  as `FYLO_PANIC`. The Android library `io.github.d31ma:fylo-android`
+  are numbers, buffers BYCKR owns until `fylo_bytes_free`, and panics answered
+  as `YCKR_PANIC`. The Android library `io.github.d31ma:fylo-android`
   (release asset `fylo-android-<version>.aar`, GitHub Packages) wraps it in
   Kotlin through JNI (`Fylo`, `FyloIdentity`). The engine crates build and
   pass their tests on the Android emulator (`bun run test:mobile android`);
   Android's ext4 joins the qualified byte-range-lock filesystems.
-- **FYLO's native engine on iOS (ADR 0026).** The release asset
+- **BYCKR's native engine on iOS (ADR 0026).** The release asset
   `fylo-ios-<version>.xcframework.zip` holds `Fylo.xcframework` (device and
   simulator, iOS 17 or newer) for the Swift package `FyloKit`
   (`bindings/mobile/ios/FyloKit`: `Fylo`, `FyloIdentity`, `FyloError`).
@@ -410,16 +410,16 @@
 
 - **The first write of a `fylo` process is fast on Windows (ADR 0013
   amendment 1).** The first collection lock records the process start time,
-  which FYLO asked WMI for by starting PowerShell: the first `putData` of
+  which BYCKR asked WMI for by starting PowerShell: the first `putData` of
   every process took 0.4 to 5 s on Windows, long enough for a host that
   stops `fylo` one second after its last request to cut it off. Checking a
   stale lock of another process paid the same again (47.7 s for a process
-  that no longer exists). FYLO now reads the time from the process handle
+  that no longer exists). BYCKR now reads the time from the process handle
   (`GetProcessTimes`) and records the same value, so lock records of older
   versions still match. A process that has exited reads as gone, as before,
-  also while its host still holds its handle. FYLO asks WMI only when
+  also while its host still holds its handle. BYCKR asks WMI only when
   Windows refuses to open the process.
-- **`rustix` 1.1.6 and `xattr` 1.7.0 (RUSTSEC-2026-0486).** FYLO reached
+- **`rustix` 1.1.6 and `xattr` 1.7.0 (RUSTSEC-2026-0486).** BYCKR reached
   rustix's unsound zero-length-buffer path through the `xattr` crate; both
   are updated together, because rustix 1.1.6 with xattr 1.6.1 could read an
   attribute over 4 KiB back as empty.
@@ -473,7 +473,7 @@
 - **`tpm:<name>` identities on Windows (ADR 0021 section 8, phase 8).**
   `fylo identity create --store tpm:<name>` makes a P-256 key inside the
   TPM 2.0 through the Microsoft Platform Crypto Provider; it is never
-  exported, and FYLO asks the TPM to sign and to agree. On a machine
+  exported, and BYCKR asks the TPM to sign and to agree. On a machine
   without a TPM, `create` and `show` fail with `EIDENTITY_UNSUPPORTED`
   ("no TPM is available on this machine"). Only that path is tested
   (`windows-vm` has no TPM); the success path is untested on hardware.
@@ -498,12 +498,12 @@
   notes, for administrators who want the kernel to let only one
   application read a protected database's key and file, and nobody trace
   it. They are samples to adapt and test on the host, not shipped policy,
-  and FYLO's CI does not test them.
+  and BYCKR's CI does not test them.
 - **`enclave:<label>` identities on macOS (ADR 0021 section 8, phase 8).**
   `fylo identity create --store enclave:<label>` makes a P-256 key inside
   the Secure Enclave, which never leaves it; `fylo identity show` opens it
   again. The enclave's token blob for the key is a keychain item (service
-  `<label>`, account `fylo-enclave-identity`; `FYLO_KEYCHAIN` applies),
+  `<label>`, account `fylo-enclave-identity`; `YCKR_KEYCHAIN` applies),
   bound to the creating application by the keychain's access list and
   useless on another Mac. Such an identity can create, administer, read and
   write protected databases like any other; each of its signatures takes
@@ -623,7 +623,7 @@
 - **Entry points for protected databases (ADR 0021, phase 5).** The `fylo`
   crate opens `.vdbx` databases and takes `OpenOptions::with_identity`
   (Yon); `fylo::LinkIdentity` gives `fylo link`'s open hook the identity
-  from `FYLO_IDENTITY`/`FYLO_TRUST_ANCHOR` or the `application.json` beside
+  from `YCKR_IDENTITY`/`YCKR_TRUST_ANCHOR` or the `application.json` beside
   the database. **Breaking:** the machine protocol creates a missing
   `.vdbx` protected with the configured identity as admin, and refuses with
   `ENOIDENTITY` without one (it no longer creates plain or shared-key
@@ -649,10 +649,10 @@
   catalog key (directory and policy) and a key per collection, wrapped for
   each identity with HPKE (RFC 9180, P-256). Policy version 1 makes the
   creator its admin and **trust anchor**; an open must pin the anchor
-  (`--trust-anchor`, `fylo.trustAnchor`, `FYLO_TRUST_ANCHOR`) or ask for
+  (`--trust-anchor`, `fylo.trustAnchor`, `YCKR_TRUST_ANCHOR`) or ask for
   trust on first use (`--trust-on-first-use`, which warns), or it fails with
   `EPOLICY`. The identity comes from `--identity`, `fylo.identity` or
-  `FYLO_IDENTITY`. Without one a protected database is locked
+  `YCKR_IDENTITY`. Without one a protected database is locked
   (`ENOIDENTITY`); an identity with no grant gets `EACCES`.
   `fylo access list <db.vdbx>` prints the identity's grants, the anchor and
   the policy; `fylo inspect` reports `protected`. An admin runs `fylo access
@@ -662,7 +662,7 @@
   and rebuilds the keyring for it. A revocation starts a new key epoch for
   the collections the rule covered; older data stays readable to whoever
   kept the old key until a rekey. A `read` grant refuses writes with
-  `EACCES` (FYLO's own check until signed writes). **Breaking:** `fylo
+  `EACCES` (BYCKR's own check until signed writes). **Breaking:** `fylo
   create` without `--admin` now needs `--unprotected` (Q2). Signed writes
   follow in a later phase;
   `fylo pack --sealed` and `fylo rekey` refuse a protected database for now,
@@ -679,7 +679,7 @@
   created `0600` and fsynced; on Unix a file another user owns, or that group
   or other users can read or write, is refused with `EIDENTITY_EXPOSED`) and
   `keychain:<label>` on macOS (a generic-password item in the default
-  keychain, or in the keychain file `FYLO_KEYCHAIN` names). `creds:<name>`
+  keychain, or in the keychain file `YCKR_KEYCHAIN` names). `creds:<name>`
   reads a `systemd-creds` credential on Linux and writes one with
   `systemd-creds encrypt`; `cng:` (Windows) and `webcrypto:` (browser) are
   defined but refused with `EIDENTITY_UNSUPPORTED` for now. `create` never
@@ -889,7 +889,7 @@
   now `fylo.schema/<collection>/migrations/<from>-to-<to>.json`, a list of
   declarative steps (`rename`, `default`, `set`, `remove`, `copy`, `convert`,
   `map`, `wrap`, `lower`, `upper`, `trim`, `replace`, `template` and
-  `slugify`) that every build runs the same way. FYLO no longer runs
+  `slugify`) that every build runs the same way. BYCKR no longer runs
   `upgraders/*.js` files, and the Boa JavaScript runtime is gone from the
   binary. A step that still has only a `.js` upgrader fails `schemaMaterialize`
   with an error pointing at ADR 0018; the README's slug upgrader is one
@@ -922,10 +922,10 @@
   every validation mode, and a `_v` the caller sends is replaced by the head
   label. Without `fylo.strict`, writes used to store no `_v` (or the caller's),
   so a document written in the head shape later read as the oldest version.
-- **CHEX and TTID are built in; FYLO no longer needs their binaries.** Schema
+- **CHEX and TTID are built in; BYCKR no longer needs their binaries.** Schema
   validation now runs in-process through `fylo-chex`, a vendored copy of the
   CHEX v26.32.02 validator core (same regex dialect, error names, and messages).
-  TTID generation, decoding, and canonical checks were already native to FYLO,
+  TTID generation, decoding, and canonical checks were already native to BYCKR,
   so the `ttid` binary was only probed for. `scripts/install-vendor-bins.sh` and
   its PowerShell peer now install only TACHYON.
 - The handshake no longer has a `dependencies` object. A new
@@ -1053,11 +1053,11 @@
   macOS keeps extended attributes in `._<name>` files.** macOS writes one
   `AppleDouble` companion beside every file and directory that carries an
   attribute on such a volume, and Finder a `.DS_Store` in each directory it
-  shows, and FYLO read each as damage: opening a collection failed with
+  shows, and BYCKR read each as damage: opening a collection failed with
   `ENATIVE_UNSAFE_PATH: document shard is not a regular directory: …/._0`,
   and index rebuild, recovery, rollback, `fylo unpack`, the queue and version
-  control failed alike. Every directory FYLO lists now skips those exact
-  names, which no name FYLO writes can take — a branch name may no longer
+  control failed alike. Every directory BYCKR lists now skips those exact
+  names, which no name BYCKR writes can take — a branch name may no longer
   have a segment beginning `._` or named `.DS_Store` — and removing a file
   or directory also removes its companion, so a shard, log or collection
   directory left holding only orphaned companions can still be removed.
@@ -1183,7 +1183,7 @@
   `docs/migrating-to-protected-databases.md`.
 - The `fylo.chex.binary` setting. A configuration that still sets `fylo.chex`
   fails with a message asking you to remove it.
-- **`fylo serve` and `Fylo.connect` were removed before release.** FYLO is an
+- **`fylo serve` and `Fylo.connect` were removed before release.** BYCKR is an
   embedded library, like SQLite: your app opens the database files directly in
   its own process. There is no network server, no `fyloServe` hello and no
   `capabilities.networkServer`. On network storage, run your app server next to
@@ -1213,16 +1213,16 @@
   native environment map. Values merge over the inherited environment without
   mutating the parent process, null or nil map values remove inherited keys,
   and explicit constructor and engine options retain command-line precedence.
-  Missing or malformed files fail before the FYLO child starts; browser and
+  Missing or malformed files fail before the BYCKR child starts; browser and
   mobile clients remain storage-adapter clients and do not expose this
   native-process setting.
 
 ### Changed
 
-- The marketing-site release path now targets only the FYLO Amplify app. The
+- The marketing-site release path now targets only the BYCKR Amplify app. The
   retired FXP target and `fx.del.ma` deployment are no longer managed; Explorer
   remains a checksum-covered, self-hostable release archive.
-- FYLO's Amplify deploy and rollback flow now builds deterministic artifacts,
+- BYCKR's Amplify deploy and rollback flow now builds deterministic artifacts,
   verifies the configured header policy before any release mutation, binds
   legacy rollback probes to known checksums, and uses ETag-fenced
   `preparing`/`mutating` leases. Target deployment, production smoke, state
@@ -1234,13 +1234,13 @@
 
 - Environment file paths and maps are documented as trusted bootstrap input,
   never request-, tenant-, upload-, or job-controlled configuration. Guidance
-  now calls for an absolute administrator-controlled FYLO binary, an allowlist
-  of supported `FYLO_*` keys, an explicitly audited inherited environment,
+  now calls for an absolute administrator-controlled BYCKR binary, an allowlist
+  of supported `YCKR_*` keys, an explicitly audited inherited environment,
   owner-only local secret files, source-control exclusions, and a secret manager
   where available. Browser-loader guidance likewise recommends immutable
   version pins or checksum-verified self-hosting plus a restrictive CSP instead
   of trusting the mutable `latest` alias.
-- FYLO's Amplify release configuration now defines versioned HSTS,
+- BYCKR's Amplify release configuration now defines versioned HSTS,
   MIME-sniffing, referrer, permissions, cache, and CSP policies. A
   checksum-bound transitional policy supports the two verified legacy rollback
   archives; the final policy removes their temporary `unsafe-eval`
@@ -1283,7 +1283,7 @@
   letter state. Trusted callers can still opt in to a sanitized reason through
   the direct negative-acknowledgement API.
 - CI now follows TACHYON's reusable qualification structure while retaining
-  FYLO's native crash/soak matrix, real-browser OPFS coverage, compiled
+  BYCKR's native crash/soak matrix, real-browser OPFS coverage, compiled
   language-shim interop, and Miri gate. Locked all-target/all-feature checks,
   warning-free Rustdoc, isolated dependency policy, measured coverage floors,
   CycloneDX/auditable-build evidence, and scheduled address/leak/thread
@@ -1336,7 +1336,7 @@
 - A document or raw file whose identifier is valid but not canonically spelled
   is refused, naming the spelling to use. TTID matches identifiers
   case-insensitively and only ever emits uppercase, so one identifier has many
-  accepted spellings; FYLO names a file after it, which made the same two
+  accepted spellings; BYCKR names a file after it, which made the same two
   writes one record on a case-insensitive filesystem and two on a
   case-sensitive one. The caller is told rather than silently rewritten, so
   `getDoc` still returns the identifier that was asked for and
@@ -1344,10 +1344,10 @@
   becomes a file — reading, patching, and enumerating stay lenient, so a root
   written before this still opens ([TTID#32](https://github.com/d31ma/TTID/issues/32)).
 - TTID is pinned to `v26.32.03` and CHEX to `v26.32.02`, the Rust rewrites,
-  with refreshed digests for every platform. Every FYLO gate passes against
+  with refreshed digests for every platform. Every BYCKR gate passes against
   them, and identifiers generated by either engine are accepted by the other.
   TTID v26.32.03 carries the `canonicalize` command added for
-  [TTID#32](https://github.com/d31ma/TTID/issues/32), which is what FYLO's
+  [TTID#32](https://github.com/d31ma/TTID/issues/32), which is what BYCKR's
   non-canonical identifier error names as the repair.
 
 ### Added
@@ -1364,7 +1364,7 @@
   `wasm32-unknown-unknown`, owning storage through a host table an embedder
   fills. `src/browser/host-vfs.mjs` implements that table, and
   `bun run rust:browser:host` drives 130 machine frames through it and stores
-  122 documents in a real FYLO root. Entropy, the wall clock, and a diagnostic
+  122 documents in a real BYCKR root. Entropy, the wall clock, and a diagnostic
   log channel travel the same plain C table as the filesystem, so the module
   imports nothing but `fylo_host` — no binding-generator glue, which is what
   lets a Swift, Kotlin, or Dart embedder fill the same slots.
@@ -1384,7 +1384,7 @@
   afterwards nothing sorted. Every query has been returning documents in shard
   order since v26.31.06 while the handshake advertised `ttid-binary-ascending`,
   which query cursors depend on. Found by comparing the two artifacts.
-- Records carry their FYLO attributes in a `.fylo-attrs` sidecar under WASI,
+- Records carry their BYCKR attributes in a `.fylo-attrs` sidecar under WASI,
   using the JSON-and-base64 manifest Windows already writes to an alternate
   data stream, and a native binary reads that sidecar when a record has no
   extended attributes of its own — so a WASI-written root opens on a server.
@@ -1405,7 +1405,7 @@
   environment. `RootConfig { strict_schema, shard_width }` is passed to
   `WriteEngine::with_config` / `NativeWriteRoot::with_config`, and
   `serve_configured` is the machine entry point for a host that supplies them
-  directly. `FYLO_STRICT` and `FYLO_SHARD_WIDTH` are now read in exactly one
+  directly. `YCKR_STRICT` and `YCKR_SHARD_WIDTH` are now read in exactly one
   place — `RootConfig::from_env`, called only by the CLI — and `--strict-schema`
   and `--shard-width` override an inherited environment. The Node client takes
   `strictSchema` and `shardWidth` constructor options. Prerequisite for
@@ -1639,14 +1639,14 @@
   binary-backed applications; the Node shim exposes chainable `.as(...)`.
 - Whole-root S3 backup, verification, status, reconcile, and restore through
   the standalone binary (`fylo backup verify|restore`, `backupStatus`,
-  `backupReconcile`) with credentials confined to `AWS_*`/`FYLO_S3_*`
+  `backupReconcile`) with credentials confined to `AWS_*`/`YCKR_S3_*`
   environment variables.
 - Windows NTFS backup/restore parity using platform-tagged v2 manifests that
   capture bytes, alternate-data-stream metadata, and native mode/mtime from
   one pinned descriptor; cross-platform-family recovery fails explicitly.
 - A live S3-compatible release gate against pinned MinIO, native packaged
   macOS arm64/x64 lease verification, signed build provenance attestations,
-  an SPDX SBOM per release, and opt-in `FYLO_VERIFY_PROVENANCE=1` installer
+  an SPDX SBOM per release, and opt-in `YCKR_VERIFY_PROVENANCE=1` installer
   verification.
 
 ### Changed
@@ -1746,7 +1746,7 @@
   regular expressions with bounded linear matching.
 - Added fail-closed mobile origin/asset allowlists, payload and pending-request
   limits, timeouts, cancellation, and renderer/load failure cleanup.
-- Bounded Explorer preview, import, export, and upload memory use; removed FYLO's
+- Bounded Explorer preview, import, export, and upload memory use; removed BYCKR's
   dynamic-evaluation loader.
 
 ### Fixed
@@ -1783,7 +1783,7 @@
 
 ### Changed
 
-- **CHEX and TTID are consumed as standalone binaries, not npm packages**: the engine spawns the `ttid` and `chex` binaries — installed from their GitHub Releases via `scripts/install-vendor-bins.sh` — through dependency-free vendored shims in `src/vendor/`, instead of importing `@d31ma/ttid` / `@d31ma/chex`. This keeps FYLO's distribution binary-first with a minimal dependency graph.
+- **CHEX and TTID are consumed as standalone binaries, not npm packages**: the engine spawns the `ttid` and `chex` binaries — installed from their GitHub Releases via `scripts/install-vendor-bins.sh` — through dependency-free vendored shims in `src/vendor/`, instead of importing `@d31ma/ttid` / `@d31ma/chex`. This keeps BYCKR's distribution binary-first with a minimal dependency graph.
 
 ### Removed
 
@@ -1795,7 +1795,7 @@
 
 - **Fluent facade sub-methods**: bulk and deleted-document operations moved under their base verb — `findDeleted(q)` → `find.deleted(q)`, `batchPut(b)` → `put.batch(b)`, `patchMany(u)` → `patch.many(u)`, `deleteMany(q)` → `delete.many(q)`. The deprecated method-first forms (`fylo.patchDocs`, `fylo.delDocs`, `fylo.batchPutData`) now point callers at the new names.
 - **`joinDocs` renamed to `join`**: `fylo.join(spec)` replaces `fylo.joinDocs(spec)` (and the deprecated `Fylo.joinDocs` static). The machine/HTTP `joinDocs` operation name is unchanged.
-- **Collections must exist before use**: `put`, `patch`, `delete`, `restore`, and reads (`get`, `find`) against an unknown collection now throw `CollectionNotFoundError` (`code: 'FYLO_COLLECTION_NOT_FOUND'`, HTTP 404) instead of silently auto-creating it. Call `fylo[collection].create()` first. `inspect()` still returns `{ exists: false }` without throwing. The error is exported from the package root and `@d31ma/fylo/browser`, and propagates across the browser worker protocol.
+- **Collections must exist before use**: `put`, `patch`, `delete`, `restore`, and reads (`get`, `find`) against an unknown collection now throw `CollectionNotFoundError` (`code: 'YCKR_COLLECTION_NOT_FOUND'`, HTTP 404) instead of silently auto-creating it. Call `fylo[collection].create()` first. `inspect()` still returns `{ exists: false }` without throwing. The error is exported from the package root and `@d31ma/fylo/browser`, and propagates across the browser worker protocol.
 
 ### Changed
 
@@ -1824,7 +1824,7 @@
 - **`fylo.db.<collection>` accessor removed**: the constructor returns a collection-facade Proxy, so collections are accessed directly on the instance — `fylo.users.get(id)`, `fylo['users'].put(data)`. `const { db } = new Fylo(...)` is no longer valid; use `const db = new Fylo('/path')` (the instance is the db).
 - **`fylo.executeSQL(sql)` removed**: use the `` fylo.sql`...` `` template tag.
 - **Facade method names finalized**: `get`, `latest`, `find`, `findDeleted`, `put`, `batchPut`, `patch`, `patchMany`, `delete`, `deleteMany`, `restore`, `export`, `import`, `inspect`, `rebuild`, `create`, `drop`. (Previous facade exposed the old method-first names such as `getDoc`/`findDocs`.)
-- **Reserved collection names fail closed**: names that collide with FYLO internals or removed methods (`sql`, `as`, `db`, `ready`, `close`, `engine`, `cache`, `queue`, `getDoc`, `putData`, …) are rejected by `validateCollectionName` and cannot be created or addressed.
+- **Reserved collection names fail closed**: names that collide with BYCKR internals or removed methods (`sql`, `as`, `db`, `ready`, `close`, `engine`, `cache`, `queue`, `getDoc`, `putData`, …) are rejected by `validateCollectionName` and cannot be created or addressed.
 
 ### Changed
 
@@ -1841,16 +1841,16 @@
 
 ### Added
 
-- **Browser-native per-document runtime**: `@d31ma/fylo/browser` preserves FYLO's per-document layout over OPFS or an injected VFS instead of storing a collection blob.
+- **Browser-native per-document runtime**: `@d31ma/fylo/browser` preserves BYCKR's per-document layout over OPFS or an injected VFS instead of storing a collection blob.
 - **Default browser client**: `@d31ma/fylo/browser` exports an app-author friendly default client so browser code can call `fylo.<collection>.putData(data)` directly. It prefers OPFS and falls back to memory when OPFS is unavailable.
-- **Browser worker runtime**: real browser contexts prefer `SharedWorker`, fall back to `DedicatedWorker`, and multiplex FYLO cores by namespace. Collection subscriptions fan out to every subscribed port in the same namespace.
+- **Browser worker runtime**: real browser contexts prefer `SharedWorker`, fall back to `DedicatedWorker`, and multiplex BYCKR cores by namespace. Collection subscriptions fan out to every subscribed port in the same namespace.
 - **Browser-safe filesystem core**: added `FyloFilesystem`, `MemoryFilesystem`, `BrowserDocuments`, `BrowserPrefixIndex`, `BrowserEventBus`, and a browser-safe query engine under `src/browser/core`.
 - **Browser conformance coverage**: tests now verify per-document storage, tombstones, prefix index files, worker request correlation, cross-port subscription fanout, and clean browser bundles without Bun/Node/server-cipher leakage.
 - **Document version control**: `fylo checkout [-b] <branch>`, `fylo branch`, `fylo commit -m <message>`, and `fylo log` add Git/Dolt-style branch isolation with S3-style full collection snapshots under `.fylo-vcs`.
 - **Document version-control diffing and restore**: `fylo status`, `fylo diff`, and `fylo restore-commit <commit-id>` compare payload snapshots and safely restore commits with a dirty-tree guard.
 - **Document version-control merges**: `fylo merge <ref>` supports fast-forward merges and conservative three-way document-payload merges, with structured conflict reporting when both sides changed the same TTID differently.
 - **Machine version-control operations**: `exec --request` now supports `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, and `merge` so compiled-binary consumers can drive the same version-control flow from any language.
-- **Remote HTTP gateway**: `fylo serve` exposes a PostgREST-inspired HTTP boundary over a local FYLO root with bearer-token auth, URL-based filtering, branch profiles via `Accept-Profile`/`Content-Profile` headers, and an embeddable `createFyloHttpHandler` export under `@d31ma/fylo/server`.
+- **Remote HTTP gateway**: `fylo serve` exposes a PostgREST-inspired HTTP boundary over a local BYCKR root with bearer-token auth, URL-based filtering, branch profiles via `Accept-Profile`/`Content-Profile` headers, and an embeddable `createFyloHttpHandler` export under `@d31ma/fylo/server`.
 - **Compiled binary interop**: CI now verifies the compiled `fylo` binary against Python, Ruby, PHP, Dart, Java, C#, C++, Swift, Kotlin, and Rust callers.
 
 ### Notes
@@ -1865,18 +1865,18 @@
 ### Breaking Changes
 
 - **Constructor is path-first only**: use `new Fylo('/path/to/db', options)`. The old `new Fylo({ root })` form and `fylo://` protocol strings are rejected so CLI, JS, and machine-call consumers all share one executable-friendly calling convention.
-- **Collection facades added as the primary ergonomic API**: `fylo.db.<collection>` exposes collection-scoped methods such as `getDoc`, `findDocs`, `putData`, `patchDoc`, `delDoc`, `findDeletedDocs`, and `restoreDoc`. Collection names that collide with reserved FYLO properties fail closed.
+- **Collection facades added as the primary ergonomic API**: `fylo.db.<collection>` exposes collection-scoped methods such as `getDoc`, `findDocs`, `putData`, `patchDoc`, `delDoc`, `findDeletedDocs`, and `restoreDoc`. Collection names that collide with reserved BYCKR properties fail closed.
 
 ### Added
 
-- **SQL template tag**: `const { sql } = new Fylo('/path')` supports scalar interpolation with SQL-string escaping and delegates to the existing FYLO SQL executor.
+- **SQL template tag**: `const { sql } = new Fylo('/path')` supports scalar interpolation with SQL-string escaping and delegates to the existing BYCKR SQL executor.
 - **Query result caching**: opt-in `cache` configuration supports memory and Bun Redis backends with `cache-aside`, `read-through`, `write-through`, and `write-around` strategies.
-- **Redis configuration**: FYLO checks `cache.redis.url`, then `FYLO_REDIS_URL`; if neither is provided, Bun's native Redis client resolves `REDIS_URL`, `VALKEY_URL`, or localhost.
+- **Redis configuration**: BYCKR checks `cache.redis.url`, then `YCKR_REDIS_URL`; if neither is provided, Bun's native Redis client resolves `REDIS_URL`, `VALKEY_URL`, or localhost.
 - **Stampede protection**: identical in-process cache misses are single-flighted so concurrent hot queries share one storage/index lookup.
 
 ### Changed
 
-- Query caching stores matched TTID lists only and always hydrates documents from canonical FYLO storage files, avoiding decrypted document payloads in Redis.
+- Query caching stores matched TTID lists only and always hydrates documents from canonical BYCKR storage files, avoiding decrypted document payloads in Redis.
 - Collection cache invalidation is version-based. Mutations bump a per-collection cache version and old Redis keys expire naturally by TTL.
 - CLI and machine-interface constructors now use the same path-first API as JS consumers.
 - README and production fixture docs now show path-first construction, `sql` usage, collection facades, and cache configuration.
@@ -1918,7 +1918,7 @@
 
 ### Added
 
-- **Auto-bootstrap collections from `FYLO_SCHEMA`**: `new Fylo(...)` now scans the schema directory and creates any collection that has a `manifest.json`. Existing collections are untouched (creation is idempotent).
+- **Auto-bootstrap collections from `YCKR_SCHEMA`**: `new Fylo(...)` now scans the schema directory and creates any collection that has a `manifest.json`. Existing collections are untouched (creation is idempotent).
 - **`fylo.ready()`**: awaits startup bootstrap. Mutation and query methods already await internally; this is only needed for synchronous probes against `inspectCollection` before a write has been issued.
 - **`globalThis.Fylo`**: the package entry registers the default `Fylo` class on the global scope using nullish coalescing. Enables preloaded-runtime usage without changing the module API for existing consumers.
 - Regression test `tests/integration/global.test.js` for the global registration.
@@ -1931,15 +1931,15 @@
 
 ### Fixed
 
-- **Schema guardrail**: FYLO now rejects arrays of objects in schema definitions with a clear error (`FYLO schema '<name>' does not support arrays of objects at '<path>'`), even though CHEX accepts them. Use a separate collection for nested object lists. Arrays of scalars and nested objects (as fields) remain supported.
-- **`Fylo.defaultRoot()` and `FilesystemEngine` constructor default both fall back to the data dir when `FYLO_ROOT` is the empty string** (previously only fell back when unset). Without this, the new bootstrap would write collections to `./.collections/` at the caller's `process.cwd()` when `FYLO_ROOT=` was exported by a launcher.
+- **Schema guardrail**: BYCKR now rejects arrays of objects in schema definitions with a clear error (`BYCKR schema '<name>' does not support arrays of objects at '<path>'`), even though CHEX accepts them. Use a separate collection for nested object lists. Arrays of scalars and nested objects (as fields) remain supported.
+- **`Fylo.defaultRoot()` and `FilesystemEngine` constructor default both fall back to the data dir when `YCKR_ROOT` is the empty string** (previously only fell back when unset). Without this, the new bootstrap would write collections to `./.collections/` at the caller's `process.cwd()` when `YCKR_ROOT=` was exported by a launcher.
 - `tests/integration/filesystem.performance.test.js` no longer constructs a placeholder `Fylo` at module load time. The placeholder did nothing useful and would trigger the bootstrap with an empty root under the new behavior, even when the suite was skipped.
 
 ## 26.21.02 - 2026-05-19
 
 ### Changed
 
-- **Env var rename**: `FYLO_SCHEMA_DIR` replaced by `FYLO_SCHEMA`. A `schemaEnv()` / `syncChexSchemaEnv()` bridge module (`src/schema/env.js`) syncs the value to `CHEX_SCHEMA_DIR` for CHEX compatibility.
+- **Env var rename**: `YCKR_SCHEMA_DIR` replaced by `YCKR_SCHEMA`. A `schemaEnv()` / `syncChexSchemaEnv()` bridge module (`src/schema/env.js`) syncs the value to `CHEX_SCHEMA_DIR` for CHEX compatibility.
 - **Schema file convention**: Versioned schema files renamed from `<name>.json` to `<name>.schema.json`.
 - **Test schemas consolidated**: Removed `tests/schemas/` directory; tests now use `examples/db/schemas/` as the single source of truth.
 - **Internal readability**: Variable names improved across the codebase (e.g., `selCol` → `selectedCollection`, `res` → `response`, `delCol` → `deleteCollection`).
@@ -1964,7 +1964,7 @@
 
 ### Added
 
-- Added `examples/db`, a production-shaped FYLO fixture with seeded `users`,
+- Added `examples/db`, a production-shaped BYCKR fixture with seeded `users`,
   `orders`, and queue directories.
 - Integration tests now seed database roots from `examples/db` through
   `createTestRoot()`.
@@ -1987,8 +1987,8 @@ release is greenfield-only and intended for fresh deployments.
 
 - `s3FilesRoot` and `filesystemRoot` constructor options are removed.
   Use `root` instead.
-- `FYLO_S3FILES_ROOT` and `FYLO_FILESYSTEM_ROOT` environment variables
-  are removed. Use `FYLO_ROOT` instead.
+- `YCKR_S3FILES_ROOT` and `YCKR_FILESYSTEM_ROOT` environment variables
+  are removed. Use `YCKR_ROOT` instead.
 
 #### Encryption
 
@@ -2047,10 +2047,10 @@ domain-driven structure. If you imported from internal paths, update:
   reports rejected URLs as `protocol`, `host`, `private-network`, or
   `redirect`. Private/loopback/link-local IPv4 + IPv6 ranges are blocked
   by default; off-host redirects are rejected after the first hop.
-- **`FYLO_CIPHER_SALT` is fail-closed.** When a collection schema requires
-  encryption (`$encrypted` fields) and `FYLO_CIPHER_SALT` is missing, FYLO
+- **`YCKR_CIPHER_SALT` is fail-closed.** When a collection schema requires
+  encryption (`$encrypted` fields) and `YCKR_CIPHER_SALT` is missing, BYCKR
   refuses to configure the cipher rather than silently deriving a
-  default. Deployments must set `FYLO_CIPHER_SALT` explicitly before any
+  default. Deployments must set `YCKR_CIPHER_SALT` explicitly before any
   encrypted write or read.
 - **Multi-address pinning.** When a host resolves to multiple addresses
   (dual-stack, multi-A), `importBulkData` now tries them in order

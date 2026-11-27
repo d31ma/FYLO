@@ -114,7 +114,7 @@ fn version(ordinal: u32) -> String {
 }
 
 /// One file of a file layout collection: its bytes, modification time,
-/// FYLO attributes and mode.
+/// BYCKR attributes and mode.
 type FileImage = (Vec<u8>, u128, Vec<(String, Vec<u8>)>, u32);
 
 /// Every document file of the file layout collection in `directory`, by

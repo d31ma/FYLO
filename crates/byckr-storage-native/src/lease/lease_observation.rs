@@ -68,7 +68,7 @@ impl LeaseObservation {
 
     fn unknown_owner_message(canonical: &Path) -> String {
         format!(
-            "FYLO root already has a live exclusive owner: {}",
+            "BYCKR root already has a live exclusive owner: {}",
             canonical.to_string_lossy()
         )
     }

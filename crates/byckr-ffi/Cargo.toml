@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "FYLO's C ABI for iOS and Android apps (ADR 0026)"
+description = "BYCKR's C ABI for iOS and Android apps (ADR 0026)"
 publish = false
 
 [lib]

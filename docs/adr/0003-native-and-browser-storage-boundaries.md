@@ -3,11 +3,11 @@
 - Status: **Accepted; S3 scope superseded by ADR 0007**
 - Later decision: [ADR 0033](0033-primary-layout-on-a-data-drive.md) (accepted, not yet built) makes the unit of ownership one namespace instead of one root, when it ships.
 - Date: **2026-07-26**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 
 ## Context
 
-FYLO's native product is a local-filesystem-primary document store. Users may
+BYCKR's native product is a local-filesystem-primary document store. Users may
 place the root on a locally mounted filesystem that supplies the required
 locking, atomic replacement, durability, metadata, and security semantics.
 Filesystem snapshots and replication remain deployment concerns.
@@ -81,7 +81,7 @@ Unsupported semantics fail with stable errors or lower the support tier.
 
 The public metadata contract includes:
 
-- custom FYLO metadata;
+- custom BYCKR metadata;
 - canonical timestamps such as `mtime`, `updatedAt`, and `createdAt` where the
   platform can supply or persist them;
 - size, content type, and other canonical fields defined by the versioned
@@ -97,7 +97,7 @@ unsupported. It never silently claims cross-platform permission equivalence.
 
 Benefits:
 
-- native FYLO retains direct-disk performance and real-time mounted-filesystem
+- native BYCKR retains direct-disk performance and real-time mounted-filesystem
   behavior;
 - browser users get user-controlled documents with private derived indexes;
 - OPFS loss is recoverable;

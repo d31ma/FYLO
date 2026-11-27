@@ -1,4 +1,4 @@
-//! FYLO in-process: open a root in the host's own process and use its
+//! BYCKR in-process: open a root in the host's own process and use its
 //! documents, collections and queues through typed, synchronous calls.
 //!
 //! It wraps the same engine the CLI and the machine protocol use, with no
@@ -103,7 +103,7 @@ impl OpenOptions {
     }
 }
 
-/// One open FYLO root, owned by this process until it is closed or dropped.
+/// One open BYCKR root, owned by this process until it is closed or dropped.
 #[derive(Debug)]
 pub struct Root {
     path: PathBuf,

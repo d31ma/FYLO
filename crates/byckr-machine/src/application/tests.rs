@@ -210,7 +210,7 @@ fn removed_chex_setting_is_rejected_with_its_replacement() {
     let fixture = Fixture::new();
     assert_eq!(
         fixture.error(r#"{"fylo":{"chex":{"binary":"./chex"}}}"#),
-        "fylo.chex is no longer supported; CHEX schema validation is built into FYLO, so remove the setting"
+        "fylo.chex is no longer supported; CHEX schema validation is built into BYCKR, so remove the setting"
     );
 }
 
@@ -298,7 +298,7 @@ fn encryption_file_opts_into_encrypted_databases_with_the_key_alone() {
     std::fs::write(
         fixture.0.join(".env"),
         format!(
-            "FYLO_UNIT_DATABASE_KEY={}\n",
+            "YCKR_UNIT_DATABASE_KEY={}\n",
             "generated-unit-key-".repeat(2)
         ),
     )
@@ -309,21 +309,21 @@ fn encryption_file_opts_into_encrypted_databases_with_the_key_alone() {
     assert!(plain.creation_key().is_none());
 
     let config = fixture
-        .load(r#"{"fylo":{"encryption":{"key":"${FYLO_UNIT_DATABASE_KEY}","file":true}}}"#)
+        .load(r#"{"fylo":{"encryption":{"key":"${YCKR_UNIT_DATABASE_KEY}","file":true}}}"#)
         .unwrap();
     assert!(config.encrypt_databases);
     assert!(config.creation_key().is_some());
     // A database key alone encrypts files, and no field.
     assert!(config.credentials.is_none());
     let unset =
-        fixture.load(r#"{"fylo":{"encryption":{"key":"${FYLO_UNIT_DATABASE_KEY}","file":false}}}"#);
+        fixture.load(r#"{"fylo":{"encryption":{"key":"${YCKR_UNIT_DATABASE_KEY}","file":false}}}"#);
     assert!(unset.is_err(), "a key without file still needs its salt");
 }
 
 #[test]
 fn encryption_file_errors_are_stable() {
     let fixture = Fixture::new();
-    std::fs::write(fixture.0.join(".env"), "FYLO_UNIT_SHORT_KEY=short\n").unwrap();
+    std::fs::write(fixture.0.join(".env"), "YCKR_UNIT_SHORT_KEY=short\n").unwrap();
     assert_eq!(
         fixture.error(r#"{"fylo":{"encryption":{"file":"yes"}}}"#),
         "fylo.encryption.file must be a boolean"
@@ -334,7 +334,7 @@ fn encryption_file_errors_are_stable() {
     );
     assert!(
         fixture
-            .error(r#"{"fylo":{"encryption":{"key":"${FYLO_UNIT_SHORT_KEY}","file":true}}}"#)
+            .error(r#"{"fylo":{"encryption":{"key":"${YCKR_UNIT_SHORT_KEY}","file":true}}}"#)
             .contains("32")
     );
     assert_eq!(
@@ -351,7 +351,7 @@ fn a_new_database_key_is_named_by_a_secret_reference_as_the_configured_one_is() 
     std::fs::write(
         fixture.0.join(".env"),
         format!(
-            "FYLO_UNIT_NEXT_KEY={}\nFYLO_UNIT_SHORT_NEXT_KEY=short\n",
+            "YCKR_UNIT_NEXT_KEY={}\nYCKR_UNIT_SHORT_NEXT_KEY=short\n",
             "generated-next-key-".repeat(2)
         ),
     )
@@ -359,7 +359,7 @@ fn a_new_database_key_is_named_by_a_secret_reference_as_the_configured_one_is() 
     let resolve = |reference: &str| {
         ApplicationConfig::database_key_reference(Some(&config), reference, "--new-key")
     };
-    assert!(resolve("${FYLO_UNIT_NEXT_KEY}").is_ok());
+    assert!(resolve("${YCKR_UNIT_NEXT_KEY}").is_ok());
     // A literal is refused without echoing it, as fylo.encryption.key is.
     let literal = "generated-literal-secret-of-forty-bytes!";
     let error = resolve(literal).unwrap_err();
@@ -369,14 +369,14 @@ fn a_new_database_key_is_named_by_a_secret_reference_as_the_configured_one_is() 
     );
     assert!(!error.contains(literal));
     assert_eq!(
-        resolve("${FYLO_UNIT_SHORT_NEXT_KEY}").unwrap_err(),
+        resolve("${YCKR_UNIT_SHORT_NEXT_KEY}").unwrap_err(),
         "--new-key must name a secret of at least 32 UTF-8 bytes"
     );
     assert_eq!(
-        resolve("${FYLO_UNIT_ABSENT_NEXT_KEY}").unwrap_err(),
-        "missing referenced secret FYLO_UNIT_ABSENT_NEXT_KEY"
+        resolve("${YCKR_UNIT_ABSENT_NEXT_KEY}").unwrap_err(),
+        "missing referenced secret YCKR_UNIT_ABSENT_NEXT_KEY"
     );
-    assert!(resolve("prefix-${FYLO_UNIT_NEXT_KEY}").is_err());
+    assert!(resolve("prefix-${YCKR_UNIT_NEXT_KEY}").is_err());
 }
 
 #[test]

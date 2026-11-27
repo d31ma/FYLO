@@ -4,7 +4,7 @@
 pub enum TempCacheMode {
     /// Nothing is read from or written to the temp folder.
     Off,
-    /// FYLO decides once, when a session opens its root.
+    /// BYCKR decides once, when a session opens its root.
     #[default]
     Auto,
     /// Any folder root uses the tier when its cache folder is safe.

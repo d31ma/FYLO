@@ -5,7 +5,7 @@ typechecking, formatting, and all 126 browser tests (391 assertions). Two
 test-only Clippy defects were fixed without suppressions: a complex numeric
 sample return type and an unchecked size conversion. Two FSA interop tests now
 resolve the native executable using `CargoArtifacts`, honoring `CARGO_TARGET_DIR`
-while preserving `FYLO_BINARY` overrides and ordinary-platform defaults.
+while preserving `YCKR_BINARY` overrides and ordinary-platform defaults.
 
 The new filename rule is applied to the previously extracted production types:
 `EqualityPlan`, `ApplicationConfig`, `IndexCache`, `BrowserPath`,

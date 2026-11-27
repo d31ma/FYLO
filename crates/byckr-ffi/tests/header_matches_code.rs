@@ -99,7 +99,7 @@ fn every_exported_function_has_the_same_c_signature_in_the_header() {
 #[test]
 fn the_header_names_the_abi_version_the_library_reports() {
     let header = crate_file("include/fylo.h");
-    let expected = format!("#define FYLO_ABI_VERSION {}", byckr_ffi::CAbi::ABI_VERSION);
+    let expected = format!("#define YCKR_ABI_VERSION {}", byckr_ffi::CAbi::ABI_VERSION);
     assert!(header.contains(&expected), "fylo.h lacks `{expected}`");
 }
 
@@ -107,15 +107,15 @@ fn the_header_names_the_abi_version_the_library_reports() {
 fn the_header_gives_every_status_its_number() {
     let header = crate_file("include/fylo.h");
     let statuses = [
-        ("FYLO_OK", byckr_ffi::FyloStatus::Ok),
-        ("FYLO_NOT_FOUND", byckr_ffi::FyloStatus::NotFound),
-        ("FYLO_ERROR", byckr_ffi::FyloStatus::Error),
+        ("YCKR_OK", byckr_ffi::FyloStatus::Ok),
+        ("YCKR_NOT_FOUND", byckr_ffi::FyloStatus::NotFound),
+        ("YCKR_ERROR", byckr_ffi::FyloStatus::Error),
         (
-            "FYLO_INVALID_ARGUMENT",
+            "YCKR_INVALID_ARGUMENT",
             byckr_ffi::FyloStatus::InvalidArgument,
         ),
-        ("FYLO_CLOSED", byckr_ffi::FyloStatus::Closed),
-        ("FYLO_PANIC", byckr_ffi::FyloStatus::Panic),
+        ("YCKR_CLOSED", byckr_ffi::FyloStatus::Closed),
+        ("YCKR_PANIC", byckr_ffi::FyloStatus::Panic),
     ];
     let declared = header.matches(" = ").count();
     assert_eq!(declared, statuses.len(), "fylo.h declares other values");

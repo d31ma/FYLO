@@ -17,7 +17,7 @@ use byckr_storage_native::{
 use serde_json::{Map, Value, json};
 
 const ITEMS: &str = "items";
-const CHILD: &str = "FYLO_SCHEMA_COUNTS_CHILD";
+const CHILD: &str = "YCKR_SCHEMA_COUNTS_CHILD";
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture {
@@ -327,13 +327,13 @@ fn run_crash_child(fixture: &Fixture, operation: &str, failpoint: &str) {
     let status = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "crash_child", "--nocapture", "--test-threads=1"])
         .env(CHILD, operation)
-        .env("FYLO_SCHEMA_COUNTS_ROOT", &fixture.root)
+        .env("YCKR_SCHEMA_COUNTS_ROOT", &fixture.root)
         .env(
-            "FYLO_SCHEMA_COUNTS_EFS",
+            "YCKR_SCHEMA_COUNTS_EFS",
             if fixture.efs { "1" } else { "0" },
         )
-        .env("FYLO_RUST_FAILPOINT", failpoint)
-        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .env("YCKR_RUST_FAILPOINT", failpoint)
+        .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
         .status()
         .unwrap();
     assert!(!status.success(), "{operation} did not stop at {failpoint}");
@@ -345,8 +345,8 @@ fn crash_child() {
     let Ok(operation) = std::env::var(CHILD) else {
         return;
     };
-    let root = PathBuf::from(std::env::var("FYLO_SCHEMA_COUNTS_ROOT").unwrap());
-    let efs = std::env::var("FYLO_SCHEMA_COUNTS_EFS").unwrap() == "1";
+    let root = PathBuf::from(std::env::var("YCKR_SCHEMA_COUNTS_ROOT").unwrap());
+    let efs = std::env::var("YCKR_SCHEMA_COUNTS_EFS").unwrap() == "1";
     let fixture = Fixture::at(&root, efs);
     let writer = fixture.writer();
     match operation.as_str() {

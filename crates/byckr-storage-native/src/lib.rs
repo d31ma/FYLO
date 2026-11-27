@@ -1,4 +1,4 @@
-//! Read-only native access to the existing FYLO filesystem layout.
+//! Read-only native access to the existing BYCKR filesystem layout.
 //!
 //! This crate never creates, renames, truncates, deletes, changes metadata, or
 //! acquires a writer lock. It rejects linked components below the canonical
@@ -109,7 +109,7 @@ mod record_attributes;
 #[expect(
     dead_code,
     unused_imports,
-    reason = "FYLO-L1-4b and FYLO-PERF1 move the metadata writes onto this module; remove when both call it"
+    reason = "BYCKR-L1-4b and BYCKR-PERF1 move the metadata writes onto this module; remove when both call it"
 )]
 mod record_metadata;
 mod root_damage;
@@ -267,7 +267,7 @@ pub const MAX_RAW_FILE_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_INDEX_WAL_BYTES: u64 = index_limit::IndexLimit::LOG_READ_BYTES;
 /// Maximum developer metadata value accepted from one xattr/ADS entry.
 pub const MAX_META_VALUE_BYTES: usize = 60 * 1024;
-/// Maximum aggregate FYLO metadata accepted from one raw file.
+/// Maximum aggregate BYCKR metadata accepted from one raw file.
 pub const MAX_FILE_METADATA_BYTES: usize = 1024 * 1024;
 /// Maximum version-control ref or commit-manifest bytes.
 pub const MAX_VERSION_METADATA_BYTES: u64 = 1024 * 1024;
@@ -302,7 +302,7 @@ const RESERVED_COLLECTIONS: &[&str] = &[
     "_sql",
 ];
 
-/// Canonical read-only FYLO root.
+/// Canonical read-only BYCKR root.
 #[derive(Clone, Debug)]
 pub struct NativeRoot {
     canonical: PathBuf,
@@ -334,7 +334,7 @@ impl NativeRoot {
     }
 
     /// Open a materialized worktree whose catalog and version repository live
-    /// at a separate canonical FYLO root.
+    /// at a separate canonical BYCKR root.
     ///
     /// # Errors
     ///
@@ -367,7 +367,7 @@ impl NativeRoot {
         if !metadata.is_dir() {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::WrongType,
-                "FYLO root is not a directory",
+                "BYCKR root is not a directory",
             ));
         }
         let repository_root =
@@ -379,7 +379,7 @@ impl NativeRoot {
         {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::WrongType,
-                "FYLO repository root is not a directory",
+                "BYCKR repository root is not a directory",
             ));
         }
         if let Some(lease) = options.lease.as_ref() {
@@ -1159,7 +1159,7 @@ impl NativeRoot {
             if !seen.insert(identifier.clone()) {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::CorruptMetadata,
-                    "FYLO commit history contains a cycle",
+                    "BYCKR commit history contains a cycle",
                 ));
             }
             let path = self
@@ -1174,7 +1174,7 @@ impl NativeRoot {
             .map_err(|error| {
                 NativeStorageError::new(
                     NativeStorageErrorCode::CorruptMetadata,
-                    format!("FYLO commit manifest is corrupt: {error}"),
+                    format!("BYCKR commit manifest is corrupt: {error}"),
                 )
             })?;
             commit.validate(&identifier)?;
@@ -1201,7 +1201,7 @@ impl NativeRoot {
             String::from_utf8(self.read_repository_file(&head_path, 4096)?).map_err(|error| {
                 NativeStorageError::new(
                     NativeStorageErrorCode::CorruptMetadata,
-                    format!("FYLO repository HEAD is not valid UTF-8: {error}"),
+                    format!("BYCKR repository HEAD is not valid UTF-8: {error}"),
                 )
             })?;
         let branch = head
@@ -1210,7 +1210,7 @@ impl NativeRoot {
             .ok_or_else(|| {
                 NativeStorageError::new(
                     NativeStorageErrorCode::CorruptMetadata,
-                    "FYLO repository HEAD is corrupt",
+                    "BYCKR repository HEAD is corrupt",
                 )
             })?;
         validate_branch_name(branch)?;
@@ -1226,20 +1226,20 @@ impl NativeRoot {
         .map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                format!("FYLO branch ref is corrupt: {error}"),
+                format!("BYCKR branch ref is corrupt: {error}"),
             )
         })?;
         if reference.name != branch {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                "FYLO branch ref name does not match HEAD",
+                "BYCKR branch ref name does not match HEAD",
             ));
         }
         if let Some(head) = &reference.head {
             validate_ttid_shape(head).map_err(|error| {
                 NativeStorageError::new(
                     NativeStorageErrorCode::CorruptMetadata,
-                    format!("FYLO branch head is invalid: {error}"),
+                    format!("BYCKR branch head is invalid: {error}"),
                 )
             })?;
         }
@@ -1294,7 +1294,7 @@ impl NativeRoot {
                     if !active.insert(identifier.clone()) {
                         return Err(NativeStorageError::new(
                             NativeStorageErrorCode::CorruptMetadata,
-                            "FYLO commit graph contains a cycle",
+                            "BYCKR commit graph contains a cycle",
                         ));
                     }
                     if state.commits_verified >= limit {
@@ -1338,7 +1338,7 @@ impl NativeRoot {
         validate_ttid_shape(identifier).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                format!("FYLO commit identifier is invalid: {error}"),
+                format!("BYCKR commit identifier is invalid: {error}"),
             )
         })?;
         let path = self
@@ -1352,7 +1352,7 @@ impl NativeRoot {
                 .map_err(|error| {
                     NativeStorageError::new(
                         NativeStorageErrorCode::CorruptMetadata,
-                        format!("FYLO commit manifest is corrupt: {error}"),
+                        format!("BYCKR commit manifest is corrupt: {error}"),
                     )
                 })?;
         commit.validate(identifier)?;
@@ -1376,7 +1376,7 @@ impl NativeRoot {
         .map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                format!("FYLO commit tree pointer is corrupt: {error}"),
+                format!("BYCKR commit tree pointer is corrupt: {error}"),
             )
         })?;
         if let Some(root) = pointer.root {
@@ -1405,7 +1405,7 @@ impl NativeRoot {
         let node: VersionTreeNode = serde_json::from_slice(&bytes).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                format!("FYLO version tree object is corrupt: {error}"),
+                format!("BYCKR version tree object is corrupt: {error}"),
             )
         })?;
         if node.entries.is_empty()
@@ -1416,7 +1416,7 @@ impl NativeRoot {
         {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                "FYLO version tree entries are empty, duplicated, or unsorted",
+                "BYCKR version tree entries are empty, duplicated, or unsorted",
             ));
         }
         for entry in node.entries {
@@ -1448,7 +1448,7 @@ impl NativeRoot {
         if sha256_hex(&bytes) != hash {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                format!("FYLO version object {hash} failed content-hash verification"),
+                format!("BYCKR version object {hash} failed content-hash verification"),
             ));
         }
         Ok(bytes)
@@ -1468,13 +1468,13 @@ impl NativeRoot {
             total = total.checked_add(read as u64).ok_or_else(|| {
                 NativeStorageError::new(
                     NativeStorageErrorCode::FileTooLarge,
-                    "FYLO version object byte count overflow",
+                    "BYCKR version object byte count overflow",
                 )
             })?;
             if total > max_bytes {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::FileTooLarge,
-                    "FYLO version object exceeds the verification byte limit",
+                    "BYCKR version object exceeds the verification byte limit",
                 ));
             }
             digest.update(&buffer[..read]);
@@ -1483,7 +1483,7 @@ impl NativeRoot {
         if actual != hash || total != metadata.len() {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                format!("FYLO version object {hash} failed content-hash verification"),
+                format!("BYCKR version object {hash} failed content-hash verification"),
             ));
         }
         Ok(total)
@@ -1575,7 +1575,7 @@ impl NativeRoot {
         let relative = target.strip_prefix(&self.canonical).map_err(|_| {
             NativeStorageError::new(
                 NativeStorageErrorCode::UnsafePath,
-                "storage path escapes the canonical FYLO root",
+                "storage path escapes the canonical BYCKR root",
             )
         })?;
         let mut current = self.canonical.clone();
@@ -1628,7 +1628,7 @@ impl NativeRoot {
         let message = if replaced {
             "storage path changed while an open file was being read"
         } else {
-            "canonical storage path escapes the FYLO root"
+            "canonical storage path escapes the BYCKR root"
         };
         NativeStorageError::new(NativeStorageErrorCode::UnsafePath, message)
     }
@@ -2139,7 +2139,7 @@ impl VersionTreeEntry {
         } else {
             Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                "FYLO version tree entry has an invalid schema",
+                "BYCKR version tree entry has an invalid schema",
             ))
         }
     }
@@ -2201,13 +2201,13 @@ impl VersionVerificationState {
             }
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                "FYLO version object is referenced with conflicting types",
+                "BYCKR version object is referenced with conflicting types",
             ));
         }
         if self.objects.len() >= MAX_VERSION_OBJECTS {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::FileTooLarge,
-                "FYLO version verification exceeds the object-count limit",
+                "BYCKR version verification exceeds the object-count limit",
             ));
         }
         self.objects.insert(hash.to_owned(), kind);
@@ -2218,13 +2218,13 @@ impl VersionVerificationState {
         self.verified_bytes = self.verified_bytes.checked_add(bytes).ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::FileTooLarge,
-                "FYLO version verification byte count overflow",
+                "BYCKR version verification byte count overflow",
             )
         })?;
         if self.verified_bytes > MAX_VERSION_TOTAL_BYTES {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::FileTooLarge,
-                "FYLO version verification exceeds the aggregate byte limit",
+                "BYCKR version verification exceeds the aggregate byte limit",
             ));
         }
         Ok(())
@@ -3480,11 +3480,11 @@ pub struct StoredBytes {
 pub struct StoredRawFile {
     /// Unwrapped file bytes.
     pub bytes: Vec<u8>,
-    /// Durable logical object key from FYLO metadata.
+    /// Durable logical object key from BYCKR metadata.
     pub key: String,
     /// Safe final filename extension, including the leading dot.
     pub extension: String,
-    /// Content type inferred using the existing FYLO extension table.
+    /// Content type inferred using the existing BYCKR extension table.
     pub content_type: String,
     /// SHA-256 checksum of the returned bytes.
     pub checksum_sha256: String,
@@ -3542,7 +3542,7 @@ pub struct IndexVerification {
     pub extra_key_sample: Vec<String>,
 }
 
-/// Active first-parent FYLO repository history.
+/// Active first-parent BYCKR repository history.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepositoryHistory {
@@ -3582,7 +3582,7 @@ pub struct VersionVerification {
     pub content_integrity: bool,
 }
 
-/// Validated immutable FYLO commit manifest.
+/// Validated immutable BYCKR commit manifest.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionCommit {
@@ -3610,13 +3610,13 @@ impl VersionCommit {
         if self.id != expected_identifier {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                "FYLO commit manifest ID does not match its directory",
+                "BYCKR commit manifest ID does not match its directory",
             ));
         }
         validate_ttid_shape(&self.id).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                format!("FYLO commit manifest ID is invalid: {error}"),
+                format!("BYCKR commit manifest ID is invalid: {error}"),
             )
         })?;
         validate_branch_name(&self.branch)?;
@@ -3632,7 +3632,7 @@ impl VersionCommit {
         {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                "FYLO commit manifest has an invalid schema",
+                "BYCKR commit manifest has an invalid schema",
             ));
         }
         Ok(())
@@ -3772,7 +3772,7 @@ pub enum NativeStorageErrorCode {
     /// The root is on a network filesystem, where locks do not stop another
     /// machine from writing it (ADR 0029).
     RemoteRoot,
-    /// The root is on the system disk, or a disk FYLO cannot tell, and
+    /// The root is on the system disk, or a disk BYCKR cannot tell, and
     /// neither the opt-out nor app mode admits it (ADR 0032).
     SystemDisk,
     /// The file system failed the probe when the app folder was created, or
@@ -3871,7 +3871,7 @@ impl NativeStorageErrorCode {
             Self::Signature => "ESIGNATURE",
             Self::AppName => "EAPPNAME",
             Self::Namespace => "ENAMESPACE",
-            Self::NotFyloRoot => "ENOTFYLOROOT",
+            Self::NotFyloRoot => "ENOTBYCKRROOT",
             Self::NamespaceExists => "ENAMESPACEEXISTS",
             Self::NamespaceNotEmpty => "ENAMESPACENOTEMPTY",
             Self::NamespaceUnsupported => "ENAMESPACEUNSUPPORTED",
@@ -3895,7 +3895,7 @@ impl NativeStorageError {
     pub fn namespace_unsupported() -> Self {
         Self::new(
             NativeStorageErrorCode::NamespaceUnsupported,
-            "namespaces are not yet supported in this build; namespace separation arrives with the FYLO layout release (L1-5)",
+            "namespaces are not yet supported in this build; namespace separation arrives with the BYCKR layout release (L1-5)",
         )
     }
 
@@ -4001,7 +4001,7 @@ fn read_byckr_attributes(
         if aggregate_bytes > MAX_FILE_METADATA_BYTES {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::FileTooLarge,
-                "raw-file FYLO metadata exceeds 1 MiB",
+                "raw-file BYCKR metadata exceeds 1 MiB",
             ));
         }
         attributes.insert(name.to_owned(), value);
@@ -4010,7 +4010,7 @@ fn read_byckr_attributes(
     // a sidecar instead. File System Access lets a browser write into a real
     // folder the user picked, so that folder can arrive here — and without
     // this fallback its raw files are unreadable, because the logical `key` is
-    // required. Only consulted when the record has no FYLO xattrs of its own,
+    // required. Only consulted when the record has no BYCKR xattrs of its own,
     // so a native record is never shadowed by a stray file.
     if attributes.is_empty() {
         return read_sidecar_attributes(&sidecar_path(path));
@@ -4039,7 +4039,7 @@ fn read_byckr_attributes(
     if metadata.len() > MAX_WINDOWS_ADS_MANIFEST_BYTES {
         return Err(NativeStorageError::new(
             NativeStorageErrorCode::FileTooLarge,
-            "Windows FYLO ADS manifest exceeds 16 MiB",
+            "Windows BYCKR ADS manifest exceeds 16 MiB",
         ));
     }
     decode_attribute_manifest(&fs::read(stream).map_err(NativeStorageError::io)?)
@@ -4048,14 +4048,14 @@ fn read_byckr_attributes(
 /// Read one record's attributes from its sidecar.
 ///
 /// WebAssembly has no extended attributes under WASI and none in a browser, so
-/// the attributes FYLO would otherwise hang off the inode live in a sibling
+/// the attributes BYCKR would otherwise hang off the inode live in a sibling
 /// file. The encoding is the one Windows already uses for its alternate data
 /// stream — a JSON map of name to base64 value — so the three platforms differ
 /// only in where the manifest is kept, not in what it says.
 /// Read one record's attributes from its sidecar.
 ///
 /// WebAssembly has no extended attributes under WASI and none in a browser, so
-/// the attributes FYLO would otherwise hang off the inode live in a sibling
+/// the attributes BYCKR would otherwise hang off the inode live in a sibling
 /// file. The encoding is the one Windows already uses for its alternate data
 /// stream — a JSON map of name to base64 value — so the three platforms differ
 /// only in where the manifest is kept, not in what it says.
@@ -4108,7 +4108,7 @@ fn read_sidecar_attributes(
     if metadata.len() > MAX_SIDECAR_BYTES {
         return Err(NativeStorageError::new(
             NativeStorageErrorCode::FileTooLarge,
-            "FYLO attribute sidecar exceeds 16 MiB",
+            "BYCKR attribute sidecar exceeds 16 MiB",
         ));
     }
     decode_attribute_manifest(&fs::read(sidecar).map_err(NativeStorageError::io)?)
@@ -4128,7 +4128,7 @@ fn decode_attribute_manifest(
     let encoded: BTreeMap<String, String> = serde_json::from_slice(manifest).map_err(|error| {
         NativeStorageError::new(
             NativeStorageErrorCode::CorruptMetadata,
-            format!("FYLO attribute manifest is corrupt: {error}"),
+            format!("BYCKR attribute manifest is corrupt: {error}"),
         )
     })?;
     encoded
@@ -4183,13 +4183,13 @@ fn decode_access_descriptor(
     let descriptor: AccessDescriptor = serde_json::from_slice(encoded).map_err(|error| {
         NativeStorageError::new(
             NativeStorageErrorCode::CorruptMetadata,
-            format!("FYLO access descriptor is corrupt: {error}"),
+            format!("BYCKR access descriptor is corrupt: {error}"),
         )
     })?;
     if descriptor.version != 1 || descriptor.mode > 0o777 {
         return Err(NativeStorageError::new(
             NativeStorageErrorCode::CorruptMetadata,
-            "FYLO access descriptor is invalid",
+            "BYCKR access descriptor is invalid",
         ));
     }
     Ok(Some(descriptor))
@@ -4259,7 +4259,7 @@ fn matching_checksum(
         return Err(NativeStorageError::new(
             NativeStorageErrorCode::CorruptMetadata,
             format!(
-                "damaged FYLO file {}: its bytes do not match its recorded checksum",
+                "damaged BYCKR file {}: its bytes do not match its recorded checksum",
                 path.display()
             ),
         ));
@@ -4424,7 +4424,7 @@ fn raw_file_content_type(extension: &str) -> &'static str {
 
 fn decode_base64(encoded: &str) -> Result<Vec<u8>, &'static str> {
     if !encoded.len().is_multiple_of(4) {
-        return Err("FYLO attribute manifest contains invalid base64");
+        return Err("BYCKR attribute manifest contains invalid base64");
     }
     let mut output = Vec::with_capacity(encoded.len() / 4 * 3);
     let quartets = encoded.as_bytes().chunks_exact(4);
@@ -4432,7 +4432,7 @@ fn decode_base64(encoded: &str) -> Result<Vec<u8>, &'static str> {
     for (index, quartet) in quartets.enumerate() {
         let is_last = index + 1 == quartet_count;
         if !is_last && quartet.contains(&b'=') {
-            return Err("Windows FYLO ADS manifest contains invalid base64 padding");
+            return Err("Windows BYCKR ADS manifest contains invalid base64 padding");
         }
         let a = base64_value(quartet[0])?;
         let b = base64_value(quartet[1])?;
@@ -4447,7 +4447,7 @@ fn decode_base64(encoded: &str) -> Result<Vec<u8>, &'static str> {
             base64_value(quartet[3])?
         };
         if quartet[0] == b'=' || quartet[1] == b'=' || (quartet[2] == b'=' && quartet[3] != b'=') {
-            return Err("Windows FYLO ADS manifest contains invalid base64 padding");
+            return Err("Windows BYCKR ADS manifest contains invalid base64 padding");
         }
         output.push((a << 2) | (b >> 4));
         if quartet[2] != b'=' {
@@ -4467,7 +4467,7 @@ fn base64_value(byte: u8) -> Result<u8, &'static str> {
         b'0'..=b'9' => Ok(byte - b'0' + 52),
         b'+' => Ok(62),
         b'/' => Ok(63),
-        _ => Err("Windows FYLO ADS manifest contains invalid base64"),
+        _ => Err("Windows BYCKR ADS manifest contains invalid base64"),
     }
 }
 
@@ -4508,7 +4508,7 @@ fn validate_branch_name(name: &str) -> Result<(), NativeStorageError> {
     } else {
         Err(NativeStorageError::new(
             NativeStorageErrorCode::CorruptMetadata,
-            "FYLO branch name is invalid",
+            "BYCKR branch name is invalid",
         ))
     }
 }
@@ -4523,7 +4523,7 @@ fn validate_version_hash(hash: &str) -> Result<(), NativeStorageError> {
     } else {
         Err(NativeStorageError::new(
             NativeStorageErrorCode::CorruptMetadata,
-            "FYLO version object hash is invalid",
+            "BYCKR version object hash is invalid",
         ))
     }
 }
@@ -4738,7 +4738,7 @@ pub fn legacy_shard_of(identifier: &str) -> String {
 ///
 /// Either the canonical shard or the superseded leading-character one is
 /// accepted while the compatibility window is open; anything else means the
-/// record was moved by something other than FYLO.
+/// record was moved by something other than BYCKR.
 fn shard_matches(identifier: &str, shard_path: &Path, width: u32, previous: &[u32]) -> bool {
     let Some(shard) = shard_path.file_name().and_then(|name| name.to_str()) else {
         return false;
@@ -4814,7 +4814,7 @@ fn validate_ttid_shape(identifier: &str) -> Result<(), NativeStorageError> {
     if !valid || TtidTimestamps::decode(identifier).is_err() {
         return Err(NativeStorageError::new(
             NativeStorageErrorCode::InvalidDocumentId,
-            "invalid FYLO document identifier",
+            "invalid BYCKR document identifier",
         ));
     }
     Ok(())
@@ -4823,7 +4823,7 @@ fn validate_ttid_shape(identifier: &str) -> Result<(), NativeStorageError> {
 /// Reject an identifier that is valid but not canonically spelled.
 ///
 /// TTID matches identifiers case-insensitively and only ever emits uppercase,
-/// so one identifier has many accepted spellings. FYLO names a file after it:
+/// so one identifier has many accepted spellings. BYCKR names a file after it:
 /// two spellings are one record on a case-insensitive filesystem and two on a
 /// case-sensitive one, which makes the record count depend on the host. The
 /// caller is told rather than silently rewritten — `getDoc` should return the
@@ -4837,7 +4837,7 @@ fn validate_canonical_ttid(identifier: &str) -> Result<(), NativeStorageError> {
         return Err(NativeStorageError::new(
             NativeStorageErrorCode::InvalidDocumentId,
             format!(
-                "FYLO document identifier is not canonical: {identifier} (expected {})",
+                "BYCKR document identifier is not canonical: {identifier} (expected {})",
                 identifier.to_ascii_uppercase()
             ),
         ));

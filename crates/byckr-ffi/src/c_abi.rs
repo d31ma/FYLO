@@ -22,7 +22,7 @@ use crate::root_table::RootTable;
 pub struct CAbi;
 
 impl CAbi {
-    /// The ABI this library implements; `fylo.h`'s `FYLO_ABI_VERSION`.
+    /// The ABI this library implements; `fylo.h`'s `YCKR_ABI_VERSION`.
     pub const ABI_VERSION: u32 = 1;
 
     /// Report the ABI this library implements.
@@ -122,7 +122,7 @@ impl CAbi {
         unsafe { Self::deliver(outcome, out) }
     }
 
-    /// Read one document: `{"<id>": {...}}`, or `FYLO_NOT_FOUND`.
+    /// Read one document: `{"<id>": {...}}`, or `YCKR_NOT_FOUND`.
     ///
     /// # Safety
     ///
@@ -266,11 +266,11 @@ impl CAbi {
         unsafe { Self::deliver(outcome, out) }
     }
 
-    /// Give back a buffer FYLO returned. An empty buffer is ignored.
+    /// Give back a buffer BYCKR returned. An empty buffer is ignored.
     ///
     /// # Safety
     ///
-    /// `bytes` came from a FYLO call, unchanged, and is freed once.
+    /// `bytes` came from a BYCKR call, unchanged, and is freed once.
     #[unsafe(no_mangle)]
     #[allow(
         clippy::needless_pass_by_value,

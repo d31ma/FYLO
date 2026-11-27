@@ -4,7 +4,7 @@ use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Runs a system tool FYLO asks about disks, with a time limit and one
+/// Runs a system tool BYCKR asks about disks, with a time limit and one
 /// retry (ADR 0032 section 2.2). The program is an absolute path, never
 /// looked up in `PATH`, and no argument comes from input.
 pub(crate) struct ToolRunner {
@@ -15,7 +15,7 @@ pub(crate) struct ToolRunner {
 }
 
 impl ToolRunner {
-    /// The path FYLO runs `hdiutil` from; only this one.
+    /// The path BYCKR runs `hdiutil` from; only this one.
     pub(crate) const HDIUTIL: &'static str = "/usr/bin/hdiutil";
     const HDIUTIL_ARGUMENTS: &'static [&'static str] = &["info", "-plist"];
     const FIRST_LIMIT: Duration = Duration::from_secs(5);
@@ -57,7 +57,7 @@ impl ToolRunner {
         let first = self.attempt(self.limits[0], &parse);
         first.or_else(|reason| {
             eprintln!(
-                "FYLO warning: {} {reason}; trying again (ADR 0032).",
+                "BYCKR warning: {} {reason}; trying again (ADR 0032).",
                 self.name
             );
             self.attempt(self.limits[1], &parse)

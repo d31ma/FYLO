@@ -1,4 +1,4 @@
-/// A byte buffer FYLO gives the caller. The caller reads `len` bytes at `ptr`
+/// A byte buffer BYCKR gives the caller. The caller reads `len` bytes at `ptr`
 /// and gives the buffer back to `byckr_bytes_free` exactly once.
 #[repr(C)]
 #[derive(Debug)]

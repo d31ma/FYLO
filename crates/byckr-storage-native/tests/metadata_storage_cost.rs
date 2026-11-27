@@ -1,5 +1,5 @@
 //! What one document put with metadata costs when the app folder keeps
-//! metadata in extended attributes against sidecar files (FYLO-L1-4b). The
+//! metadata in extended attributes against sidecar files (BYCKR-L1-4b). The
 //! probe gives plain ext4 sidecar files, so this measures what that choice
 //! costs there. It prints the median of 20 puts per storage and asserts only
 //! that every put worked; run it on the disk to measure, through
@@ -101,7 +101,7 @@ fn median_millis(mut times: Vec<Duration>) -> f64 {
 }
 
 #[test]
-#[ignore = "measurement: run on the disk to measure, with FYLO_TEST_ROOT on it"]
+#[ignore = "measurement: run on the disk to measure, with YCKR_TEST_ROOT on it"]
 fn one_put_with_metadata_costs_this_much_in_each_storage() {
     let attributes = MeasuredRoot::new(FilesystemProfile::Native).put_times();
     let sidecars = MeasuredRoot::new(FilesystemProfile::EfsSidecarV1).put_times();

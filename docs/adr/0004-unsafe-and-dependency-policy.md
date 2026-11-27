@@ -2,12 +2,12 @@
 
 - Status: **Accepted**
 - Date: **2026-07-26**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - To be amended by [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md) (accepted, not yet built): `turso_core`, `turso_ext` and the Turso binding workspace leave the dependency list when it ships.
 
 ## Context
 
-Rust prevents broad classes of memory errors, but FYLO still operates across
+Rust prevents broad classes of memory errors, but BYCKR still operates across
 untrusted data, filesystem races, platform APIs, memory mapping, process
 boundaries, Wasm buffers, cryptography, and guarded network imports.
 
@@ -85,7 +85,7 @@ a disabled or weakened check is a security-impacting change.
 
 Reviewers consider:
 
-- whether the capability belongs in FYLO;
+- whether the capability belongs in BYCKR;
 - transitive dependency count and duplicate graph;
 - use of unsafe code, build scripts, proc macros, native libraries, and network
   access;
@@ -109,10 +109,10 @@ Boa 0.21.1 is the maintained crates.io release required to execute existing
 JavaScript schema upgrader modules without requiring Bun at runtime. It uses
 the archived `paste` crate as a compile-time proc macro. RUSTSEC-2024-0436 is a
 maintenance advisory, not a reported runtime vulnerability, and the macro is
-not shipped as executable runtime code in FYLO. `deny.toml` records the FYLO
+not shipped as executable runtime code in BYCKR. `deny.toml` records the BYCKR
 maintainers as owner and 2026-11-01 as the review/expiry date. The exception
 must be removed when Boa replaces the dependency; if no maintained path exists
-by that date, FYLO must replace the embedded runtime before promotion.
+by that date, BYCKR must replace the embedded runtime before promotion.
 
 ## Release behavior
 
@@ -160,7 +160,7 @@ release visibility.
 ### Depend only on automated vulnerability alerts
 
 Rejected because advisories do not evaluate licenses, sources, features,
-maintenance, unsafe code, build scripts, or suitability for FYLO.
+maintenance, unsafe code, build scripts, or suitability for BYCKR.
 
 ### Vendor every dependency immediately
 

@@ -103,7 +103,7 @@ root is repaired, and the third is the operation that resolves the mismatch.
 
 The layout yields uniformly used buckets — 36 at the default width, 1296 at
 width 2. Write locality is lost: consecutive writes scatter instead of landing
-together. FYLO tolerates this
+together. BYCKR tolerates this
 because queries are answered from the prefix index rather than by walking
 directories, and full scans are index rebuilds that are linear regardless. The
 cost lands on snapshot and replication tooling, whose copied objects now spread

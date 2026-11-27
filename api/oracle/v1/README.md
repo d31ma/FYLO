@@ -1,6 +1,6 @@
 # Released JavaScript Oracle Sources
 
-`releases.json` pins immutable FYLO JavaScript-engine release binaries used to
+`releases.json` pins immutable BYCKR JavaScript-engine release binaries used to
 generate compatibility roots. Each entry records the release tag, embedded
 source commit, target asset, and release checksum.
 

@@ -2,7 +2,7 @@
 
 - Status: **Accepted**
 - Date: **2026-11-11**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Builds on: ADR 0008 (the portable WebAssembly engine) and ADR 0016
   section 10 (single-file hosts in the browser).
 - Requested by: Mesail (CADUCEUS), request F1.
@@ -84,7 +84,7 @@ After every Worker call that can change the file (`exec`, and the `host`
 calls `write`, `truncate` and `flush`), and before the Worker replies, it
 writes all dirty pages, the new `size` and the deletions in **one** IndexedDB
 `readwrite` transaction, opened with `{ durability: 'strict' }`, and waits for
-its `complete` event. Only then does it post the reply. This keeps FYLO's rule
+its `complete` event. Only then does it post the reply. This keeps BYCKR's rule
 that a write is reported done only when it is stored.
 
 - One transaction is all or nothing. After a crash the stored file is either

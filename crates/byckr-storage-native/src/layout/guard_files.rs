@@ -6,7 +6,7 @@ use byckr_vfs as fs;
 use crate::{NativeStorageError, NativeStorageErrorCode};
 
 /// Three empty plain files, `.collections`, `.buckets` and `.fylo-catalog`,
-/// in every app folder and namespace folder (ADR 0033 section 1). An old FYLO
+/// in every app folder and namespace folder (ADR 0033 section 1). An old BYCKR
 /// binary expects folders with these names, so it fails on them instead of
 /// starting an empty database in a new-layout folder.
 pub struct GuardFiles;
@@ -80,7 +80,7 @@ impl GuardFiles {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::WrongType,
                 format!(
-                    "{} is not a plain file: this folder holds a FYLO root of the old layout",
+                    "{} is not a plain file: this folder holds a BYCKR root of the old layout",
                     path.display()
                 ),
             ));

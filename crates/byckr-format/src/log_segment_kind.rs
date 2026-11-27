@@ -23,8 +23,8 @@ impl LogSegmentKind {
     /// Bytes of the sync marker in front of a document segment frame.
     pub const MARKER_BYTES: usize = 4;
     const MARKER: [u8; Self::MARKER_BYTES] = [0xF5, 0x59, 0x52, 0x01];
-    const LOG_MAGIC: [u8; 8] = *b"FYLOLOG\0";
-    const DOCUMENT_MAGIC: [u8; 8] = *b"FYLOSEG\0";
+    const LOG_MAGIC: [u8; 8] = *b"BYCKRLOG\0";
+    const DOCUMENT_MAGIC: [u8; 8] = *b"BYCKRSEG\0";
     const COMPACTED_FLAG: u16 = 1;
 
     /// The magic that opens a segment of this kind.
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn a_log_with_flags_is_refused() {
         assert_eq!(
-            LogSegmentKind::from_header(b"FYLOLOG\0", 1),
+            LogSegmentKind::from_header(b"BYCKRLOG\0", 1),
             Err(LogFormatError::InvalidField)
         );
     }

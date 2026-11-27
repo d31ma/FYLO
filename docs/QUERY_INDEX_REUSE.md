@@ -7,7 +7,7 @@ predicates over all accessible records. An index candidate set may include extra
 records, but it must never omit a matching record. Document predicates, access
 checks, decryption, TTID ordering, and positive limits still run after planning.
 
-FYLO uses loose equality: for example, numeric `1` can match the string `"01"`
+BYCKR uses loose equality: for example, numeric `1` can match the string `"01"`
 and boolean `true`. Exact text keys alone are insufficient. Equality planning
 unions the existing exact-value key with matching numeric-coercion keys. Both
 positive and negative zero keys are included for zero comparisons. The stored

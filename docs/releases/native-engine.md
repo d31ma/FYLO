@@ -1,6 +1,6 @@
 # Native Rust engine
 
-FYLO has one native implementation: the Rust workspace under `crates/`. The
+BYCKR has one native implementation: the Rust workspace under `crates/`. The
 `fylo` executable owns filesystem access, transactions, recovery, queries,
 permissions, encryption, version control, and the bounded machine protocol.
 
@@ -10,7 +10,7 @@ JavaScript remains only where the platform requires it:
 - `src/browser/` hosts FSA, OPFS, workers, and the Rust/Wasm portable kernel;
 - `explorer/` and `website/` are web applications.
 
-No JavaScript module opens a native FYLO root directly. `src/index.js` is a
+No JavaScript module opens a native BYCKR root directly. `src/index.js` is a
 thin re-export of the Node machine-protocol client.
 
 ## CI contract
@@ -50,4 +50,4 @@ The browser host is intentionally not replaced by a native filesystem binary.
 FSA supplies selected documents/files, OPFS supplies private indexes/cache/WAL,
 and the Wasm kernel owns portable deterministic work. JavaScript fallback code
 inside the browser bundle is a browser capability fallback, not a second native
-FYLO engine.
+BYCKR engine.

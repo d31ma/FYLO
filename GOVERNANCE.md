@@ -1,8 +1,8 @@
-# FYLO Governance
+# BYCKR Governance
 
 ## Decision model
 
-FYLO is maintainer-led. Maintainers are responsible for product direction,
+BYCKR is maintainer-led. Maintainers are responsible for product direction,
 storage compatibility, security, releases, and the final decision to accept or
 reject a change. Discussion and evidence are encouraged; silence does not
 constitute approval.
@@ -37,7 +37,7 @@ the vocabulary and evidence in `docs/releases/support-tiers.md`.
 
 ## Releases
 
-FYLO uses its documented CalVer policy. Release assets are produced and
+BYCKR uses its documented CalVer policy. Release assets are produced and
 verified by protected workflows from an exact source commit. Immutable tags
 and versioned artifacts are not overwritten. A faulty release is corrected
 with a new version and, where safe, mutable pointers are moved through a

@@ -1,43 +1,43 @@
-# ADR 0019: FYLO through Turso's engine
+# ADR 0019: BYCKR through Turso's engine
 
 - Status: **Proposed** (draft, 2026-11-01). Sections 1 and 5 were accepted
   by [ADR 0026](0026-mobile-builds-and-a-c-abi.md) on 2026-11-11; the rest
   stays Proposed.
-- Sections 2, 3, 4 and 6 are superseded by [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md) (2026-11-21): FYLO's own SDK in TACHYON's `Store` shape, no Turso, no `fylo link`. Sections 1 and 5 stay.
+- Sections 2, 3, 4 and 6 are superseded by [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md) (2026-11-21): BYCKR's own SDK in TACHYON's `Store` shape, no Turso, no `fylo link`. Sections 1 and 5 stay.
 - Date: **2026-11-01**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Amends: ADR 0004 (dependency policy: `turso_core`, and third-party binding
   builds). ADR 0007 stands; ADR 0012 stays withdrawn.
 - Source: the design note
-  ["Using Turso SDKs with FYLO"](../turso-sdk-integration.md) (revision 5,
+  ["Using Turso SDKs with BYCKR"](../turso-sdk-integration.md) (revision 5,
   2026-11-01; the committed copy is revision 6), its section 11, and the
   answers the user approved in its section 10.
 
 ## Context
 
-FYLO ships nine thin language shims that spawn `fylo exec --loop` and speak
+BYCKR ships nine thin language shims that spawn `fylo exec --loop` and speak
 the NDJSON machine protocol, plus its own small SQL dialect. The next release
 breaks compatibility with earlier ones, and the user set four rules for it:
 
 1. No server or listener of any kind: no TCP, no Unix socket, no named pipe.
    A spawned child on anonymous pipes, and files, are allowed.
-2. Writes are synchronous: a write commits in FYLO's documents, or fails with
-   FYLO's error, before the call returns.
+2. Writes are synchronous: a write commits in BYCKR's documents, or fails with
+   BYCKR's error, before the call returns.
 3. No backward compatibility with earlier releases' clients or protocols.
-4. Where Turso ships an official SDK, apps use it instead of a FYLO client.
+4. Where Turso ships an official SDK, apps use it instead of a BYCKR client.
 
 Turso's SDKs (JS/TS, Python, Go, Rust, Java and .NET at 0.8.3) all run Turso's
 engine, `turso_core`, in-process. None loads a SQLite extension by default,
 but `turso_core` already registers internal virtual tables and static
-extensions through the same path its own built-ins use. TACHYON, FYLO's main
-embedding framework, runs its Yon server in Rust and reaches FYLO today
+extensions through the same path its own built-ins use. TACHYON, BYCKR's main
+embedding framework, runs its Yon server in Rust and reaches BYCKR today
 through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 
 ## Decision
 
-### 1. The `fylo` crate is FYLO's native API
+### 1. The `fylo` crate is BYCKR's native API
 
-- A new crate, `fylo`, runs FYLO in the host's own process. It wraps
+- A new crate, `fylo`, runs BYCKR in the host's own process. It wraps
   `fylo-engine`, `fylo-storage-native` and `fylo-query` behind a small facade:
   `Root` (open, lease, close), documents (put, patch, get, latest, delete,
   find), collections (create, drop, inspect) and the queue (publish, claim,
@@ -51,16 +51,16 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
   workspace crates it depends on stop being `publish = false`.
 - Rust apps, TACHYON included, depend on the crate. It replaces the Rust shim.
 
-### 2. `fylo link` puts FYLO's engine inside Turso's SDKs
+### 2. `fylo link` puts BYCKR's engine inside Turso's SDKs
 
-- FYLO's release pipeline patches `turso_core` at the pinned tag with a
+- BYCKR's release pipeline patches `turso_core` at the pinned tag with a
   `fylo` feature, then builds each Turso binding's native library with it
   (about 18 artifacts per release), signed and with provenance, keeping
   Turso's MIT notice.
 - The patch's open hook (`turso_core::fylo_hook`) is one function pointer,
-  checked first in `Database::open`. A binding built with FYLO installs
+  checked first in `Database::open`. A binding built with BYCKR installs
   `fylo::install_turso_open_hook()` before it opens a database. The hook
-  claims only an existing directory with FYLO collections (`.collections`),
+  claims only an existing directory with BYCKR collections (`.collections`),
   opens that root, takes its lease until the database closes, and returns an
   in-memory database with every collection as a table; any other path, and
   every path in a build without the hook, opens exactly as stock Turso.
@@ -69,14 +69,14 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 - Bindings are built in a separate workspace, Turso's repository at the
   pinned tag, by `bindings/turso/build.sh`, with
   `bindings/turso/turso-<version>-bindings.patch`: the workspace reduced to
-  the binding crates, its `turso_core` replaced by FYLO's vendored one, and
+  the binding crates, its `turso_core` replaced by BYCKR's vendored one, and
   two safe calls (the JavaScript binding before
   `Database::open_file_with_flags`; Turso's SDK kit before it opens the file
   itself). ADR 0020 sets the `unsafe` and dependency policy for that
   workspace.
 - `fylo link [--check | --undo]` detects the installed Turso SDKs, refuses a
   version other than the pinned one (printing the exact install command), and
-  places FYLO's build without editing a package file. Each placement carries a
+  places BYCKR's build without editing a package file. Each placement carries a
   label:
 
   | SDK | Placement | Label |
@@ -88,8 +88,8 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
   | JS / TS | a symlinked `.node` next to the loader, restored by `postinstall` | Hack |
   | Python | a `.pth` import hook | Hack |
 
-- `fylo link` finds the FYLO builds through `--artifacts`,
-  `$FYLO_LINK_ARTIFACTS`, or `../lib/fylo-link` beside the `fylo`
+- `fylo link` finds the BYCKR builds through `--artifacts`,
+  `$YCKR_LINK_ARTIFACTS`, or `../lib/fylo-link` beside the `fylo`
   executable; `fylo-link.json` there names the Turso version and platform.
   It places a symlink where it can: `turso.<triple>.node` beside the JS SDK's
   `index.js`, and `libturso_sync_sdk_kit.<ext>` in a Go project's directory,
@@ -99,9 +99,9 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
   own links.
 - Python (pyturso in the project's `.venv` or `venv`, else `$VIRTUAL_ENV`):
   `fylo link` writes `fylo_turso.pth` in that `site-packages`, an import
-  hook that loads FYLO's `_turso.abi3.so` for `turso._turso`; the artifact
+  hook that loads BYCKR's `_turso.abi3.so` for `turso._turso`; the artifact
   path is JSON-quoted into it. A pyturso reinstall keeps the hook; a `.pth`
-  without FYLO's marker line is never touched. pyturso 0.8.3 ships no
+  without BYCKR's marker line is never touched. pyturso 0.8.3 ships no
   Windows wheel, so there is no Windows build.
 - Java (`tech.turso:turso` in `build.gradle(.kts)` or `pom.xml`): the JNI
   library (`lib_turso_java.<ext>`, `_turso_java.dll`) in the project
@@ -111,7 +111,7 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 - .NET (`Turso.Data.Sqlite.Provider`, `Turso.Data.Common` or
   `Turso.EntityFrameworkCore.Sqlite` in a `.csproj`): Turso's own .NET
   packages ship the SDK kit renamed `turso_sdk_kit`, so `fylo link` places
-  FYLO's SDK-kit build under that name in the project directory and prints
+  BYCKR's SDK-kit build under that name in the project directory and prints
   the one line the app adds before its first Turso call:
   `NativeLibrary.SetDllImportResolver(Assembly.Load("Turso.Raw"), …)`.
   `LoadExtension` was not used: it needs a `turso_ext` entry point, and the
@@ -144,32 +144,32 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 
 ### 3. One SQL mapping for both layers (`api/sql/v1`)
 
-- A FYLO root opened through Turso gets an in-memory SQL catalog with one
+- A BYCKR root opened through Turso gets an in-memory SQL catalog with one
   table per document collection: `id` (the TTID), `doc` (JSON text), one
   column per head-schema field, and hidden `meta`, `created_at` and
   `updated_at`. No SQL engine file is ever written; documents stay the truth.
-  The catalog runs on FYLO's own `IO` (memory only, FYLO's clock).
+  The catalog runs on BYCKR's own `IO` (memory only, BYCKR's clock).
 - The tables are Turso **internal virtual tables**, a safe Rust interface,
-  not the `turso_ext` C extension interface, which FYLO's `unsafe_code =
-  "forbid"` keeps out. Turso 0.8.3 makes internal tables read-only, so FYLO's
+  not the `turso_ext` C extension interface, which BYCKR's `unsafe_code =
+  "forbid"` keeps out. Turso 0.8.3 makes internal tables read-only, so BYCKR's
   patch makes them writable (section 4).
 - `=` on `id` and on field columns, and numeric ranges on field columns, push
-  down to FYLO; the engine still rechecks every pushed condition, so pushdown
-  can only narrow what FYLO reads. Turso 0.8.3 passes no `LIKE`, `IN` or
+  down to BYCKR; the engine still rechecks every pushed condition, so pushdown
+  can only narrow what BYCKR reads. Turso 0.8.3 passes no `LIKE`, `IN` or
   `MATCH` constraint to a virtual table, so those wait for more planner
-  patching, and FYLO's native engine plans only equality from its indexes, so
+  patching, and BYCKR's native engine plans only equality from its indexes, so
   a pushed range still scans.
 - `INSERT`, `UPDATE` and `DELETE` map to puts, replaces and deletes, with
   every check a typed call runs. Errors are the SDK's own SQL error carrying
-  FYLO's code (`… EARRAYOFOBJECTS: …`); the Rust API returns that code.
-- Turso's bound parameters (`?`, `?NNN`, `:name`, `$name`) replace FYLO's
+  BYCKR's code (`… EARRAYOFOBJECTS: …`); the Rust API returns that code.
+- Turso's bound parameters (`?`, `?NNN`, `:name`, `$name`) replace BYCKR's
   literal-only dialect.
 - Every statement's writes, and every `BEGIN … COMMIT`'s, are buffered and
   committed as one ADR 0013 log record (the new
   `NativeWriteRoot::commit_document_writes_with`), so a statement or a
   transaction lands whole or not at all. Scans in a transaction read its own
   writes. A second collection in one transaction fails with the new code
-  `EFYLO_TXN_SCOPE` until ADR 0016 section 6 lands. A failing statement inside
+  `EYCKR_TXN_SCOPE` until ADR 0016 section 6 lands. A failing statement inside
   a transaction discards the transaction's buffered writes. Batches need the
   files layout; the segments layout refuses them for now.
 - Turso 0.8.3 registers scalar functions only through the C interface, so the
@@ -180,16 +180,16 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 
 ### 4. The Turso pin
 
-- Each FYLO release pins one exact Turso version. The crate's `sql` feature
+- Each BYCKR release pins one exact Turso version. The crate's `sql` feature
   depends on `turso_core = "=<version>"`; Cargo enforces it for Rust, and
   `fylo link` enforces it for every other SDK.
-- Moving the pin rebases FYLO's small `turso_core` patch and rebuilds every
+- Moving the pin rebases BYCKR's small `turso_core` patch and rebuilds every
   binding artifact.
 - The patch lives in the repository as `vendor/turso_core-<version>-fylo.patch`
   next to the patched source in `vendor/turso_core` (Cargo builds a patched
   crate only from source). `scripts/vendor-turso-core.sh [--check]` rebuilds
   or checks the tree from the crates.io release, whose SHA-256 it verifies.
-  The workspace excludes the vendored crate, so FYLO's lints and tests do not
+  The workspace excludes the vendored crate, so BYCKR's lints and tests do not
   run on it.
 - At 0.8.3 the patch is 6 files, +147/−32 lines, all behind a `fylo`
   feature except the manifest's dependency lines:
@@ -204,14 +204,14 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
   - `regex` and `regex-syntax` use CHEX's feature set, because Cargo unifies
     features: Turso's default `regex` features changed CHEX's validation
     dialect for the whole build.
-- `turso_core` 0.8.3 needs its `fs` and `uuid` features to build; FYLO leaves
+- `turso_core` 0.8.3 needs its `fs` and `uuid` features to build; BYCKR leaves
   encryption, SIMD and full-text search off.
 
 ### 5. The no-listener rule, restated
 
-- FYLO opens no server, socket, pipe or port, in-process or out. ADR 0007
+- BYCKR opens no server, socket, pipe or port, in-process or out. ADR 0007
   stands as written, and ADR 0012 stays withdrawn.
-- The `fylo` crate and every `fylo link` placement run FYLO inside the app's
+- The `fylo` crate and every `fylo link` placement run BYCKR inside the app's
   own process.
 
 ### 6. What ends
@@ -219,33 +219,33 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 - The nine thin shims (Python, Ruby, Node, PHP, Go, Rust, C#, Java, Dart), the
   Flutter client, the shim interop tests and the `fylo-clients.tar.gz` asset.
 - Ruby, PHP and Dart, which have no Turso SDK.
-- FYLO's own SQL dialect: `fylo sql` and `executeSQL` run on `turso_core`.
+- BYCKR's own SQL dialect: `fylo sql` and `executeSQL` run on `turso_core`.
 - `api/machine/v1` as a public, versioned client contract, and `fylo exec
   --loop` as a public interface. The batch interface inside the Wasm module
-  and the browser Worker's message protocol stay, private to FYLO's own
+  and the browser Worker's message protocol stay, private to BYCKR's own
   browser loader and checked by `fylo_abi_version`.
 - Until TACHYON's driver moves to the crate, `fylo exec --loop` and machine
   protocol v1 stay exactly as they are: TACHYON 26.36.01 and its current
   release candidate depend on them. They are removed only in the release that
   ships the crate and TACHYON's in-process driver together.
 - The Swift and Kotlin WebView hosts and the mobile bridge. Mobile apps get
-  FYLO through TACHYON's native hosts linking the crate.
-- FYLO's browser engine (`fylo-browser.wasm` over a `.vdbx` file in OPFS)
-  stays as the one browser client: Turso's Wasm package can't load FYLO.
+  BYCKR through TACHYON's native hosts linking the crate.
+- BYCKR's browser engine (`fylo-browser.wasm` over a `.vdbx` file in OPFS)
+  stays as the one browser client: Turso's Wasm package can't load BYCKR.
 
 ## Consequences
 
-- TACHYON drops its FYLO subprocess and gains process-local FYLO. A cancelled
+- TACHYON drops its BYCKR subprocess and gains process-local BYCKR. A cancelled
   call can no longer be killed, only abandoned (TACHYON ADR 0032 amendment),
   and `turso_core` joins its build behind a feature.
 - Every release carries about 18 binding builds and a rebased `turso_core`
-  patch. Apps install the exact Turso SDK version FYLO names.
+  patch. Apps install the exact Turso SDK version BYCKR names.
 - The JS and Python placements are hacks: a reinstall without scripts, or
   Yarn PnP, removes them silently, and a Turso loader change can break them.
-- `api/sql/v1` replaces FYLO's SQL contract, and `api/errors/v1.json` gains
-  `EFYLO_TXN_SCOPE`.
+- `api/sql/v1` replaces BYCKR's SQL contract, and `api/errors/v1.json` gains
+  `EYCKR_TXN_SCOPE`.
 - ADR 0004 is amended for `turso_core` (pre-1.0, MIT) and for shipping
-  third-party binding builds: ADR 0020 (proposed) keeps FYLO's crates
+  third-party binding builds: ADR 0020 (proposed) keeps BYCKR's crates
   `unsafe`-free and confines Turso's upstream `unsafe` to the vendored engine
   and the separate binding workspace. At 0.8.3 the `sql` feature adds or bumps 149
   packages, all under permissive licenses: MIT or Apache-2.0 for most,
@@ -259,7 +259,7 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 ## Evidence required before acceptance
 
 - Phase 1 (2026-11-01 spike): the crate facade without SQL, and TACHYON's
-  FYLO datasource running on it unchanged, with latency against the
+  BYCKR datasource running on it unchanged, with latency against the
   subprocess and the cancellation behaviour measured.
   - Measured 2026-11-01 on the M4 Mac, one engine build (24f43a6, release),
     200 iterations, a 1,000-document collection, roots on the internal disk:
@@ -289,7 +289,7 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
     independent rebuild from the documents.
 - Phase 3: binding artifacts and `fylo link` for JS and Go first, with a
   conformance suite running each stock Turso SDK at the pinned version against
-  FYLO's build; then Python, Java and .NET; macOS, Linux and Windows; and a
+  BYCKR's build; then Python, Java and .NET; macOS, Linux and Windows; and a
   security review of the supply chain, link permissions and FFI.
   - Done 2026-11-01 for macOS arm64, JS and Go, on branch `feat/fylo-link`.
     The patch grew by the open hook and two SQLite behaviours a
@@ -300,11 +300,11 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
     `libturso_sync_sdk_kit.dylib` 18 MB in 95 s (stock 15.8 MB).
   - Conformance (`bindings/turso/conformance/run.sh`), with
     `@tursodatabase/database` 0.8.3 from npm and `tursogo` v0.8.3 from the Go
-    proxy, unmodified: before `fylo link` the stock SDK cannot open a FYLO
+    proxy, unmodified: before `fylo link` the stock SDK cannot open a BYCKR
     root ("is a directory"); after it, both SDKs read collections as tables,
     get pushdown results equal to full scans, insert, update and delete
-    through FYLO with correct change counts, commit and roll back a
-    transaction, hit `EFYLO_TXN_SCOPE`, see FYLO's error codes, use the queue
+    through BYCKR with correct change counts, commit and roll back a
+    transaction, hit `EYCKR_TXN_SCOPE`, see BYCKR's error codes, use the queue
     tables, and still open a plain database path as stock Turso. `npm ci`
     removes the JS link; a `postinstall` of `fylo link` restores it, and the
     suite passes again. A version mismatch is refused with the install
@@ -406,7 +406,7 @@ SHA-1) or NuGet.
   Python, JDK or .NET, and the Windows VM's JDK and .NET are ARM64, which
   cannot load an x64 library. The x64 Java and Python artifacts were built
   and not run; .NET uses the SDK kit, which the Go runs exercised.
-- Logs: `/Volumes/ANVIL/Logs/FYLO/fylo-link-platforms/` (`mac-final-7.log`,
+- Logs: `/Volumes/ANVIL/Logs/BYCKR/fylo-link-platforms/` (`mac-final-7.log`,
   `linux-4.log`, `windows-5.log`).
 - A failing statement inside a transaction already ends it, so a later
   `ROLLBACK` reports "no transaction is active"; the Python, Java and .NET
@@ -441,23 +441,23 @@ and the FFI surface.
 - **The `.pth` hook runs at every interpreter start in that environment.**
   It imports nothing at start-up beyond `sys`, matches only
   `turso._turso`, and its artifact path is JSON-quoted, so a path cannot
-  inject code. A `.pth` without FYLO's marker is never touched.
+  inject code. A `.pth` without BYCKR's marker is never touched.
 - **Ownership records** (`<file>.fylo-link`, `fylo_turso.pth`) are plain
   files; forging one only lets `--undo` remove a file whose hash equals the
   recorded one, and never a file it did not match.
 - **Supply chain.** The Turso checkout is pinned by commit, the binding
-  build now runs `--locked` against FYLO's `bindings/turso/Cargo.lock`, and
+  build now runs `--locked` against BYCKR's `bindings/turso/Cargo.lock`, and
   maturin is pinned to 1.16.0. `cargo deny` over the binding workspace with
   Java and Python added found one more advisory, RUSTSEC-2026-0190
   (`anyhow` 1.0.98, pulled in by pyturso's binding; also in stock Turso's
-  lock); FYLO's binding lock moves it to 1.0.104. What remains are the same
+  lock); BYCKR's binding lock moves it to 1.0.104. What remains are the same
   8 advisories as phase 3, all in stock Turso 0.8.3's lock; bans, licenses
   and sources pass.
   The conformance suites install pyturso and the .NET packages by version
   without hash pinning; they are tests, not shipped.
-- **FFI.** FYLO's crates stay `unsafe`-free; the `unsafe` code is Turso's own
+- **FFI.** BYCKR's crates stay `unsafe`-free; the `unsafe` code is Turso's own
   binding layers (napi, JNI, pyo3, the SDK kit's C API) at the pinned tag,
-  plus FYLO's two-line hook call in each. No FYLO code crosses the FFI
+  plus BYCKR's two-line hook call in each. No BYCKR code crosses the FFI
   boundary except through `turso_core`'s safe virtual-table interface.
 - Java 25 warns that `System.loadLibrary` is a restricted method; a future
   JDK needs `--enable-native-access=ALL-UNNAMED` for the stock driver too.
@@ -469,7 +469,7 @@ and the FFI surface.
 | Hrana over loopback TCP, a Unix socket or a named pipe | a listener |
 | Two-way file sync with tentative writes | writes must be synchronous |
 | Custom VFS, FUSE, FSKit or preload interposition | pages become the truth, or too fragile |
-| Symlinked or FIFO database, WAL or journal files | SQLite refuses them, and FYLO refuses symlinked roots |
+| Symlinked or FIFO database, WAL or journal files | SQLite refuses them, and BYCKR refuses symlinked roots |
 | A mailbox RPC through a shared database file | needs polling, and isn't the SDK's API |
-| Generated shims, or stdio Hrana | the new scope replaces FYLO's clients with Turso's SDKs |
+| Generated shims, or stdio Hrana | the new scope replaces BYCKR's clients with Turso's SDKs |
 | A private subprocess protocol kept only for TACHYON | the crate gives TACHYON the same engine without a second contract |

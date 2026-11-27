@@ -25,8 +25,8 @@ use crate::{
     NativeRoot, NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions,
 };
 
-const ROLE: &str = "FYLO_VDBX_COMPACTION_CHILD_ROLE";
-const DATABASE: &str = "FYLO_VDBX_COMPACTION_CHILD_DATABASE";
+const ROLE: &str = "YCKR_VDBX_COMPACTION_CHILD_ROLE";
+const DATABASE: &str = "YCKR_VDBX_COMPACTION_CHILD_DATABASE";
 const CHILD_TEST: &str =
     "segments::container_medium::tests::database_compaction::a_compaction_child_process";
 const WAIT: Duration = Duration::from_mins(2);
@@ -592,8 +592,8 @@ fn a_crash_at_each_compaction_and_shrink_failpoint_recovers() {
             role,
             &database.path(),
             &[
-                ("FYLO_RUST_FAILPOINT", failpoint),
-                ("FYLO_RUST_FAILPOINT_ACTION", "abort"),
+                ("YCKR_RUST_FAILPOINT", failpoint),
+                ("YCKR_RUST_FAILPOINT_ACTION", "abort"),
             ],
         )
         .wait_with_output()

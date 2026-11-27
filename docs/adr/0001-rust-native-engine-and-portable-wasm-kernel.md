@@ -2,11 +2,11 @@
 
 - Status: **Accepted; S3 scope superseded by ADR 0007**
 - Date: **2026-07-26**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 
 ## Context
 
-FYLO directly queries and mutates filesystem-backed documents and files. Its
+BYCKR directly queries and mutates filesystem-backed documents and files. Its
 critical paths include:
 
 - canonical file and metadata encoding;
@@ -29,7 +29,7 @@ native binary cannot replace browser permission and storage APIs.
 
 ## Decision
 
-Build the next FYLO engine generation in Rust with two deliverables:
+Build the next BYCKR engine generation in Rust with two deliverables:
 
 1. a full native Rust engine and CLI for authoritative local-filesystem
    operation;
@@ -100,7 +100,7 @@ risk without improving the authoritative native storage boundary.
 ### Ship one Wasm binary for every operating system
 
 Rejected because Wasm does not supply the native filesystem, locking,
-permissions, process, code-signing, or S3 runtime guarantees FYLO requires.
+permissions, process, code-signing, or S3 runtime guarantees BYCKR requires.
 
 ### Keep the engine entirely in JavaScript
 

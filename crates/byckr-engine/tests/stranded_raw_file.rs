@@ -17,7 +17,7 @@ impl StrandedRawFile {
     const NAME: &'static str = "assets";
     const COMMITTED: [&'static str; 2] = ["4VRNF52J041", "4VRNF52J042"];
     const STRANDED: &'static str = "4VRNF52J043";
-    const CHILD: &'static str = "FYLO_STRANDED_RAW_FILE_CHILD";
+    const CHILD: &'static str = "YCKR_STRANDED_RAW_FILE_CHILD";
 
     fn create() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -70,8 +70,8 @@ impl StrandedRawFile {
                 "--test-threads=1",
             ])
             .env(Self::CHILD, &self.0)
-            .env("FYLO_RUST_FAILPOINT", failpoint)
-            .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+            .env("YCKR_RUST_FAILPOINT", failpoint)
+            .env("YCKR_RUST_FAILPOINT_ACTION", "abort")
             .status()
             .unwrap();
         assert!(!status.success(), "the put did not stop at {failpoint}");

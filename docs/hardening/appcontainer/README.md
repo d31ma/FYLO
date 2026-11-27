@@ -3,7 +3,7 @@
 A packaged (MSIX) application runs in an AppContainer when its manifest
 does not ask for full trust. [`AppxManifest.xml`](AppxManifest.xml) is such
 a manifest, with no capabilities. This note covers the parts a manifest
-cannot say. Not tested by FYLO's CI.
+cannot say. Not tested by BYCKR's CI.
 
 ## Where the database lives
 
@@ -34,7 +34,7 @@ cannot say. Not tested by FYLO's CI.
 
   (`S-1-5-18` is SYSTEM and `S-1-5-32-544` Administrators.)
 
-  FYLO needs read, write, create and rename in that folder: it opens the
+  BYCKR needs read, write, create and rename in that folder: it opens the
   `.vdbx` file read-write with byte-range locks (`LockFileEx`), and a
   rekey or pack writes `<db>.vdbx.pack-staging*` beside it and renames it
   over the database.

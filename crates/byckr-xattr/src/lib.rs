@@ -1,4 +1,4 @@
-//! FYLO's extended-attribute calls (ADR 0026): [`ExtendedAttributes`] by
+//! BYCKR's extended-attribute calls (ADR 0026): [`ExtendedAttributes`] by
 //! path, without following symlinks, and `FileExt` on an open file. On Unix
 //! the `xattr` crate provides the calls; iOS, which that crate does not
 //! support, uses rustix's functions with the same meaning; Windows has no

@@ -86,7 +86,7 @@ impl Document {
             Value::Object(map) => Ok(map),
             _ => Err(FormatError::new(
                 FormatErrorCode::DocumentRoot,
-                "FYLO document root must be a JSON object",
+                "BYCKR document root must be a JSON object",
             )),
         }
     }

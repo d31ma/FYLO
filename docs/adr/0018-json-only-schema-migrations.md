@@ -2,7 +2,7 @@
 
 - Status: **Accepted** (Samuel, 2026-10-29)
 - Date: **2026-10-29**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Amends: ADR 0017 section 5 (migrations), and the parts of sections 6 and 7
   that exist only because of JavaScript steps.
 
@@ -23,7 +23,7 @@ Samuel asked (2026-10-29) whether migrations can be JSON only.
 
 ## Decision
 
-A migration is JSON and nothing else. No FYLO build executes code from a
+A migration is JSON and nothing else. No BYCKR build executes code from a
 schema folder or a database.
 
 ### 1. No JavaScript steps
@@ -87,7 +87,7 @@ version, which is the same dry run ADR 0017 already requires.
 Benefits:
 
 - every migration runs in every build, including the browser and mobile;
-- nothing in FYLO executes code from a file it opens;
+- nothing in BYCKR executes code from a file it opens;
 - the native binary loses the JavaScript runtime (size measured when the
   change lands);
 - migrations are data, so `fylo schema doctor` can check them without running

@@ -13,7 +13,7 @@ struct Place(PathBuf);
 
 impl Place {
     const BINARY: &'static str = env!("CARGO_BIN_EXE_fylo-rust");
-    const NETWORK_ROOTS: &'static str = "FYLO_TEST_NETWORK_ROOTS";
+    const NETWORK_ROOTS: &'static str = "YCKR_TEST_NETWORK_ROOTS";
     const REMOTE_ROOT: &'static str = "EREMOTEROOT";
 
     fn under(base: &Path) -> Self {
@@ -50,7 +50,7 @@ impl Place {
             .args(["exec", "--loop", "--root"])
             .arg(root)
             .args(flags)
-            .env_remove("FYLO_ROOT")
+            .env_remove("YCKR_ROOT")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -76,7 +76,7 @@ impl Place {
             .arg(root)
             .args(["--deadline-ms", "10000", "--cleanup-reserve-ms", "200"])
             .args(["--request", &request.to_string()])
-            .env_remove("FYLO_ROOT")
+            .env_remove("YCKR_ROOT")
             .output()
             .unwrap();
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim_end()).unwrap()
@@ -94,7 +94,7 @@ impl Place {
         json!({"op":"createCollection","collection":"records"})
     }
 
-    /// The folders named in `FYLO_TEST_NETWORK_ROOTS`, each on a network
+    /// The folders named in `YCKR_TEST_NETWORK_ROOTS`, each on a network
     /// filesystem.
     fn network_bases() -> Vec<PathBuf> {
         let Some(list) = std::env::var_os(Self::NETWORK_ROOTS) else {
@@ -159,11 +159,11 @@ fn a_local_invocation_root_reports_its_filesystem() {
 }
 
 /// Run against real network mounts:
-/// `FYLO_TEST_NETWORK_ROOTS=/mnt/nfs:/mnt/smb cargo nextest run -p fylo-cli
+/// `YCKR_TEST_NETWORK_ROOTS=/mnt/nfs:/mnt/smb cargo nextest run -p fylo-cli
 /// --test remote_root --run-ignored only`. Each folder gets a throwaway
 /// subfolder, removed afterwards.
 #[test]
-#[ignore = "needs FYLO_TEST_NETWORK_ROOTS naming folders on network mounts"]
+#[ignore = "needs YCKR_TEST_NETWORK_ROOTS naming folders on network mounts"]
 fn network_roots_are_refused_before_any_write() {
     let bases = Place::network_bases();
     assert!(
@@ -236,7 +236,7 @@ fn refuses_an_existing_root(place: &Place) {
         .args(["exec", "--root"])
         .arg(&root)
         .args(["--request", &Place::create_collection().to_string()])
-        .env_remove("FYLO_ROOT")
+        .env_remove("YCKR_ROOT")
         .output()
         .unwrap();
     let frame: Value = serde_json::from_slice(&output.stdout).unwrap();

@@ -18,8 +18,8 @@ impl LeaseTiming {
     const DEFAULT_TAKEOVER: Duration = Duration::from_secs(20);
     const SHORTEST_HEARTBEAT: Duration = Duration::from_millis(10);
     const LONGEST_TAKEOVER: Duration = Duration::from_hours(24);
-    const HEARTBEAT_VARIABLE: &str = "FYLO_LEASE_HEARTBEAT_SECONDS";
-    const TAKEOVER_VARIABLE: &str = "FYLO_LEASE_TAKEOVER_SECONDS";
+    const HEARTBEAT_VARIABLE: &str = "YCKR_LEASE_HEARTBEAT_SECONDS";
+    const TAKEOVER_VARIABLE: &str = "YCKR_LEASE_TAKEOVER_SECONDS";
 
     /// # Errors
     ///
@@ -36,8 +36,8 @@ impl LeaseTiming {
         })
     }
 
-    /// The timing from `FYLO_LEASE_HEARTBEAT_SECONDS` and
-    /// `FYLO_LEASE_TAKEOVER_SECONDS` (decimal seconds), each falling back to
+    /// The timing from `YCKR_LEASE_HEARTBEAT_SECONDS` and
+    /// `YCKR_LEASE_TAKEOVER_SECONDS` (decimal seconds), each falling back to
     /// its default of 5 and 20 seconds.
     ///
     /// # Errors

@@ -2,18 +2,18 @@
 
 - Status: **Accepted** (built 2026-11-11; the subscription in section 6 is designed, not built; section 7 amended 2026-11-11)
 - Date: **2026-11-11**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Request: Mesail's F4 (CADUCEUS), part 1
-- Related: ADR 0007 (replication stays outside FYLO), ADR 0013, ADR 0015,
+- Related: ADR 0007 (replication stays outside BYCKR), ADR 0013, ADR 0015,
   ADR 0016
 
 ## Context
 
 Mesail syncs devices from a log of changes per conversation. Today its
-`messaging` service writes that log itself, because FYLO has no way to ask
+`messaging` service writes that log itself, because BYCKR has no way to ask
 "what changed in this collection since I last looked?".
 
-What FYLO had when this was written:
+What BYCKR had when this was written:
 
 - The README described an `events/<collection>.ndjson` journal. Only the
   separate JavaScript browser engine (`fylo-web.mjs`) writes it. The Rust
@@ -106,7 +106,7 @@ catalog descriptor (`changeLineage`): the directory catalog for directory
 roots and the descriptor in the collection's directory block for `.vdbx`.
 The cursor carries it, and a cursor whose lineage differs is expired.
 
-- Older FYLO builds read a descriptor with this key: the descriptor parser
+- Older BYCKR builds read a descriptor with this key: the descriptor parser
   has no `deny_unknown_fields`.
 - A collection made before this change has no lineage until one of those
   operations runs; its cursors carry `0`, and only the LSN bound protects
@@ -137,12 +137,12 @@ The cursor carries it, and a cursor whose lineage differs is expired.
 The feed keeps every document's newest change for as long as the document
 (or its soft-deleted tombstone) is kept. Nothing is trimmed by age or count.
 A document removed for good, with no tombstone, would leave the feed
-without a trace of it; FYLO has no such operation today, and one would need
+without a trace of it; BYCKR has no such operation today, and one would need
 to record its removal here first.
 
 ### 6. Subscription (designed, not built)
 
-A later step can push changes instead of being polled. FYLO opens no
+A later step can push changes instead of being polled. BYCKR opens no
 listener and runs no server, so a subscription lives inside a session the
 application already runs:
 

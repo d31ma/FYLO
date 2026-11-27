@@ -1,4 +1,4 @@
-/// The id of an app that keeps FYLO data in its own data folder (ADR 0032
+/// The id of an app that keeps BYCKR data in its own data folder (ADR 0032
 /// section 3.2): a bundle id or package name in reverse-DNS style, such as
 /// `com.example.app`. It becomes part of a folder path, so it is checked
 /// before any path is built: ASCII letters, digits, `.`, `-` and `_` only,

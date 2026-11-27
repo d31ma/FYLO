@@ -61,7 +61,7 @@ impl FileKeyStore {
                 IdentityError::NotFound(format!("{} does not exist", self.reference()))
             }
             io::ErrorKind::AlreadyExists => IdentityError::AlreadyExists(format!(
-                "{} already exists; FYLO never replaces a key",
+                "{} already exists; BYCKR never replaces a key",
                 self.reference()
             )),
             _ => IdentityError::Store(format!("{}: {error}", self.reference())),

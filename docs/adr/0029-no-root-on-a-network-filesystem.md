@@ -3,7 +3,7 @@
 - Status: **Accepted** (the user chose "Yes, fix it", 2026-11-12)
 - To be replaced by [ADR 0033](0033-primary-layout-on-a-data-drive.md) (accepted, not yet built) when its layout release ships: no refusal by file-system type; a probe at creation instead. Until then this ADR is in force.
 - Date: **2026-11-12**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Enforces: ADR 0003 ("Network shares and synchronized folders are
   unsupported unless their exact filesystem semantics pass a separate native
   qualification profile"). Keeps ADR 0010's explicit EFS profile as the one
@@ -26,7 +26,7 @@ Evidence (Mesail trial, 2026-11-12, develop 9d5d7f2):
 - Both handshakes reported `rootLock {owned:true, kernelEnforced:true,
   remoteQualified:false}`. Two owners wrote one root.
 - On ATLAS (NFSv4) the second owner got `EROOTLOCKED`, because that server
-  forwards locks. FYLO cannot tell such mounts apart from the client.
+  forwards locks. BYCKR cannot tell such mounts apart from the client.
 
 On SMB the only refusal people saw was extended attributes failing with
 `ENOTSUP`: an accident, not a rule.
@@ -35,10 +35,10 @@ On SMB the only refusal people saw was extended attributes failing with
 
 ### 1. A native root on a network filesystem is refused
 
-Before FYLO takes or opens a root, it asks the OS which filesystem holds the
+Before BYCKR takes or opens a root, it asks the OS which filesystem holds the
 path: one `statfs` (macOS, Linux) or one volume query (Windows). A missing
 root is described by its nearest existing parent, the filesystem it would be
-created on. When that filesystem is remote, FYLO refuses with the stable code
+created on. When that filesystem is remote, BYCKR refuses with the stable code
 `EREMOTEROOT`, before it creates the root, the lock file or any other file.
 The message names the path and the filesystem and says to use a disk attached
 to this machine.
@@ -70,12 +70,12 @@ The check runs:
 **FUSE is remote.** A FUSE filesystem may keep its files on this disk
 (ntfs-3g, bindfs) or on another machine (sshfs, rclone, s3fs, gcsfuse), and
 the kernel does not say which. A lock on a remote FUSE mount binds only this
-machine, which is the failure above, so FYLO refuses all of FUSE.
+machine, which is the failure above, so BYCKR refuses all of FUSE.
 
 **virtiofs and 9p are remote.** They share a folder of another kernel (a
 virtual machine's host, or Windows from WSL 2). Processes on that other
 kernel do not see the locks taken here. virtiofs is built on FUSE and
-reports FUSE's magic number, so FYLO names it `fuse`.
+reports FUSE's magic number, so BYCKR names it `fuse`.
 
 ### 3. The EFS profile is the exception
 
@@ -117,7 +117,7 @@ filesystem the lease found. `kernelEnforced` is never `true` when `remote` is
   `src/root_filesystem.rs`).
 - `crates/fylo-cli/tests/remote_root.rs` checks the handshake on a local root,
   and, opt-in, refuses real network mounts named in
-  `FYLO_TEST_NETWORK_ROOTS`: a loop with and without `--exclusive-root`, an
+  `YCKR_TEST_NETWORK_ROOTS`: a loop with and without `--exclusive-root`, an
   invocation, a one-shot request, an existing root, a new and a copied
   `.vdbx`, each with nothing written, and admits the EFS profile. On
   2026-11-12 it passed on an NFSv3 mount (unfsd, `locallocks`) and an NFSv4

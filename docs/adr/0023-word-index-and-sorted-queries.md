@@ -2,7 +2,7 @@
 
 - Status: **Accepted** (the user's choices, through the Build Coordinator, 2026-11-11)
 - Date: **2026-11-11**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Request: Mesail (CADUCEUS) feature request F3, "Full-text search and
   ordered, limited queries on an indexed field".
 - Builds on: the prefix index (`README.md`, "Index keys"), ADR 0008 (the
@@ -12,16 +12,16 @@
 
 ## Context
 
-Mesail keeps messages and mail in FYLO on its servers and, later, on each
-device. It needs two queries that FYLO cannot answer well today:
+Mesail keeps messages and mail in BYCKR on its servers and, later, on each
+device. It needs two queries that BYCKR cannot answer well today:
 
 1. **Search by word prefix** in a body, subject, sender or file name: the
    user types `meet tom` and expects messages with "meeting" and "Tomás".
-   FYLO has no full-text search. The prefix index writes `f`, `r` and `g3`
+   BYCKR has no full-text search. The prefix index writes `f`, `r` and `g3`
    (trigram) keys only for strings of at most 180 encoded bytes, so a message
    body gets only a hashed `eq` key, and `$like '%meet%'` reads every
    document. Turso's FTS is off (ADR 0019).
-2. **"The newest 50 messages of a conversation"**, then the next 50. FYLO has
+2. **"The newest 50 messages of a conversation"**, then the next 50. BYCKR has
    no ORDER BY. `findDocs` returns documents in TTID order. The machine
    protocol's `page` option keeps a whole result set in memory per cursor and
    needs `exec --loop`, so it is not available to one-shot calls or the

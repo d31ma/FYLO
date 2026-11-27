@@ -20,15 +20,15 @@ struct Place(PathBuf);
 
 impl Place {
     const BINARY: &'static str = env!("CARGO_BIN_EXE_fylo-rust");
-    const ALLOW: &'static str = "FYLO_ALLOW_SYSTEM_DISK";
-    const APP_ID: &'static str = "FYLO_APP_ID";
+    const ALLOW: &'static str = "YCKR_ALLOW_SYSTEM_DISK";
+    const APP_ID: &'static str = "YCKR_APP_ID";
     const SYSTEM_DISK: &'static str = "ESYSTEMDISK";
     const NOT_VOLUME_ROOT: &'static str = "ENOTVOLUMEROOT";
     const REMOTE_ROOT: &'static str = "EREMOTEROOT";
-    const NETWORK_ROOTS: &'static str = "FYLO_TEST_NETWORK_ROOTS";
-    const DATA_DISK_ROOTS: &'static str = "FYLO_TEST_DATA_DISK_ROOTS";
+    const NETWORK_ROOTS: &'static str = "YCKR_TEST_NETWORK_ROOTS";
+    const DATA_DISK_ROOTS: &'static str = "YCKR_TEST_DATA_DISK_ROOTS";
     const APP: &'static str = "com.fylo.systemdisktest";
-    const WARNING: &'static str = "FYLO warning: system-disk check disabled by";
+    const WARNING: &'static str = "BYCKR warning: system-disk check disabled by";
 
     fn under(base: &Path) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -75,7 +75,7 @@ impl Place {
             .arg(self.config(&json!({})))
             .env_remove(Self::ALLOW)
             .env_remove(Self::APP_ID)
-            .env_remove("FYLO_ROOT");
+            .env_remove("YCKR_ROOT");
         command
     }
 
@@ -201,7 +201,7 @@ fn a_plain_loop_answers_the_handshake_and_refuses_the_first_request() {
     );
     let message = frames[1]["error"]["message"].as_str().unwrap();
     assert!(message.contains("--allow-system-disk"), "{message}");
-    assert!(message.contains("FYLO_ALLOW_SYSTEM_DISK=1"), "{message}");
+    assert!(message.contains("YCKR_ALLOW_SYSTEM_DISK=1"), "{message}");
     assert!(message.contains("fylo.allowSystemDisk"), "{message}");
     assert_eq!(place.entries(), vec![OsString::from("application.json")]);
 }
@@ -258,7 +258,7 @@ fn the_flag_admits_the_root_and_warns_on_stderr() {
     assert_eq!(frames[1]["ok"], true, "{}", frames[1]);
     assert!(
         stderr
-            .contains("FYLO warning: system-disk check disabled by --allow-system-disk (ADR 0032)"),
+            .contains("BYCKR warning: system-disk check disabled by --allow-system-disk (ADR 0032)"),
         "{stderr}"
     );
     assert_eq!(stderr.matches(Place::WARNING).count(), 1, "{stderr}");
@@ -273,7 +273,7 @@ fn the_environment_variable_admits_the_root_and_warns_on_stderr() {
     let (frames, stderr) = Place::exec_loop(command, &[Place::create_collection()]);
     assert_eq!(frames[0]["ok"], true, "{}", frames[0]);
     assert!(
-        stderr.contains("disabled by FYLO_ALLOW_SYSTEM_DISK=1"),
+        stderr.contains("disabled by YCKR_ALLOW_SYSTEM_DISK=1"),
         "{stderr}"
     );
 }
@@ -332,7 +332,7 @@ fn an_invalid_opt_out_value_stops_the_command() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("FYLO_ALLOW_SYSTEM_DISK must be 1, true, 0 or false"),
+        stderr.contains("YCKR_ALLOW_SYSTEM_DISK must be 1, true, 0 or false"),
         "{stderr}"
     );
 }
@@ -414,7 +414,7 @@ fn app_mode_admits_a_root_in_the_app_folder_only() {
 }
 
 /// Opt-in, like ADR 0029's network tests: every folder in
-/// `FYLO_TEST_NETWORK_ROOTS` is on a network share. Neither the opt-out
+/// `YCKR_TEST_NETWORK_ROOTS` is on a network share. Neither the opt-out
 /// nor app mode admits a root there.
 #[test]
 fn network_roots_are_never_admitted_by_the_opt_out_or_app_mode() {
@@ -446,8 +446,8 @@ fn network_roots_are_never_admitted_by_the_opt_out_or_app_mode() {
     }
 }
 
-/// Opt-in: every folder in `FYLO_TEST_DATA_DISK_ROOTS` is the mount point
-/// of a local disk that is not the system disk (on this Mac: the FYLO test
+/// Opt-in: every folder in `YCKR_TEST_DATA_DISK_ROOTS` is the mount point
+/// of a local disk that is not the system disk (on this Mac: the BYCKR test
 /// image on HANGAR). A root directly below it is admitted as a data disk,
 /// and the handshake names the mount point. While the mount-point rule is
 /// off (until slice L1-5), a root one folder deeper is admitted too.
@@ -489,7 +489,7 @@ fn data_disk_roots_are_admitted_and_report_their_volume() {
 
 /// The mount-point rule once `VolumeRootRule::ENFORCED` is on (slice L1-5
 /// turns it on and runs this test): a root in the OS temp folder, and a
-/// root one folder below a mount point in `FYLO_TEST_DATA_DISK_ROOTS`, are
+/// root one folder below a mount point in `YCKR_TEST_DATA_DISK_ROOTS`, are
 /// refused with `ENOTVOLUMEROOT`, which names the nearest mount point.
 #[test]
 #[ignore = "the mount-point rule is off until slice L1-5 (VolumeRootRule::ENFORCED)"]

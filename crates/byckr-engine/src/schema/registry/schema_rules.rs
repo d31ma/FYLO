@@ -46,7 +46,7 @@ impl SchemaRules {
                         EngineErrorCode::ArrayOfObjects,
                         format!(
                             "schema {label} of {collection} declares {path} as an array of objects, \
-                             which FYLO documents cannot hold; make each object its own collection"
+                             which BYCKR documents cannot hold; make each object its own collection"
                         ),
                     ));
                 }
@@ -79,7 +79,7 @@ impl SchemaRules {
 
     pub(super) fn javascript(collection: &str, label: &str, what: &str) -> EngineError {
         EngineError::schema(format!(
-            "the migration to {label} of {collection} has {what}; FYLO runs no JavaScript \
+            "the migration to {label} of {collection} has {what}; BYCKR runs no JavaScript \
              upgraders, so rewrite it as JSON steps (see ADR 0018)"
         ))
     }

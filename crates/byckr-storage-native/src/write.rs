@@ -1,4 +1,4 @@
-//! Crash-recoverable native writes for the existing FYLO filesystem layout.
+//! Crash-recoverable native writes for the existing BYCKR filesystem layout.
 //!
 //! The journal and generation records intentionally use the JavaScript
 //! engine's v1 schemas so either engine can recover an interrupted mutation.
@@ -115,7 +115,7 @@ pub struct NativeWriteRoot {
 }
 
 impl NativeWriteRoot {
-    /// Open an existing canonical FYLO root for recoverable writes.
+    /// Open an existing canonical BYCKR root for recoverable writes.
     ///
     /// # Errors
     ///
@@ -1097,7 +1097,7 @@ impl NativeWriteRoot {
     /// Merge developer metadata into one existing document or raw file.
     ///
     /// A JSON `null` removes that name, matching the JavaScript
-    /// `metadata(record)` mutation contract. Canonical FYLO attributes are not
+    /// `metadata(record)` mutation contract. Canonical BYCKR attributes are not
     /// writable through this path, and `user.fylo.meta-updated-at` advances
     /// strictly so two updates inside one millisecond stay ordered.
     ///
@@ -4615,7 +4615,7 @@ pub(crate) fn remove_byckr_attribute(path: &Path, name: &str) -> Result<(), Nati
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                format!("Windows FYLO ADS manifest is corrupt: {error}"),
+                format!("Windows BYCKR ADS manifest is corrupt: {error}"),
             )
         })?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -4697,7 +4697,7 @@ pub(crate) fn write_byckr_attribute(
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                format!("Windows FYLO ADS manifest is corrupt: {error}"),
+                format!("Windows BYCKR ADS manifest is corrupt: {error}"),
             )
         })?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -4768,7 +4768,7 @@ fn read_host_manifest(
     serde_json::from_slice(&bytes).map_err(|error| {
         NativeStorageError::new(
             NativeStorageErrorCode::CorruptMetadata,
-            format!("FYLO attribute manifest is corrupt: {error}"),
+            format!("BYCKR attribute manifest is corrupt: {error}"),
         )
     })
 }
@@ -4799,7 +4799,7 @@ fn read_sidecar(
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                format!("FYLO attribute sidecar is corrupt: {error}"),
+                format!("BYCKR attribute sidecar is corrupt: {error}"),
             )
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -5204,7 +5204,7 @@ pub(crate) fn unique_name(prefix: &str) -> String {
     format!("{prefix}-{}-{nanos:x}-{sequence:x}", super::process_id())
 }
 
-/// FYLO's wall clock in Unix milliseconds: `std` natively, the host's clock
+/// BYCKR's wall clock in Unix milliseconds: `std` natively, the host's clock
 /// in a browser build.
 ///
 /// # Errors
@@ -5378,7 +5378,7 @@ fn capture_attributes(_path: &Path) -> Result<Vec<CapturedAttribute>, NativeStor
 
 /// Capture a record's alternate data stream so a rollback can restore it.
 ///
-/// FYLO metadata lives in one JSON manifest stream on NTFS rather than in
+/// BYCKR metadata lives in one JSON manifest stream on NTFS rather than in
 /// per-name xattrs, and its values are already base64, so the manifest maps
 /// directly onto the captured form the Unix path produces.
 #[cfg(windows)]
@@ -5421,7 +5421,7 @@ pub(crate) fn restore_attributes(
     crate::sync_handle(&file).map_err(NativeStorageError::io)
 }
 
-/// Path of the FYLO metadata stream beside a record.
+/// Path of the BYCKR metadata stream beside a record.
 #[cfg(windows)]
 fn attribute_stream_path(path: &Path) -> PathBuf {
     use std::ffi::OsString;
@@ -5431,7 +5431,7 @@ fn attribute_stream_path(path: &Path) -> PathBuf {
     PathBuf::from(stream)
 }
 
-/// Read the FYLO metadata stream, treating an absent one as empty.
+/// Read the BYCKR metadata stream, treating an absent one as empty.
 #[cfg(windows)]
 fn read_attribute_stream(
     path: &Path,
@@ -5440,7 +5440,7 @@ fn read_attribute_stream(
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                format!("Windows FYLO ADS manifest is corrupt: {error}"),
+                format!("Windows BYCKR ADS manifest is corrupt: {error}"),
             )
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -5596,21 +5596,21 @@ pub(crate) fn failpoint(name: &str) -> Result<(), NativeStorageError> {
         FAILPOINTS.contains(&name),
         "undeclared failpoint: {name}; add it to FAILPOINTS so the crash matrix covers it"
     );
-    if std::env::var("FYLO_RUST_FAILPOINT").ok().as_deref() != Some(name) {
+    if std::env::var("YCKR_RUST_FAILPOINT").ok().as_deref() != Some(name) {
         return Ok(());
     }
-    // `FYLO_RUST_FAILPOINT_SKIP=n` passes the first n hits, so a gate can reach
+    // `YCKR_RUST_FAILPOINT_SKIP=n` passes the first n hits, so a gate can reach
     // every occurrence of a transition within one operation, not just the first.
-    let skip = std::env::var("FYLO_RUST_FAILPOINT_SKIP")
+    let skip = std::env::var("YCKR_RUST_FAILPOINT_SKIP")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
     if HITS.fetch_add(1, Ordering::Relaxed) < skip {
         return Ok(());
     }
-    match std::env::var("FYLO_RUST_FAILPOINT_ACTION").ok().as_deref() {
+    match std::env::var("YCKR_RUST_FAILPOINT_ACTION").ok().as_deref() {
         Some("abort") => std::process::abort(),
-        Some("panic") => panic!("FYLO Rust failpoint: {name}"),
+        Some("panic") => panic!("BYCKR Rust failpoint: {name}"),
         // A full volume is the failure a durable writer is most likely to meet
         // and least likely to be tested against, and it is an ordinary I/O
         // error rather than a lost process: the writer must roll back in place
@@ -5627,7 +5627,7 @@ pub(crate) fn failpoint(name: &str) -> Result<(), NativeStorageError> {
         ))),
         _ => Err(NativeStorageError::new(
             NativeStorageErrorCode::Io,
-            format!("injected FYLO Rust failpoint: {name}"),
+            format!("injected BYCKR Rust failpoint: {name}"),
         )),
     }
 }

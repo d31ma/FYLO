@@ -1,5 +1,5 @@
-//! The one writer of record metadata (ADR 0033 section 6, FYLO-L1-4b with
-//! FYLO-PERF1). [`MetadataPlan`] decides, without writing, the final
+//! The one writer of record metadata (ADR 0033 section 6, BYCKR-L1-4b with
+//! BYCKR-PERF1). [`MetadataPlan`] decides, without writing, the final
 //! extended attributes and sidecar file of one record; [`MetadataWriter`]
 //! writes that final state and is the only code that writes metadata;
 //! [`MetadataReader`] reads both forms back.

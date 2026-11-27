@@ -11,9 +11,9 @@ use windows_sys::Win32::System::Threading::{
 /// When a running Windows process started, as the number lock records
 /// carry: the .NET ticks of WMI's `Win32_Process.CreationDate` in UTC. Asking
 /// WMI starts PowerShell, which took 1 to 10 seconds on a Windows VM and made
-/// the first write of every FYLO process slow, so the time is read from the
+/// the first write of every BYCKR process slow, so the time is read from the
 /// process handle instead. WMI keeps whole microseconds, so the ticks are cut
-/// to whole tens and stay equal to what older FYLO versions wrote. A process
+/// to whole tens and stay equal to what older BYCKR versions wrote. A process
 /// that has exited reads as gone, as in WMI, even while another process still
 /// holds a handle to it. Rust's standard library has no process times. The
 /// unsafe function has `SAFETY` comments and an entry in

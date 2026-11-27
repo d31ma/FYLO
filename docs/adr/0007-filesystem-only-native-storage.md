@@ -2,21 +2,21 @@
 
 - Status: **Accepted**
 - Date: **2026-08-01**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Supersedes in part: ADR 0001 and ADR 0003 S3-compatible backup scope
 
 ## Context
 
-FYLO's source of truth is a mounted filesystem. The previous design also
+BYCKR's source of truth is a mounted filesystem. The previous design also
 included a built-in S3-compatible backup, verify, reconcile, and restore
 adapter. That adapter expanded the trusted network, credential, provider, and
 release surface even though object storage was never part of query execution or
 transaction ownership.
 
-Deployments can already place a FYLO root on an operator-qualified mounted
+Deployments can already place a BYCKR root on an operator-qualified mounted
 filesystem and can snapshot or replicate that filesystem with their normal
 infrastructure. Application-specific post-write notifications are also useful,
-but they do not need to make a remote service part of FYLO's storage model.
+but they do not need to make a remote service part of BYCKR's storage model.
 
 ## Decision
 
@@ -29,13 +29,13 @@ mounted filesystem root supplied by the developer.
   after a successful local mutation and do not participate in durability,
   authorization, recovery, or query results.
 - Treat snapshots, replication, and disaster recovery as filesystem deployment
-  concerns. Restores target a new or explicitly empty root and must pass FYLO's
+  concerns. Restores target a new or explicitly empty root and must pass BYCKR's
   integrity verification before use.
 - Do not introduce another built-in object-storage provider under a different
   name. A future remote adapter requires a new ADR and cannot become an
   authoritative query or transaction backend implicitly.
 - Web-release artifact upload may still use infrastructure object storage. It
-  is release plumbing, not a FYLO data-storage capability.
+  is release plumbing, not a BYCKR data-storage capability.
 
 ## Consequences
 
@@ -48,7 +48,7 @@ Benefits:
 
 Costs:
 
-- FYLO no longer supplies application-level remote backup orchestration;
+- BYCKR no longer supplies application-level remote backup orchestration;
 - operators must qualify their mount, snapshot, replication, retention, and
   restore procedures;
 - older code using the removed S3 APIs needs an explicit migration.
@@ -58,7 +58,7 @@ Costs:
 Remove `sync.s3`, `backup`, `backupStatus`, `reconcile`, and `FyloS3Restore`
 usage. Replace notification-only behavior with `sync.onWrite`/`sync.onDelete`.
 Use the platform's filesystem snapshot or replication system for disaster
-recovery, restore into a separate root, and run the normal FYLO verification
+recovery, restore into a separate root, and run the normal BYCKR verification
 gate before switching traffic.
 
 ## Verification

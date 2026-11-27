@@ -4,8 +4,8 @@ Fylo has two independently deployed web surfaces:
 
 | Surface                     | Build output                      | Production target                                              |
 | --------------------------- | --------------------------------- | -------------------------------------------------------------- |
-| Marketing and documentation | `website/dist/web`                | Amplify app `FYLO`, branch `production`, `https://fylo.del.ma` |
-| Browser loader and engine   | `dist-web` plus `clients/browser` | GitHub Pages, `https://d31ma.github.io/FYLO`                   |
+| Marketing and documentation | `website/dist/web`                | Amplify app `BYCKR`, branch `production`, `https://fylo.del.ma` |
+| Browser loader and engine   | `dist-web` plus `clients/browser` | GitHub Pages, `https://d31ma.github.io/BYCKR`                   |
 
 The GitHub release also publishes the Explorer build as
 `fylo-explorer-<CalVer>.zip`. The archive is created from the contents of
@@ -32,7 +32,7 @@ and SHA-256 in `scripts/install-vendor-bins.sh` (and its PowerShell peer) and in
 `scripts/tachyon-pin.mjs`. `scripts/run-site.mjs` uses `TAC_BIN` when it is set (for example a
 TACHYON `develop` build); otherwise it runs the `ty` on `PATH` and refuses it unless its SHA-256
 is the pinned one for the platform. Install the pinned `ty` with `bun run vendor:install`
-(`FYLO_VENDOR_BIN_DIR` picks the folder). A test checks that the two pin files list the same
+(`YCKR_VENDOR_BIN_DIR` picks the folder). A test checks that the two pin files list the same
 digests.
 
 The site's configuration is `website/client/manifest.json` (TACHYON ADR 0052). Its bundle step
@@ -58,7 +58,7 @@ default encryption. Grant the release operator only these capabilities:
   `StringLike` `s3:prefix` condition limited to `fylo/web-releases/*`
 - Object-level `s3:GetObject`, `s3:PutObject`, and `s3:DeleteObject` on
   `arn:aws:s3:::your-private-release-bucket/fylo/web-releases/*`
-- `amplify:CreateDeployment`, `amplify:StartDeployment`, and `amplify:GetJob` on the FYLO app's
+- `amplify:CreateDeployment`, `amplify:StartDeployment`, and `amplify:GetJob` on the BYCKR app's
   branches, and `amplify:GetApp` to read the header policy. The operator never needs
   `amplify:UpdateApp`: the headers are app configuration that PaaS owns.
 
@@ -104,7 +104,7 @@ repository-pinned web compiler with
 CLI before starting and confirm it is using the intended account and region.
 
 ```sh
-export FYLO_WEB_RELEASE_BUCKET=your-private-release-bucket
+export YCKR_WEB_RELEASE_BUCKET=your-private-release-bucket
 ```
 
 The non-secret app ID, branch, source directory, origin, header-policy path, and health probes live
@@ -157,10 +157,10 @@ of the file, sends it in the compact JSON form Amplify stores, and fails its pla
 disagree. Change the policy in this repository first, then in that stack. To read the live value:
 
 ```sh
-FYLO_AMPLIFY_APP_ID=$(bun -e \
+YCKR_AMPLIFY_APP_ID=$(bun -e \
   'const c = await Bun.file("ops/web-release.json").json(); console.log(c.sites.fylo.appId)')
 aws amplify get-app \
-  --app-id "$FYLO_AMPLIFY_APP_ID" \
+  --app-id "$YCKR_AMPLIFY_APP_ID" \
   --query 'app.customHeaders' \
   --output text
 ```
@@ -257,7 +257,7 @@ kestrel and is reachable only on the tailnet and the CITADEL LAN; production is 
    which waits up to 20 minutes for a `success` status with exactly that description, stops at
    once on `failure` or `error`, and fails closed at the timeout. It then assumes
    `fylo-site-deploy-production` and runs `bun scripts/amplify-release.mjs deploy fylo` with
-   `FYLO_WEB_RELEASE_ARTIFACT` and `FYLO_WEB_RELEASE_ARTIFACT_SHA256` set, so the same zip is
+   `YCKR_WEB_RELEASE_ARTIFACT` and `YCKR_WEB_RELEASE_ARTIFACT_SHA256` set, so the same zip is
    archived, deployed and probed, with the usual compensated rollback.
 
 A merge that is not a release deploys nothing. The environment accepts only `main`, and PaaS

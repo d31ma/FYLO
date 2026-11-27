@@ -2,7 +2,7 @@
 
 - Status: **Accepted** (accepted by the user, 2026-11-12)
 - Date: **2026-11-12**
-- Owners: **FYLO maintainers**
+- Owners: **BYCKR maintainers**
 - Amends: ADR 0015 section 2 (`state.slots` grows from 128 to 144 bytes) and
   section 6 (a reader's cached location table is keyed by layout id too).
 
@@ -13,13 +13,13 @@ process-wide cache (`TableCache`). The key was the collection's directory
 path and the slot's table epoch. A collection dropped and created again at
 the same path, or moved to segments again, is a new layout at the same path.
 If its epoch equals the one a reader cached, the reader takes the old table
-for the new layout. FYLO's entry check then fails the read with
+for the new layout. BYCKR's entry check then fails the read with
 `segment entry does not match its location`: no wrong data, but a failed
 read.
 
 Commits `f869c2c` and `769f6f7` made this rare: a new layout starts at a
 random 32-bit epoch, and a drop forgets the dropping process's own table. In
-another process the risk stayed 1 in 2^32 per re-creation. FYLO prefers
+another process the risk stayed 1 in 2^32 per re-creation. BYCKR prefers
 correctness by construction over chance.
 
 The `.vdbx` media are not affected: their cache key already holds a digest
@@ -30,7 +30,7 @@ of the collection's descriptor, which is new for each new collection.
 ### 1. Each directory layout has a layout id
 
 - When a directory segment layout is created (a new collection, or a move
-  to segments), FYLO gives it a **layout id**: the next TTID clock tick of the
+  to segments), BYCKR gives it a **layout id**: the next TTID clock tick of the
   creating process (100-nanosecond units since the Unix epoch, above every
   tick that process drew before, the same sequence TTIDs use).
 - The id lives in `segments/state.slots`, in a 16-byte block after the two
@@ -63,14 +63,14 @@ that, so it is later than the old layout's id. Ids at one path therefore
 only grow, and a reader's cached id can never belong to a newer layout.
 
 This holds while the wall clock does not step back across a drop and a
-re-creation. FYLO's TTIDs rely on the same clock. If the clock does step
+re-creation. BYCKR's TTIDs rely on the same clock. If the clock does step
 back, the new id must still land on exactly the old 100-nanosecond tick (1
 millisecond in a browser), and the random table epoch must match too.
 
 ### 4. Collections written before layout ids
 
 - An older `state.slots` file ends after the two slots. Its layout id reads
-  as **unknown**, and FYLO reads and writes the collection as before. FYLO
+  as **unknown**, and BYCKR reads and writes the collection as before. BYCKR
   does not add the block to an existing file.
 - A block that is missing, short, or fails its CRC reads as unknown.
 - An unknown id is never equal to a real one, so a layout created now never

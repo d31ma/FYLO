@@ -4,7 +4,7 @@ These are **samples**, not shipped policy. They show how a host's
 administrator can add the kernel's own access control around one application
 that uses a protected `.vdbx` database (ADR 0021, option E of
 [the access-control study](../access-control-design.md#45-e-mandatory-access-control-profiles)).
-FYLO does not install them, test them in CI or depend on them. Copy one,
+BYCKR does not install them, test them in CI or depend on them. Copy one,
 change the paths and names marked `CHANGE`, and test it on your own host,
 in complain or audit mode first.
 
@@ -24,7 +24,7 @@ server by naming the **one executable** that may:
    when the application itself runs `rekey` or `pack`;
 3. be traced (`ptrace`) or have its memory read: no other process may.
 
-Everything else stays as FYLO needs it: FYLO opens no listener and no
+Everything else stays as BYCKR needs it: BYCKR opens no listener and no
 network connection, writes only the database file (and its staging files
 during a rekey or pack), and coordinates writers with byte-range locks
 inside the file (`fcntl` on Unix, `LockFileEx` on Windows).
@@ -54,7 +54,7 @@ container.
   section 6).
 - They do not stop the application itself from misusing its own grant;
   the policy inside the database does that.
-- They are not tested by FYLO's CI. The AppArmor and SELinux samples
+- They are not tested by BYCKR's CI. The AppArmor and SELinux samples
   follow each tool's documented syntax; check them with
   `apparmor_parser -Q -K <profile>` and `checkmodule -M -m`, then load them
   in complain (AppArmor) or permissive-domain (SELinux) mode and watch the

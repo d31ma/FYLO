@@ -1,5 +1,5 @@
 <p align="center">
-  <strong style="font-size: 2em;">FYLO</strong><br/>
+  <strong style="font-size: 2em;">BYCKR</strong><br/>
   <em>A single-binary document store with zero-payload prefix indexes and language shims for Python, Ruby, Node, Go, C#, Java, PHP, and Dart, a Rust crate, a local-first browser client, and native iOS and Android packages.</em>
 </p>
 
@@ -19,7 +19,7 @@
 
 ## Table of Contents
 
-- [Why FYLO?](#why-fylo)
+- [Why BYCKR?](#why-fylo)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
 - [Browser access](#browser-access)
@@ -39,9 +39,9 @@
 
 ---
 
-## Why FYLO?
+## Why BYCKR?
 
-FYLO trades complexity for clarity. Documents are plain JSON files on disk. Indexes are zero-byte key entries that accelerate queries without duplicating data. If the index ever drifts, FYLO rebuilds it from the documents — the files are always the source of truth.
+BYCKR trades complexity for clarity. Documents are plain JSON files on disk. Indexes are zero-byte key entries that accelerate queries without duplicating data. If the index ever drifts, BYCKR rebuilds it from the documents — the files are always the source of truth.
 
 | Principle                    | Implementation                                                                       |
 | ---------------------------- | ------------------------------------------------------------------------------------ |
@@ -57,7 +57,7 @@ FYLO trades complexity for clarity. Documents are plain JSON files on disk. Inde
 
 ## Quick Start
 
-FYLO ships as a single self-contained `fylo` binary via
+BYCKR ships as a single self-contained `fylo` binary via
 [GitHub Releases](https://github.com/d31ma/Fylo/releases) — not npm. Install it
 onto your `PATH`. [CHEX](https://github.com/d31ma/CHEX) schema validation and
 [TTID](https://github.com/d31ma/TTID) identifiers are built in, so there is
@@ -68,7 +68,7 @@ nothing else to install:
 curl -fsSL https://github.com/d31ma/Fylo/releases/latest/download/install.sh | sh
 ```
 
-Set `FYLO_VERIFY_PROVENANCE=1` before running the installer to require signed
+Set `YCKR_VERIFY_PROVENANCE=1` before running the installer to require signed
 GitHub artifact provenance in addition to the release checksum. This opt-in
 requires an authenticated GitHub CLI and fails closed before installation; see
 the [release provenance runbook](docs/operations/release-provenance.md).
@@ -170,7 +170,7 @@ the segments layout's location table (see [Change feed](#change-feed)). When
 the browser engine opens a root the native engine also writes, it adds the
 native writes to its journal before it answers `changes`.
 
-FYLO keeps the logical transaction journal outside collection trees so it is
+BYCKR keeps the logical transaction journal outside collection trees so it is
 not mistaken for a document, indexed, versioned, or copied as record payload:
 
 ```text
@@ -224,7 +224,7 @@ A collection's kind is recorded once in its catalog descriptor
 (`.fylo-catalog/collections/<name>.json`); names are unique across both
 namespaces, so `db.<name>` is unambiguous.
 
-When document version control is initialized, FYLO also writes hidden repository
+When document version control is initialized, BYCKR also writes hidden repository
 metadata beside `.collections`:
 
 ```text
@@ -263,7 +263,7 @@ age/nr/3fc1ffffffffffff/4UUB32VGUDW
 - `g3` = trigram (contains queries)
 - `w` = a normalized word of a word field (`$match`), only for fields named by
   `setWordFields`
-- `wv` = a word witness: one per `eq` key of a word field, so FYLO can tell
+- `wv` = a word witness: one per `eq` key of a word field, so BYCKR can tell
   when a release without word fields wrote to it
 
 ### Index
@@ -285,7 +285,7 @@ database.
 Add the version-pinned loader to the document head:
 
 ```html
-<script src="https://d31ma.github.io/FYLO/version/26.45.07/fylo.js"></script>
+<script src="https://d31ma.github.io/BYCKR/version/26.45.07/fylo.js"></script>
 ```
 
 ```ts
@@ -345,12 +345,12 @@ const db = await SingleFileDatabase.open(
   or beside the file protects nothing. The folder engine (`fylo.js`) still
   refuses encryption.
 
-Use `https://d31ma.github.io/FYLO/version/latest/fylo.js` to track the newest
+Use `https://d31ma.github.io/BYCKR/version/latest/fylo.js` to track the newest
 successful release. Direct ESM consumers can import
-`https://d31ma.github.io/FYLO/version/26.45.07/fylo-web.mjs` instead.
+`https://d31ma.github.io/BYCKR/version/26.45.07/fylo-web.mjs` instead.
 
 Treat the loader as executable supply-chain input: it runs with the embedding
-origin's authority, including access to that origin's FYLO data. Production
+origin's authority, including access to that origin's BYCKR data. Production
 applications should use the immutable version URL, not the mutable
 `version/latest/` alias. For higher-assurance deployments, download the loader
 and every adjacent module, worker, and Wasm asset from the matching release,
@@ -380,7 +380,7 @@ const db = createBrowserClient({ storage: 'opfs', worker: true, wasm: true })
 await db.ready()
 ```
 
-Chromium can instead mount a user-selected FYLO root directly:
+Chromium can instead mount a user-selected BYCKR root directly:
 
 ```ts
 const handle = await showDirectoryPicker({ mode: 'readwrite' })
@@ -403,7 +403,7 @@ prototype is benchmarked on representative stores.
 
 ### Fylo Explorer
 
-The Explorer is a browser UI over a **real FYLO root on your disk** — no
+The Explorer is a browser UI over a **real BYCKR root on your disk** — no
 server, no protocol. It opens the folder through the File System Access API:
 pick the root once in the OS dialog, and later visits reopen it automatically
 (the handle persists; Chromium's "Allow on every visit" makes it zero-click).
@@ -459,7 +459,7 @@ larger operations. Explorer is a standalone Tachyon app under `explorer/`; it
 builds directly at `/` for its dedicated origin and is not part of the marketing
 website bundle. Tachyon's generated component runtime currently uses `eval` for
 bindings and event dispatch, so the deployment CSP must retain `unsafe-eval`
-until Tachyon offers a CSP-safe compiler mode. FYLO's own runtime import does
+until Tachyon offers a CSP-safe compiler mode. BYCKR's own runtime import does
 not use `eval` or `new Function`.
 
 For production deployments, serve Explorer from a dedicated origin that hosts
@@ -474,8 +474,8 @@ should not share its JavaScript execution boundary.
 ## Configuration
 
 Native runtime settings live in `application.json` under the `fylo` key. Each
-underscore in a former `FYLO_*` setting becomes a nested key; for example,
-`FYLO_SHARD_WIDTH` becomes `fylo.shard.width`. Environment settings are no longer
+underscore in a former `YCKR_*` setting becomes a nested key; for example,
+`YCKR_SHARD_WIDTH` becomes `fylo.shard.width`. Environment settings are no longer
 implicit overrides.
 
 ```json
@@ -485,8 +485,8 @@ implicit overrides.
         "schema": "./schemas",
         "strict": true,
         "shard": { "width": 1 },
-        "encryption": { "key": "${FYLO_ENCRYPTION_KEY}" },
-        "cipher": { "salt": "${FYLO_CIPHER_SALT}" }
+        "encryption": { "key": "${YCKR_ENCRYPTION_KEY}" },
+        "cipher": { "salt": "${YCKR_CIPHER_SALT}" }
     }
 }
 ```
@@ -499,7 +499,7 @@ is a minimal starting point that does not require secrets.
 
 The CLI discovers `application.json` in its working directory, or accepts
 `--config /path/to/application.json`. Every binary-backed SDK shim can select a
-configuration file for its own FYLO child:
+configuration file for its own BYCKR child:
 
 ```js
 const db = new Fylo('/mnt/fylo', {
@@ -579,10 +579,10 @@ directly; it must be restored.
 ### Raw Files (Buckets)
 
 A **bucket** stores raw files: create a collection with kind `file`, then store
-a file by its local path or a URL. FYLO copies the bytes in; it keeps no link to
+a file by its local path or a URL. BYCKR copies the bytes in; it keeps no link to
 the source. Buckets are stored on disk under `.buckets/<name>/` (documents live
 under `.collections/<name>/`); the two share an identical internal layout.
-Databases written by older FYLO versions, where file collections lived under
+Databases written by older BYCKR versions, where file collections lived under
 `.collections/`, are migrated to `.buckets/` automatically the first time the
 engine opens them.
 
@@ -630,7 +630,7 @@ const reports = await db.assets.find({
 Keys always begin with `/`, may be at most 1024 UTF-8 bytes, and cannot contain
 backslashes, control characters, or `.` / `..` path segments. A key is logical
 metadata, not a local filesystem path; the raw bytes still use the TTID
-filename shown below. FYLO stores a key exactly as supplied and does not make
+filename shown below. BYCKR stores a key exactly as supplied and does not make
 keys unique, so two files can share one; pick unique keys in your application
 when you need them. To change a file's key, store the file again under the new
 key and delete the old record.
@@ -658,7 +658,7 @@ corruption is found, so a cron line is all a weekly audit needs:
 0 3 * * 0  fylo verify assets --root /mnt/fylo --json || notify "fylo: corruption detected"
 ```
 
-FYLO stores the bytes unchanged at:
+BYCKR stores the bytes unchanged at:
 
 ```text
 .buckets/assets/docs/<shard>/<TTID>.<original-extension>
@@ -676,7 +676,7 @@ with the bytes across moves: `name`, `key`, `extension`, `contentType`,
 `contentLength`, `etag`, `checksumSHA256`, `createdAt`, and `lastModified`.
 These fields use the normal prefix index and can be queried with `findDocs`.
 
-Every timestamp FYLO returns is a **whole** number of epoch milliseconds.
+Every timestamp BYCKR returns is a **whole** number of epoch milliseconds.
 `createdAt` is decoded from the TTID; `lastModified` — like `updatedAt`,
 `mtime`, and `deletedAt` on documents — is the filesystem modification time,
 truncated to the millisecond.
@@ -704,7 +704,7 @@ The record must be a plain object. Names are 1-64 characters of letters, digits,
 `.`, `_`, or `-`, starting with a letter or digit. Each value must be
 JSON-serializable and at most 60 KiB after UTF-8 JSON encoding; strings, numbers,
 booleans, arrays, and objects round-trip with their types. A top-level `null`
-value is a deletion marker, not a storable metadata value. FYLO validates the
+value is a deletion marker, not a storable metadata value. BYCKR validates the
 whole mutation before writing it and rolls back a filesystem xattr batch if a
 later write fails. On file collections, metadata is indexed under `meta/`, so it
 can be queried, including numerically:
@@ -791,7 +791,7 @@ create — and an inline read that would not fit the frame is refused with
 
 ## Querying
 
-FYLO queries use prefix indexes first, then hydrate only matching documents.
+BYCKR queries use prefix indexes first, then hydrate only matching documents.
 
 ```ts
 // Exact match
@@ -817,7 +817,7 @@ const privileged = await db.users.find({
 
 ### Word search and sorted pages
 
-Name the fields you search by word, once per collection. FYLO rebuilds the
+Name the fields you search by word, once per collection. BYCKR rebuilds the
 collection's index and keeps a key for every word of those fields from then on
 ([ADR 0023](docs/adr/0023-word-index-and-sorted-queries.md)):
 
@@ -908,7 +908,7 @@ fylo sql "EXPLAIN SELECT * FROM posts WHERE published = true" --root /mnt/fylo
 
 ### Access control: application identities
 
-FYLO grants access per **application identity**, on **protected `.vdbx`
+BYCKR grants access per **application identity**, on **protected `.vdbx`
 databases**, and denies by default
 ([ADR 0021](docs/adr/0021-application-identities-and-signed-policies.md)).
 An identity is a P-256 key pair one application holds. A protected database
@@ -938,7 +938,7 @@ fylo access settle app.vdbx --identity file:admin.pem --trust-anchor fid1:...
 
 - **Opening.** A process opens a protected database as one identity:
   `fylo.identity` and `fylo.trustAnchor` in `application.json`,
-  `FYLO_IDENTITY` and `FYLO_TRUST_ANCHOR`, or `--identity` and
+  `YCKR_IDENTITY` and `YCKR_TRUST_ANCHOR`, or `--identity` and
   `--trust-anchor`. The trust anchor is the `fid1:` identifier of the admin
   that created the database; an open without one fails with `EPOLICY`
   unless the caller opts in to `--trust-on-first-use`, which warns.
@@ -1076,7 +1076,7 @@ string steps treat `null` as missing; a missing or `null` placeholder or
 `lower` on a number) fails the migration. A step with an unknown parameter or
 two operation keys is rejected.
 
-FYLO never runs JavaScript from a schema folder. A version step that has only
+BYCKR never runs JavaScript from a schema folder. A version step that has only
 an old `upgraders/v1-to-v2.js` file fails `schemaMaterialize` with an error
 pointing at ADR 0018; rewrite it as steps. A change the steps cannot express is
 an application update in two versions: add a version whose schema accepts both
@@ -1128,7 +1128,7 @@ Behavior:
 - A document is decrypted with the `$encrypted` list of the version in its
   `_v`, so a later version may rename or drop an encrypted field
 - Any collection directory under `fylo.schema` that contains a `manifest.json` is auto-created on `new Fylo(...)`; await `fylo.ready()` if you need the bootstrap to settle before issuing reads from a synchronous probe (mutation/query methods await internally)
-- FYLO documents cannot hold arrays of objects — declare each nested object as its own collection. A write of a document with `items: [{ name: '...' }]` fails with `EARRAYOFOBJECTS`, even if its CHEX schema describes the array. Arrays of scalars and nested objects (as fields) are fine.
+- BYCKR documents cannot hold arrays of objects — declare each nested object as its own collection. A write of a document with `items: [{ name: '...' }]` fails with `EARRAYOFOBJECTS`, even if its CHEX schema describes the array. Arrays of scalars and nested objects (as fields) are fine.
 
 ### Schema registry: `fylo schema push` and `pull`
 
@@ -1233,7 +1233,7 @@ without writing first.
 Reads fail closed. If a field the schema declares `$encrypted` cannot be
 decrypted — missing key, wrong key, a value that fails authentication, or a
 value stored before the field was encrypted — the operation fails with
-`EDECRYPTFAILED` naming the collection and field. FYLO never returns a stored
+`EDECRYPTFAILED` naming the collection and field. BYCKR never returns a stored
 value to a caller as if it were plaintext when it cannot verify it. Adding a
 field to `$encrypted` therefore requires rewriting the documents that already
 hold a plaintext value for it.
@@ -1242,7 +1242,7 @@ hold a plaintext value for it.
 
 ## Remote Access
 
-There is none, by design. FYLO is an embedded library, like SQLite: it opens
+There is none, by design. BYCKR is an embedded library, like SQLite: it opens
 the database files directly in your app's process and speaks no network
 protocol. The CLI and language shims drive the `fylo` binary against a local
 root, and the browser/mobile clients embed the engine over an on-device OPFS
@@ -1334,12 +1334,12 @@ files in a bucket.
 `restore-commit` refuses to overwrite uncommitted working tree changes unless
 `--force` is passed; commit snapshots themselves remain immutable. `merge`
 supports fast-forward and three-way document-payload merges. If both sides
-changed the same TTID payload differently, FYLO reports conflicts and leaves
+changed the same TTID payload differently, BYCKR reports conflicts and leaves
 the current branch untouched.
 
 ## Serverless Queue
 
-FYLO includes a durable, brokerless queue in the Rust engine. It requires no
+BYCKR includes a durable, brokerless queue in the Rust engine. It requires no
 Redis, SQS-compatible service, queue daemon, account, or network connection.
 Messages and consumer state live under the same filesystem root:
 
@@ -1403,7 +1403,7 @@ retries are idempotent only with the exact receipt that completed the delivery;
 each group retains the 1,000 most recently acknowledged ID/receipt pairs for
 that validation.
 “Serverless” means embedded and brokerless, not distributed multi-writer
-storage. FYLO still enforces one owning engine process per root. Concurrent
+storage. BYCKR still enforces one owning engine process per root. Concurrent
 worker tasks share that process and consumer group; another process can take
 over after the owner exits and the filesystem lease is released. There is no
 built-in forever-running worker—the application or its serverless invocation
@@ -1463,7 +1463,7 @@ printf '%s\n' '{"op":"handshake"}' | fylo exec --loop --root /mnt/fylo
 ```
 
 `version --output json` and the `handshake` result share one stable identity:
-FYLO runtime and protocol versions, immutable release commit and target,
+BYCKR runtime and protocol versions, immutable release commit and target,
 effective frame limits, and supported capabilities. The `schemaValidation`
 capability names the built-in CHEX validator and the CHEX release it follows;
 WebAssembly builds add `compiledOnly: true`, because they validate only with
@@ -1504,7 +1504,7 @@ fylo exec --loop --root /mnt/fylo \
   --max-response-bytes 8388608
 ```
 
-FYLO uses a fixed-capacity input buffer. It rejects invalid UTF-8
+BYCKR uses a fixed-capacity input buffer. It rejects invalid UTF-8
 (`EFRAME_UTF8`), malformed JSON (`EFRAME_JSON`), duplicate object keys
 (`EFRAME_DUPLICATE_KEY`), and oversized requests
 (`EFRAME_REQUEST_TOO_LARGE`). When an LF boundary is known, it emits one error
@@ -1603,25 +1603,25 @@ text.
 | `ENOTVOLUMEROOT`                                                       | The root's parent folder is not a mount point (see Where a root may live)                                        | Do not retry; move the root directly below a mount point                  |
 | `ENAMESPACEEXISTS`                                                     | The namespace to create already exists                                                                           | Do not retry; use the namespace, or drop it first                         |
 | `ENAMESPACENOTEMPTY`                                                   | The namespace to drop still holds collections                                                                    | Do not retry; drop it with `cascade` to delete them                       |
-| `ENAMESPACEUNSUPPORTED`                                                | Namespaces are not yet supported in this build; namespace separation arrives with the FYLO layout release (L1-5) | Do not retry; use the default namespace `public` until then               |
+| `ENAMESPACEUNSUPPORTED`                                                | Namespaces are not yet supported in this build; namespace separation arrives with the BYCKR layout release (L1-5) | Do not retry; use the default namespace `public` until then               |
 | `EFRAME_*`                                                             | Frame-contract violations, as documented above                                                                   | Per the framing rules above                                               |
 | `EQUERYLOOPREQUIRED` / `EQUERYITEMTOOLARGE` / `EQUERYSNAPSHOTTOOLARGE` | Pagination contract violations, as documented above                                                              | Per the pagination rules above                                            |
 | `ESCHEMA`                                                              | A document does not match the head schema, or a schema is invalid                                                | Do not retry; fix the document or schema                                  |
 | `ESCHEMACONFLICT`                                                      | A pushed schema label is already committed with different content                                                | Do not retry; give the changed schema a new version label                 |
 | `ESCHEMAUNAVAILABLE`                                                   | This build cannot validate the collection's head schema version                                                  | Do not retry; push the schema natively, or write natively                 |
-| `EVDBX_NOT_VDBX` / `EVDBX_VERSION`                                     | The file is not a `.vdbx` database, or needs a newer FYLO                                                        | Do not retry; open it with a build that supports it                       |
+| `EVDBX_NOT_VDBX` / `EVDBX_VERSION`                                     | The file is not a `.vdbx` database, or needs a newer BYCKR                                                        | Do not retry; open it with a build that supports it                       |
 | `EVDBX_CORRUPT`                                                        | A `.vdbx` structure failed its checks                                                                            | Do not retry; run `fylo verify <db.vdbx>`                                 |
 | `ENATIVE_IO`                                                           | Native filesystem I/O failed, including disk pressure or xattr operations                                        | Treat a mutation as ambiguous; inspect the cause before retrying          |
 | `EUNKNOWN`                                                             | An engine failure without a more specific classification                                                         | Treat conservatively; inspect `error.message` diagnostically              |
 
 Storage-level failures may carry additional stable codes (for example
-`FYLO_COLLECTION_NOT_FOUND`); those retain their meaning across releases under
+`YCKR_COLLECTION_NOT_FOUND`); those retain their meaning across releases under
 the same additive policy.
 
 #### Document model: no arrays of objects
 
 A stored document may contain scalars, nested objects, and arrays of scalars.
-It may **not** contain an array of objects at any depth. FYLO treats an array
+It may **not** contain an array of objects at any depth. BYCKR treats an array
 of objects as a sign the data wants to be its own collection, referenced by
 key, so every field is independently indexable.
 
@@ -1683,13 +1683,13 @@ The lease contract is supported on native local filesystems on macOS, Linux,
 and Windows. Containers on the same host can share it only when they share the
 same canonical bind-mounted root and host kernel lock domain. Network,
 clustered, object-backed, and independently synchronized filesystems are not a
-distributed lock service; FYLO refuses a root there (see below).
+distributed lock service; BYCKR refuses a root there (see below).
 
 #### Where a root may live
 
 A root, a folder or a `.vdbx` database, must be on a disk attached to the
-machine that runs FYLO: APFS, ext4, XFS, btrfs, NTFS and other local
-filesystems. FYLO refuses a root on a network filesystem with `EREMOTEROOT`,
+machine that runs BYCKR: APFS, ext4, XFS, btrfs, NTFS and other local
+filesystems. BYCKR refuses a root on a network filesystem with `EREMOTEROOT`,
 before it writes anything
 ([ADR 0029](docs/adr/0029-no-root-on-a-network-filesystem.md)):
 
@@ -1713,7 +1713,7 @@ which runs on EFS and NFS 4.1 as before.
 A local root must also be on a disk that is **not the system disk**
 ([ADR 0032](docs/adr/0032-primary-root-on-a-data-disk.md)): a disk under
 `/Volumes` on macOS, a mounted disk such as `/mnt/<disk>` on Linux, or a
-drive other than the Windows drive on Windows. FYLO compares disks, not
+drive other than the Windows drive on Windows. BYCKR compares disks, not
 paths: on macOS the APFS container, on Linux the device and its whole disk
 (also through bind mounts, btrfs subvolumes, LVM and ZFS pools), on Windows
 the volume and its physical disk. A root on the system disk, in the OS temp
@@ -1728,10 +1728,10 @@ the root folder sits directly in the top folder of its drive, such as
 `/Volumes/<disk>/<root>`, `/mnt/<disk>/<root>` or `D:\<root>`. A bind mount,
 a Docker volume and an NTFS folder mount point count as mount points. A root
 in a deeper folder is refused with `ENOTVOLUMEROOT`, which names the nearest
-mount point above it. FYLO checks the mount point first, then the disk. The
+mount point above it. BYCKR checks the mount point first, then the disk. The
 handshake reports the mount point of the default root in `storage.volume`
-(`null` without a default root, or when FYLO cannot tell). Inside a virtual
-machine or a container FYLO sees only that machine's own disks and mounts:
+(`null` without a default root, or when BYCKR cannot tell). Inside a virtual
+machine or a container BYCKR sees only that machine's own disks and mounts:
 the operator of the host decides where a virtual disk's file lives. On
 `develop` this mount-point rule is still switched off; it turns on with
 namespaces (ADR 0033 slice L1-5).
@@ -1740,11 +1740,11 @@ Two settings allow more:
 
 | Setting                                    | Flag                  | Environment                | `application.json`        |
 | ------------------------------------------ | --------------------- | -------------------------- | ------------------------- |
-| Allow the system disk (tests, CI, laptops) | `--allow-system-disk` | `FYLO_ALLOW_SYSTEM_DISK=1` | `"allowSystemDisk": true` |
-| App mode: the app's own data folder        | `--app-id <id>`       | `FYLO_APP_ID=<id>`         | `"appId": "<id>"`         |
+| Allow the system disk (tests, CI, laptops) | `--allow-system-disk` | `YCKR_ALLOW_SYSTEM_DISK=1` | `"allowSystemDisk": true` |
+| App mode: the app's own data folder        | `--app-id <id>`       | `YCKR_APP_ID=<id>`         | `"appId": "<id>"`         |
 
 With the opt-out on, `fylo` prints one warning line on stderr. App mode
-admits a root inside the app's own data folder, which FYLO computes from the
+admits a root inside the app's own data folder, which BYCKR computes from the
 OS: `~/Library/Application Support/<id>` (or the sandbox container) on macOS,
 `%LOCALAPPDATA%\<id>` and `%APPDATA%\<id>` on Windows, `$XDG_DATA_HOME/<id>`
 (default `~/.local/share/<id>`) on Linux. iOS and Android apps need nothing.
@@ -1836,13 +1836,13 @@ atomic link/rename semantics supported storage targets.
 
 ## EFS metadata candidate
 
-FYLO's broader direction is provider-independent serverless runtime capability.
-This storage work is a first backend slice inside FYLO, not an external AWS shim.
+BYCKR's broader direction is provider-independent serverless runtime capability.
+This storage work is a first backend slice inside BYCKR, not an external AWS shim.
 Invocation lifetime, fencing, retries and cold-start recovery need their own
 explicit core contracts. PaaS retains AWS infrastructure configuration.
 
 The isolated general invocation source candidate adds typed `InvocationOptions`
-and `InvocationRuntime` inside FYLO. It handles one bounded core frame with
+and `InvocationRuntime` inside BYCKR. It handles one bounded core frame with
 trusted host configuration and a monotonic deadline/cleanup reserve, then returns
 buffered response bytes only after private handles are gone and the owning lease
 has completed unique checked release. Legacy streaming APIs keep their behavior.
@@ -1891,14 +1891,14 @@ local fixture, mount or infrastructure plan is not a production support claim.
 
 | Limitation                           | Detail                                                                                                                                                                                                                                                                             |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Filesystem-only engine**           | One engine writes to one supported local path. Snapshot, replication, and remote-copy tooling remain deployment concerns outside FYLO.                                                                                                                                             |
+| **Filesystem-only engine**           | One engine writes to one supported local path. Snapshot, replication, and remote-copy tooling remain deployment concerns outside BYCKR.                                                                                                                                             |
 | **Local-filesystem locking**         | PID-aware lock files plus kernel-owned takeover claims; live owners are never evicted by TTL. Use local POSIX filesystems or NTFS, not network/sync filesystems without equivalent atomic semantics.                                                                               |
 | **Indexes are derived**              | External writes to data files won't update indexes. Use `db.<collection>.rebuild()`.                                                                                                                                                                                               |
 | **Frequency leaks on encryption**    | HMAC blind indexes for `$eq` reveal value repetition even without decryption.                                                                                                                                                                                                      |
 | **Process-global cipher**            | One key per process for all `$encrypted` fields. No per-collection key rotation built in.                                                                                                                                                                                          |
 | **No cross-collection transactions** | SQL mutations and ordinary writes are atomic within one collection; there is no atomic multi-collection commit.                                                                                                                                                                    |
 | **Timestamp metadata**               | `createdAt` comes from TTID; `updatedAt` comes from file modification metadata. Every timestamp is whole epoch milliseconds.                                                                                                                                                       |
-| **Canonical identifiers**            | TTID matches case-insensitively but FYLO names a file after the identifier, so a write with a non-canonical spelling is refused. Uppercasing the identifier repairs it.                                                                                                            |
+| **Canonical identifiers**            | TTID matches case-insensitively but BYCKR names a file after the identifier, so a write with a non-canonical spelling is refused. Uppercasing the identifier repairs it.                                                                                                            |
 | **Shard width is per collection**    | Recorded in the catalog descriptor and 1–4. A write configured for a different width fails with `ESHARDWIDTH`; `fylo reshard` moves the collection.                                                                                                                                |
 | **Bulk import for trusted sources**  | SSRF guard blocks private addresses and caps at 50 MiB. Not for user-provided URLs.                                                                                                                                                                                                |
 | **Word search**                      | `$match` matches word prefixes after lower-casing and removing Latin accents. No ranking, stemming, phrases or segmentation of text written without spaces. A release before ADR 0023 that writes to a word field leaves its words out until the next `$match` rebuilds the index. |

@@ -7,7 +7,7 @@ use crate::identity_error::IdentityError;
 use crate::key_wrap::KeyWrap;
 use crate::private_key::PrivateKey;
 
-/// A private key FYLO holds in memory: what the `file:`, `keychain:`,
+/// A private key BYCKR holds in memory: what the `file:`, `keychain:`,
 /// `cng:` and `creds:` stores give back.
 pub(crate) struct SoftwareKey {
     secret_key: SecretKey,

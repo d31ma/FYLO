@@ -6,7 +6,7 @@ use super::{LocationState, SegmentBody};
 
 /// The complete post-image of one document in a segment record.
 ///
-/// `attributes` maps each FYLO extended attribute name to its base64 value,
+/// `attributes` maps each BYCKR extended attribute name to its base64 value,
 /// exactly what the file layout keeps in `user.fylo.*` attributes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

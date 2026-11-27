@@ -3,7 +3,7 @@ use std::io::{self, ErrorKind};
 /// Recognizes the errors a file system gives when an attribute value, or a
 /// file's attributes together, do not fit: `E2BIG`, `ENOSPC` and `ERANGE`.
 /// Plain ext4 keeps all of a file's attributes in one 4 KiB block, so a
-/// larger value fails there. FYLO then keeps the value in the record's
+/// larger value fails there. BYCKR then keeps the value in the record's
 /// sidecar file (ADR 0033 section 6).
 pub struct ValueTooLarge;
 

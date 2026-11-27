@@ -1,4 +1,4 @@
-//! FYLO application identities (ADR 0021).
+//! BYCKR application identities (ADR 0021).
 //!
 //! An identity is a P-256 key pair. Its static identifier is the fingerprint
 //! of its public key, `fid1:p256:<base32 of SHA-256>`. A process names its

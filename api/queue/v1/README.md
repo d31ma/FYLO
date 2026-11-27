@@ -1,6 +1,6 @@
-# FYLO Queue Storage Contract v1
+# BYCKR Queue Storage Contract v1
 
-FYLO's embedded serverless queue is a brokerless, filesystem-backed queue. Its
+BYCKR's embedded serverless queue is a brokerless, filesystem-backed queue. Its
 durable records live under `<root>/.fylo-queue/v1` and use the envelopes in
 [`schema.json`](schema.json).
 

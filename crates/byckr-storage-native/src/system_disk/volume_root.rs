@@ -14,7 +14,7 @@ impl VolumeRoot {
     const VERBATIM_PREFIX: &'static str = r"\\?\";
 
     /// The mount point the root at `path` lives on: its parent's, which the
-    /// handshake reports as `storage.volume`. `None` when FYLO cannot tell.
+    /// handshake reports as `storage.volume`. `None` when BYCKR cannot tell.
     pub(crate) fn of(path: &Path) -> Option<PathBuf> {
         DiskReader.mount_point(&Self::parent(path)).ok()
     }

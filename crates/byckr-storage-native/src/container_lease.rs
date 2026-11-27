@@ -2,7 +2,7 @@
 //! byte-range locks are unqualified or refused (ADR 0016 section 7).
 //!
 //! It needs nothing from the filesystem but exclusive create, unlink and a
-//! directory listing, which every filesystem FYLO targets provides. Leases are
+//! directory listing, which every filesystem BYCKR targets provides. Leases are
 //! numbered files beside the database, `<name>.vdbx.lease.<generation>`, and
 //! the highest generation is the owner. Taking over a crashed owner's lease
 //! is creating the next generation, which exclusive create grants to exactly

@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use super::{MarkerFile, ProbeRecord};
 use crate::{NativeStorageError, NativeStorageErrorCode};
 
-/// `<app>/.fylo/format.json`: names the layout, the FYLO version that made
+/// `<app>/.fylo/format.json`: names the layout, the BYCKR version that made
 /// the app folder and the probe result (ADR 0033 section 1, storage contract
-/// v2). A folder without it is not a FYLO app folder.
+/// v2). A folder without it is not a BYCKR app folder.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FormatMarker {
@@ -21,7 +21,7 @@ impl FormatMarker {
     pub const FORMAT: &'static str = "fylo.layout.v2";
     const MAX_CREATED_BY_BYTES: usize = 64;
 
-    /// A marker for an app folder made by FYLO version `created_by`.
+    /// A marker for an app folder made by BYCKR version `created_by`.
     ///
     /// # Errors
     ///
@@ -48,7 +48,7 @@ impl FormatMarker {
             .transpose()
     }
 
-    /// The FYLO version that made the app folder.
+    /// The BYCKR version that made the app folder.
     #[must_use]
     pub fn created_by(&self) -> &str {
         &self.created_by
